@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: jood-monitor-node
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels: {app: jood-monitor-node}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1}
+  template:
+    metadata:
+      labels: {app: jood-monitor-node}
+    spec:
+      serviceAccountName: jood-monitor-node
+      automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      nodeSelector: {{ toYaml .Values.node.nodeSelector | nindent 8 }}
+      tolerations: {{ toYaml .Values.node.tolerations | nindent 8 }}
+      affinity: {{ toYaml .Values.node.affinity | nindent 8 }}
+      containers:
+        - name: node
+          image: "{{ .Values.image.repository }}@{{ required "image.digest is required" .Values.image.digest }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: JOOD_MODE, value: node}
+            - {name: JOOD_OBSERVER_URL, value: "https://jood-monitor-observer.{{ .Release.Namespace }}.svc:8081"}
+            - {name: JOOD_OBSERVER_CA_FILE, value: /run/jood-ca/ca.crt}
+            - {name: JOOD_TOKEN_FILE, value: /run/jood-token/token}
+            - {name: JOOD_HOST_PROC, value: /host/proc}
+            - name: JOOD_NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: JOOD_FILESYSTEMS
+              value: {{ .Values.node.filesystems | toJson | quote }}
+            - name: JOOD_STANDARD_NETWORK_INTERFACES
+              value: {{ .Values.node.standardNetworkInterfaces | default list | toJson | quote }}
+            - name: JOOD_STANDARD_DISK_DEVICES
+              value: {{ .Values.node.standardDiskDevices | default list | toJson | quote }}
+          resources: {{ toYaml .Values.node.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: proc, mountPath: /host/proc, readOnly: true}
+            - {name: token, mountPath: /run/jood-token, readOnly: true}
+            - {name: ca, mountPath: /run/jood-ca, readOnly: true}
+            {{- range .Values.node.filesystems }}
+            - {name: "fs-{{ .name }}", mountPath: "/host/fs/{{ .name }}", readOnly: true}
+            {{- end }}
+      volumes:
+        - name: proc
+          hostPath: {path: /proc, type: Directory}
+        - name: token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 3600, audience: jood-monitor-node}
+        - name: ca
+          configMap: {name: {{ .Values.observerCAConfigMap }}}
+        {{- range .Values.node.filesystems }}
+        - name: "fs-{{ .name }}"
+          hostPath: {path: {{ .hostPath | quote }}, type: DirectoryOrCreate}
+        {{- end }}

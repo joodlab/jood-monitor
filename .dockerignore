@@ -1,0 +1,14 @@
+.git
+.tools
+.tmp
+node_modules
+**/node_modules
+**/.output
+**/.source
+.env*
+dist
+coverage
+test-results
+.playwright-cli
+output
+docs/evidence

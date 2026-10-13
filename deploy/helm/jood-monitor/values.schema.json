@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "hubURL"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "digest"],
+      "properties": {
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "repository": { "type": "string", "minLength": 1 }
+      }
+    },
+    "hubURL": { "type": "string", "pattern": "^https://[^/]+$" },
+    "node": {
+      "type": "object",
+      "properties": {
+        "standardNetworkInterfaces": {
+          "$ref": "#/definitions/deviceSelection"
+        },
+        "standardDiskDevices": { "$ref": "#/definitions/deviceSelection" },
+        "filesystems": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["name", "hostPath", "logicalPath"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,20}$" },
+              "hostPath": {
+                "type": "string",
+                "pattern": "^/var/lib/jood-monitor-fs(/[^.]+)?$"
+              },
+              "logicalPath": { "type": "string", "pattern": "^/" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "deviceSelection": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_.:-]+$"
+      }
+    }
+  }
+}

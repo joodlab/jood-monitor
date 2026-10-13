@@ -1,0 +1,56 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+  "extends": ["ultracite/biome/core", "ultracite/biome/react"],
+  "javascript": {
+    "globals": ["WebSocketPair", "WebSocketRequestResponsePair"]
+  },
+  "files": {
+    "includes": [
+      "!**/routeTree.gen.ts",
+      "!packages/api-client/src/schema.d.ts",
+      "!contracts/openapi",
+      "!**/.source",
+      "!**/.output",
+      "!**/content",
+      "!**/.tools",
+      "!**/.tmp",
+      "!**/dist",
+      "!**/src/contracts/generated",
+      "!**/src/db/contract.d.ts",
+      "!**/src/db/contract.json",
+      "!**/src/db/migrations/prisma",
+      "!**/.agents",
+      "!**/.claude",
+      "!**/.cursor",
+      "!**/.devin"
+    ]
+  },
+  "overrides": [
+    {
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noDocumentCookie": "off"
+          },
+          "a11y": {
+            "noLabelWithoutControl": "off"
+          },
+          "performance": {
+            "noNamespaceImport": "off"
+          }
+        }
+      },
+      "includes": ["packages/ui/src/**"]
+    },
+    {
+      "linter": {
+        "rules": {
+          "style": {
+            "useFilenamingConvention": "off"
+          }
+        }
+      },
+      "includes": ["apps/*/src/routes/**"]
+    }
+  ]
+}

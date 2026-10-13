@@ -1,0 +1,14 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jood-monitor-observer
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector: {matchLabels: {app: jood-monitor-observer}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app: jood-monitor-node}}
+      ports: [{protocol: TCP, port: 8081}]
+{{- end }}

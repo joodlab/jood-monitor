@@ -1,0 +1,33 @@
+image:
+  repository: ghcr.io/lord007tn/jood-monitor/agent
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+hubURL: ""
+credentialSecret: jood-monitor-hub
+observerTLSSecret: jood-monitor-observer-tls
+observerCAConfigMap: jood-monitor-observer-ca
+observer:
+  nodeSelector: {kubernetes.io/arch: amd64, kubernetes.io/os: linux}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {cpu: 250m, memory: 256Mi}
+node:
+  nodeSelector: {kubernetes.io/arch: amd64, kubernetes.io/os: linux}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 100m, memory: 128Mi}
+  # Optional empty host marker dirs; verify filesystem identity before enabling.
+  # Example: [{name: root, hostPath: /var/lib/jood-monitor-fs, logicalPath: /}]
+  filesystems: []
+  # Select verified physical interfaces and whole disks for Standard counters.
+  # Empty lists omit those counters. Diagnostic retains the broad device view.
+  standardNetworkInterfaces: []
+  standardDiskDevices: []
+vpaEnabled: true
+networkPolicy:
+  enabled: false

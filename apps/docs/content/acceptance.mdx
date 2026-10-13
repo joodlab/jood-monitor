@@ -1,0 +1,23 @@
+---
+title: Acceptance checklist
+description: Verify a real deployment separately from local and CI checks.
+---
+
+The included tests exercise native D1 migrations and Prisma queries, scoped
+auth, one-use enrollment, exact protobuf values, durable retry/restart and
+archive failure recovery. They use synthetic fixtures. They do not establish
+acceptance of a particular infrastructure deployment.
+
+For each release verify:
+
+- Reviewed source revision, CI, immutable agent artifacts and deployed identity.
+- Dashboard and docs on desktop and mobile, keyboard navigation and error states.
+- Real observer and node identities, intended workspace and collection scope.
+- Independently matched source CPU/memory, exact counters, units and timestamps.
+- Freshness and gaps, profile acknowledgments, local Diagnostic expiry and pause.
+- Bounded CPU, memory, network, spool and archive overhead under actual workload.
+- Retry, backlog recovery, retention barriers, isolated restore and safe rollback.
+
+Record dated evidence privately. Separate observed values, provider verification,
+reported lifecycle receipts and unknown attribution. A passing build, ready
+endpoint or running Pod cannot substitute for the checks above.

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://turborepo.org/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".cloudflare/output/**"]
+    },
+    "dev": { "persistent": true, "cache": false },
+    "test": { "outputs": [] },
+    "typecheck": { "dependsOn": ["^build"], "outputs": [] },
+    "generate": { "cache": false }
+  }
+}

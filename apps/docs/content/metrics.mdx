@@ -1,0 +1,49 @@
+---
+title: Metrics and history
+description: Supported units, exact values, source freshness and retention.
+---
+
+The hub accepts OTLP/HTTP **protobuf metrics** at `/v1/metrics`, optionally
+gzip compressed, from an enrolled cluster. Histograms, logs and traces are
+not supported. Unsupported points produce an OTLP partial-success response.
+
+| Metric | Unit | Kind |
+| --- | --- | --- |
+| `system.cpu.time` | seconds | cumulative or delta sum |
+| `system.memory.usage`, `system.memory.limit` | bytes | gauge |
+| `system.network.io`, `system.disk.io` | bytes | sum |
+| `system.network.errors` | errors | sum |
+| `system.filesystem.usage` | bytes | gauge |
+| `system.filesystem.inodes.usage` | inodes | gauge |
+| `k8s.node.cpu.usage`, `k8s.pod.cpu.usage`, `container.cpu.usage` | CPU cores | gauge |
+| `k8s.node.memory.usage`, `k8s.pod.memory.usage`, `container.memory.usage` | bytes | gauge |
+
+Raw values retain signed int64 precision. Source and start nanoseconds remain
+exact strings or BigInt. Conversion for chart presentation does not replace
+the original stored observation. Source and receipt time are distinct.
+
+Only `jood.source.window` is excluded from semantic series identity. Original
+resource, scope and attributes remain in raw history and OTLP exports.
+OpenMetrics projects supported cumulative counters and deduplicates label sets.
+
+## Retention
+
+Raw observations retain seven days; Diagnostic raw data retains one day.
+Five-minute summaries retain thirty days. Hourly summaries, inventories and
+events retain 180 days. Expiration waits for required summaries to commit.
+Counter resets and collection gaps are reflected in coverage and delta fields.
+
+History queries require workspace and cluster scope. Narrow large queries to
+an entity and metric. A quota error is explicit; an incomplete result should
+not be presented as a complete chart.
+
+## Limits
+
+Requests have a four MiB compressed and decompressed body limit. A telemetry
+batch contains at most 10,000 points and sixteen MiB of normalized records.
+Inventories contain at most 10,000 entities and 20,000 edges. Operator snapshots
+have a 6,000 active-series response limit. Archive partitions are bounded.
+
+The durable archival buffer applies backpressure below 448 MiB. Account storage,
+CPU, database and queue limits are additional constraints. Measure the actual
+workload and archive throughput before extending collection scope.

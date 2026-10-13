@@ -1,0 +1,67 @@
+---
+title: Installation
+description: Deploy the hub and documentation with the Cloudflare cf CLI.
+---
+
+The hub is a TanStack Start Worker with D1, SQLite Durable Objects, R2 and
+Queues. Documentation is an independent Fumadocs Worker. Go agents run on
+the infrastructure you monitor.
+
+## Deploy button
+
+The README's Deploy to Cloudflare button clones the entire workspace because
+the hub imports shared packages. Provide an operator username and random
+password of at least 16 characters. The button provisions the declared resources;
+the custom deploy command uses `cf`, applies D1 migrations, and deploys the hub.
+
+`wrangler.json` supplies discovery metadata for the button. Actual configuration
+lives in `apps/app/cloudflare.config.ts`. Build and deploy commands must run from
+the repository root. Deploy documentation separately with `pnpm deploy:docs`.
+
+## Manual deployment
+
+Use Node.js 24 and pnpm 10.30.3. Use your existing `cf` authentication, or sign
+in once to the account you intend to deploy into. Set `CLOUDFLARE_ACCOUNT_ID`.
+The deploy script creates missing D1, R2 and Queue resources in that account;
+it does not purchase plans or capacity.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @jood-monitor/app exec cf auth whoami
+```
+
+Create a private `.secrets.production.env` file containing `OPERATOR_USER` and
+`OPERATOR_PASSWORD`. Optionally set `APP_ORIGIN` to the exact HTTPS serving
+origin. By default the hub derives it from the incoming HTTPS URL. Operator
+mutations and WebSocket connections require that same origin; mutations also
+require `X-Jood-CSRF: 1`.
+
+```sh
+pnpm deploy:app --secrets-file /absolute/path/.secrets.production.env
+pnpm deploy:docs
+```
+
+Set `MONITOR_DOCS_URL` to the docs site's `/docs` URL when deploying the hub.
+The hub redirects documentation links to that independent Worker. Optional
+`MONITOR_WORKER_NAME` selects an isolated hub and its resources;
+`MONITOR_DB_ID` must match that database. `MONITOR_DOMAIN` and
+`MONITOR_DOCS_DOMAIN` configure custom domains after DNS ownership is verified.
+
+Open the hub, authenticate, create a workspace and enroll a cluster.
+`/health` identifies the Worker version and source tag. `/ready` checks operator
+configuration and D1 availability. Check agent freshness separately.
+
+## Local development
+
+Copy `apps/app/.dev.vars.example` to private `.dev.vars` and set a random
+operator password. Local HTTP is allowed only on loopback hosts. Migrations
+and Vite share the app's `.cloudflare/state` directory.
+
+```sh
+pnpm db:emit
+pnpm --filter @jood-monitor/app db:migrate:local
+pnpm --filter @jood-monitor/app dev
+pnpm --filter @jood-monitor/docs dev
+```
+
+See [acceptance](/docs/acceptance) before a production cutover.

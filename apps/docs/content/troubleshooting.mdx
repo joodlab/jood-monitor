@@ -1,0 +1,36 @@
+---
+title: Troubleshooting
+description: Investigate unavailable data, stale observations and delivery failures.
+---
+
+## Authentication or enrollment failed
+
+Check the exact operator origin, Basic Auth credentials and CSRF header.
+Machines use scoped Bearer credentials. An enrollment token is short lived and
+single use. Verify cluster identity and revocation state without logging tokens.
+
+## Inventory exists but metrics are missing
+
+Check source timestamps, declared units, known UIDs, collection profile and
+reported rejected points. Inventory counts and Metrics API serving-resource
+counts need not be equal. Completed or unsampled workloads must not be shown
+as measured zero usage.
+
+## Profile is pending
+
+Distinguish observer receipt from node application. Inspect selected-node
+acknowledgments and their age. Diagnostic expires locally; stale hub state
+cannot prove a node is still collecting it.
+
+## Delivery or history is unavailable
+
+Inspect retryable status, queue bytes, drops, rejected points and archival
+backlog. Do not clear a spool to hide a delivery problem. Narrow broad history
+queries. Preserve durable buffers while investigating R2 or D1 availability.
+
+## Source comparison differs
+
+Capture the actual collector input or bracket the saved observation by exact
+UID, source nanoseconds, window and metric metadata. A later API read can have
+different values with a shared timestamp. Preserve failed attempts and
+incomplete captures; do not invent a source variant or claim a match.

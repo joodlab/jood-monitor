@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jood-monitor-observer
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: jood-monitor-observer}
+  template:
+    metadata:
+      labels: {app: jood-monitor-observer}
+    spec:
+      serviceAccountName: jood-monitor-observer
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      nodeSelector: {{ toYaml .Values.observer.nodeSelector | nindent 8 }}
+      tolerations: {{ toYaml .Values.observer.tolerations | nindent 8 }}
+      affinity: {{ toYaml .Values.observer.affinity | nindent 8 }}
+      containers:
+        - name: observer
+          image: "{{ .Values.image.repository }}@{{ required "image.digest is required" .Values.image.digest }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: JOOD_MODE, value: observer}
+            - {name: JOOD_HUB_URL, value: {{ required "HTTPS hubURL required" .Values.hubURL | quote }}}
+            - {name: JOOD_CREDENTIAL_FILE, value: /run/jood-hub/credential}
+            - {name: JOOD_TLS_CERT_FILE, value: /run/jood-tls/tls.crt}
+            - {name: JOOD_TLS_KEY_FILE, value: /run/jood-tls/tls.key}
+            - {name: JOOD_SPOOL_DIR, value: /var/spool/jood}
+            - {name: JOOD_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: JOOD_NODE_SERVICE_ACCOUNT, value: jood-monitor-node}
+          ports: [{name: https, containerPort: 8081}]
+          resources: {{ toYaml .Values.observer.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /health, port: https, scheme: HTTPS}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /health, port: https, scheme: HTTPS}, periodSeconds: 30}
+          volumeMounts:
+            - {name: credential, mountPath: /run/jood-hub, readOnly: true}
+            - {name: tls, mountPath: /run/jood-tls, readOnly: true}
+            - {name: spool, mountPath: /var/spool/jood}
+      volumes:
+        - name: credential
+          secret: {secretName: {{ .Values.credentialSecret }}, defaultMode: 0440}
+        - name: tls
+          secret: {secretName: {{ .Values.observerTLSSecret }}, defaultMode: 0440}
+        - name: spool
+          emptyDir: {sizeLimit: 12Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jood-monitor-observer
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {app: jood-monitor-observer}
+  ports: [{name: https, port: 8081, targetPort: https}]

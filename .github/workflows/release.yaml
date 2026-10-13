@@ -1,0 +1,41 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: {fetch-depth: 0}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with: {node-version: 24, cache: pnpm}
+      - uses: actions/setup-go@v6
+        with: {go-version-file: go.mod}
+      - uses: azure/setup-helm@v4.3.1
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/release/verify.mjs "$GITHUB_REF_NAME"
+      - run: pnpm lint && pnpm typecheck && pnpm test && pnpm test:worker && pnpm knip
+      - run: go test ./... && go vet ./...
+      - name: Build versioned Go agents and Helm chart
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64; do
+            os=${target%/*}; arch=${target#*/}; ext=''; if [[ "$os" == windows ]]; then ext='.exe'; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}+${GITHUB_SHA}" -o "dist/jood-monitor-agent-${GITHUB_REF_NAME}-${os}-${arch}${ext}" ./apps/agent
+          done
+          helm package deploy/helm/jood-monitor --version "${GITHUB_REF_NAME#v}" --app-version "$GITHUB_REF_NAME" --destination dist
+          node scripts/release/manifest.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          node scripts/release/licenses.mjs dist/third-party-licenses.txt --go
+          cp LICENSE dist/LICENSE
+          cd dist
+          sha256sum jood-monitor-* release.json third-party-licenses.txt LICENSE > SHA256SUMS
+      - name: Publish release notes and artifacts with changelogithub
+        run: pnpm exec changelogithub --to "$GITHUB_REF_NAME" --name "Jood Monitor $GITHUB_REF_NAME" --assets 'dist/*'
+        env: {GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}

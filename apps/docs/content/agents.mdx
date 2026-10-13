@@ -1,0 +1,63 @@
+---
+title: Go agents
+description: Scoped Kubernetes collection, enrollment and local buffering.
+---
+
+An observer discovers Kubernetes inventory, reads Metrics API resource usage,
+receives authorized node telemetry and sends batches outbound to the hub. A
+DaemonSet collector gathers supported host metrics on eligible nodes. Neither
+component performs application remediation or arbitrary shell execution.
+
+## Enrollment
+
+Create a workspace and cluster in the hub. An enrollment token expires after
+thirty minutes and can be consumed once. Save it in a private file, then use
+the helper without placing it in command history:
+
+```sh
+chmod 600 enrollment-token.txt
+python scripts/enroll-agent.py https://monitor.example.com my-cluster enrollment-token.txt hub-credential.txt
+```
+
+The helper saves a scoped credential privately and refuses to overwrite an
+existing credential. Store the credential in a Kubernetes Secret. Keep the
+cluster ID, observer TLS certificate and key, trusted CA, dedicated service
+accounts and projected token audience aligned with the chart.
+
+The chart requires an immutable agent image digest. Review its RBAC, placement,
+resource budgets and network policy against your environment before installation.
+Existing infrastructure and autoscaler ownership remain outside the monitor.
+
+## Collection profiles
+
+- **Basic:** low-frequency bounded host collection and resource visibility.
+- **Standard:** additional selected physical interface and whole-disk counters.
+- **Diagnostic:** selected nodes for at most ten minutes, then a local return
+  to the prior profile. Hub availability is not required for local expiry.
+
+Profile receipt by the observer and application by each node are separate
+acknowledgments. A current observer heartbeat does not establish all nodes have
+applied the profile. Pausing collection preserves stored history.
+
+## Buffering and identity
+
+The observer spool is bounded. Accepted batches are removed after a successful
+protobuf acknowledgment. Retries respect backpressure and preserve batch order.
+Node buffers are bounded and have their own expiry. Reported drops and rejected
+points remain visible.
+
+Node authentication uses Kubernetes TokenReview, a dedicated audience and the
+bound Pod, service account and node identity. Collectors communicate with the
+observer over verified TLS. The observer authenticates to the hub using its
+scoped credential.
+
+## Credential recovery
+
+Renew enrollment for an unfinished or revoked cluster using the same ID.
+An active credential must be explicitly revoked before renewal. Rotation and
+revocation are operator actions; upgrades do not perform them automatically.
+Preserve verifier continuity during a hub migration.
+
+If the observer uses an `emptyDir` spool, recreating its Pod can discard pending
+batches. Verify an empty queue and safe handoff or provide persistent spool
+storage before a rollout. Deployment readiness alone does not prove this.

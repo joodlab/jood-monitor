@@ -1,0 +1,78 @@
+---
+title: Maintenance and recovery
+description: Durable acceptance, archival retries and coordinated backups.
+---
+
+A cluster Durable Object commits accepted samples and deduplication state
+transactionally before returning an OTLP success. Queue notifications start
+archival work; durable alarms retry it if notification delivery fails.
+
+Raw and summary objects are compressed, immutable and content checked. D1
+indexes are published after successful upload. The archival outbox clears
+only committed samples and retains concurrently arriving generations.
+Storage failures preserve the buffer and can return retryable backpressure.
+
+## Backup
+
+Protect D1 configuration and archive indexes, Durable Object state, credential
+verifiers and R2 objects as one logical system. An index backup without its
+referenced objects cannot recover telemetry. Use provider recovery facilities
+and protected exports according to your account's retention and plan limits.
+
+Rehearse recovery into an isolated target. Verify object checksums, identity,
+profile revisions, pending buffers, retry deduplication, history and source
+freshness before redirecting agents or clients. Keep private backup receipts
+outside public source and release artifacts.
+
+## Migration and rollback
+
+Preserve workspace/cluster identities, verifiers, revocation state, profiles,
+source/start timestamps, exact raw values, original metadata, inventories and
+lifecycle evidence. Use one authoritative writer during cutover.
+
+Record the cutover boundary. Drain or replay pending data and independently
+compare the candidate's current values and history. A rollback must reconcile
+data accepted after the boundary before returning to an earlier database.
+Changing DNS alone does not provide that recovery.
+
+Migration endpoints are disabled in normal deployments. Enable
+`MONITOR_MIGRATION=1` only for an isolated restore target. While enabled, machine
+writes return retryable `503`; the target cannot accept live agent traffic.
+Operator imports still require Basic Auth, the exact Origin and `X-Jood-CSRF: 1`.
+
+Use `/api/v1/import/registry` for identities and existing credential verifiers,
+`/api/v1/import/observation?cluster=...` for the latest saved inventory and its
+original receipt times, and `/api/v1/import/history?cluster=...` for bounded
+historical points and lifecycle records. The archive import route
+`/api/v1/import/archive?cluster=...` restores a complete immutable partition
+without passing through the live queue. Raw restores regenerate modern
+five-minute and hourly summaries. Existing archives with different content
+return a conflict. Retries of an identical completed restore are idempotent.
+
+For legacy inventory observations that never recorded a profile, heartbeat or
+receipt time, preserve those fields as `null`. Historical snapshots report
+`observationMetadataAvailable` rather than borrowing current acknowledgments.
+
+Legacy summary, change and pending-rollup records can be preserved as
+`legacy-rollups`, `legacy-changes` and `legacy-dirty` archives. These are retained
+source evidence; they are not presented as modern summaries with fields absent
+from the source. Record original row counts, time bounds and conversion digests
+in a protected migration receipt.
+
+Authenticated `/api/v1/export/archives?workspace=...&cluster=...` lists archive
+indexes with a cursor. `/api/v1/export/archive?workspace=...&cluster=...&id=...`
+reads and checksum-verifies an indexed object. Keep exports private. Enumeration
+while a writer is active is not a consistent backup: fence writes, drain pending
+work and verify the same boundary before creating a recovery manifest. Recovery
+also needs registry verifiers and Durable Object state; telemetry exports alone
+do not recover enrollment or acknowledgments.
+
+After parity and recovery checks, redeploy without `MONITOR_MIGRATION`. Confirm
+import routes return `403` and only then redirect live agents to the target.
+
+## Upgrades
+
+Review release notes and immutable artifacts. Validate new Prisma contracts and
+migrations locally, then run native workerd recovery tests and staging checks.
+Go agent images are built manually; deploy a reviewed digest. Keep existing
+credentials and infrastructure ownership intact.

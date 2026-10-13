@@ -1,0 +1,170 @@
+import type { z } from "zod";
+import type { ArchiveDocument, StoredMetric } from "../../contracts/types";
+import { findArchive } from "../../data-access/clusters";
+import { getDb } from "../../db";
+import type { Env } from "../../env";
+import { hash } from "../../lib/server/crypto";
+import { HttpError } from "../../lib/server/http";
+import {
+  encodeTelemetry,
+  metricKey,
+  metricSeries,
+} from "../../lib/server/telemetry";
+import {
+  bucketStart,
+  nanoTimestamp,
+  timestampNano,
+} from "../../lib/server/time";
+import {
+  type archiveImportSchema,
+  historicalObservationSchema,
+  storedMetricSchema,
+} from "../../schemas/migration";
+import { archiveId, writeArchive } from "../archives";
+import { normalizeTime } from "../clusters";
+
+export function historicalMetric(
+  raw: z.infer<typeof storedMetricSchema>,
+  clusterId: string
+): StoredMetric {
+  const nano = BigInt(raw.timeUnixNano);
+  const start = BigInt(raw.startTimeUnixNano);
+  if (
+    raw.clusterId !== clusterId ||
+    nano < 0n ||
+    nano > 9_223_372_036_854_775_807n ||
+    start < 0n ||
+    start > nano ||
+    timestampNano(normalizeTime(raw.sourceTime)) !== nano ||
+    !Number.isFinite(Number(raw.value)) ||
+    (raw.integer &&
+      (BigInt(raw.value).toString() !== raw.value ||
+        BigInt(raw.value) < -9_223_372_036_854_775_808n ||
+        BigInt(raw.value) > 9_223_372_036_854_775_807n))
+  ) {
+    throw new HttpError(400, "invalid historical metric scope or precision");
+  }
+  const point = {
+    ...raw,
+    sourceTime: nanoTimestamp(nano),
+    receivedAt: normalizeTime(raw.receivedAt),
+    key: "",
+    series: "",
+  };
+  point.key = metricKey(point);
+  point.series = metricSeries(point);
+  return point;
+}
+
+function legacyScopeValid(data: unknown, clusterId: string) {
+  return (
+    Array.isArray(data) &&
+    data.length <= 5000 &&
+    data.every(
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        (row as Record<string, unknown>).cluster_id === clusterId
+    )
+  );
+}
+
+const metricKinds = new Set(["raw", "diagnostic"]);
+
+export async function importArchive(
+  env: Env,
+  clusterId: string,
+  input: z.infer<typeof archiveImportSchema>
+) {
+  const sourceStart = normalizeTime(input.sourceStart);
+  const sourceEnd = normalizeTime(input.sourceEnd);
+  if (
+    sourceStart > sourceEnd ||
+    Date.parse(input.expiresAt) <= Date.parse(sourceEnd)
+  ) {
+    throw new HttpError(400, "invalid archive source interval or retention");
+  }
+  let data = input.data;
+  let maximumId = 0;
+  let metrics: StoredMetric[] | null = null;
+  if (metricKinds.has(input.kind)) {
+    const rows = storedMetricSchema
+      .array()
+      .max(10_000)
+      .parse(data)
+      .map((row) => historicalMetric(row, clusterId));
+    encodeTelemetry(rows);
+    if (
+      sourceStart !== bucketStart(timestampNano(sourceStart).toString()) ||
+      timestampNano(sourceEnd) !==
+        timestampNano(sourceStart) + 300_000_000_000n - 1n
+    ) {
+      throw new HttpError(
+        400,
+        "raw restore requires a complete five-minute partition"
+      );
+    }
+    if (
+      input.points !== rows.length ||
+      rows.some(
+        (row) =>
+          row.entityUid !== input.entityUid ||
+          row.sourceTime < sourceStart ||
+          row.sourceTime > sourceEnd ||
+          row.diagnostic !== (input.kind === "diagnostic")
+      )
+    ) {
+      throw new HttpError(400, "archive partition scope mismatch");
+    }
+    const keyed = new Map(rows.map((row) => [row.key, row]));
+    if (keyed.size !== rows.length) {
+      throw new HttpError(400, "duplicate archive metric identities");
+    }
+    maximumId = Math.max(0, ...rows.map((row) => row.id));
+    data = rows;
+    metrics = rows;
+  } else if (input.kind === "inventory") {
+    const observation = historicalObservationSchema.parse(data);
+    if (
+      normalizeTime(observation.inventory.sourceTime) !== sourceStart ||
+      observation.observationId !== input.entityUid ||
+      input.points !== 0
+    ) {
+      throw new HttpError(400, "archive observation scope mismatch");
+    }
+    data = observation;
+  } else if (!legacyScopeValid(data, clusterId)) {
+    throw new HttpError(400, "legacy archive scope mismatch");
+  }
+  // Preserve a legacy representation as evidence instead of inventing modern summary fields.
+  const document: ArchiveDocument = {
+    version: 1,
+    clusterId,
+    kind: input.kind,
+    entityUid: input.entityUid,
+    sourceStart,
+    sourceEnd,
+    expiresAt: input.expiresAt,
+    sourceDigest: input.sourceDigest,
+    data,
+  };
+  const id = archiveId(clusterId, input.kind, input.entityUid, sourceStart);
+  const contentHash = hash(JSON.stringify(document));
+  const previous = await findArchive(getDb(env.DB), id);
+  if (previous && previous.contentHash !== contentHash) {
+    throw new HttpError(
+      409,
+      "existing archive cannot be overwritten during restore"
+    );
+  }
+  // Re-uploading identical content also repairs an indexed object lost before a retry.
+  await writeArchive(env, document, input.points);
+  return {
+    status: previous ? "already restored" : "restored",
+    id,
+    contentHash,
+    sourceDigest: input.sourceDigest,
+    maximumId,
+    metrics,
+  };
+}

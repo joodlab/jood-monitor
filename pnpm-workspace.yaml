@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+overrides:
+  # Fumadocs 16 wraps Markdown handlers without the attention metadata added in 2.1.3.
+  mdast-util-to-markdown: 2.1.2
+  seroval: 1.6.9
+  source-map-js: 1.2.2
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver
+  - workerd
+  - '@bufbuild/buf'

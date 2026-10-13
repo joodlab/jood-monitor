@@ -1,0 +1,41 @@
+{
+  "name": "jood-monitor",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build --filter=@jood-monitor/app --filter=@jood-monitor/docs",
+    "test": "turbo run test --filter=@jood-monitor/app",
+    "typecheck": "turbo run typecheck --filter=@jood-monitor/app --filter=@jood-monitor/docs --filter=@jood-monitor/api-client",
+    "lint": "ultracite check",
+    "fix": "ultracite fix",
+    "knip": "knip",
+    "generate": "pnpm --filter @jood-monitor/api-client generate",
+    "proto:generate": "buf generate",
+    "prepare": "husky",
+    "db:emit": "pnpm --filter @jood-monitor/app db:emit",
+    "db:sql": "node scripts/db/prisma-to-d1.mjs",
+    "test:worker": "pnpm --filter @jood-monitor/app test:worker",
+    "release:notes": "changelogithub",
+    "deploy": "node scripts/cloudflare/deploy.mjs app",
+    "deploy:app": "node scripts/cloudflare/deploy.mjs app",
+    "deploy:docs": "node scripts/cloudflare/deploy.mjs docs"
+  },
+  "devDependencies": {
+    "cf": "1.0.0-beta.12",
+    "@biomejs/biome": "2.4.15",
+    "@types/node": "22.19.15",
+    "husky": "9.1.7",
+    "knip": "6.15.0",
+    "turbo": "2.9.16",
+    "typescript": "5.9.3",
+    "ultracite": "7.7.0",
+    "vitest": "4.1.10",
+    "changelogithub": "15.0.5",
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.16.0"
+  },
+  "version": "0.1.0",
+  "license": "MIT"
+}

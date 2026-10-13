@@ -1,0 +1,9 @@
+{
+  "name": "@jood-monitor/agent",
+  "private": true,
+  "scripts": {
+    "build": "go build -o ../../dist/agent .",
+    "test": "go test .",
+    "typecheck": "go vet ."
+  }
+}
