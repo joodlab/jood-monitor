@@ -37,7 +37,10 @@ Changing DNS alone does not provide that recovery.
 
 Migration endpoints are disabled in normal deployments. Enable
 `MONITOR_MIGRATION=1` only for an isolated restore target. While enabled, machine
-writes return retryable `503`; the target cannot accept live agent traffic.
+writes and normal operator mutations return retryable `503`; the target cannot
+accept live agent traffic or collection-control changes. Expiration is suspended
+on this isolated target so its imported base stays stable until source retention
+deletions are reconciled. Normal deployment resumes expiration.
 Operator imports still require Basic Auth, the exact Origin and `X-Jood-CSRF: 1`.
 
 Use `/api/v1/import/registry` for identities and existing credential verifiers,
@@ -55,6 +58,30 @@ independent immutable objects in bounded groups, then commits five-minute
 summaries before rebuilding affected hours. A failed batch may have durably
 stored some objects; retry the same inputs and require all receipts before
 marking the batch complete or opening live ingestion.
+
+After a base restore, `/api/v1/import/reconcile-archives?cluster=...` applies
+bounded complete replacements and deletion records. Replacements require the
+expected current content hash, or `null` for a previously absent partition.
+Deletion records require the current hash and the complete scoped archive
+identity. Stale preconditions return `409`; identical completed retries are
+idempotent. A partial archive batch can persist some operations, so require all
+receipts and final read-back verification. Superseded objects keep their garbage
+collection grace period. Fresh raw replacements rebuild affected summaries;
+expired raw deletions preserve already committed historical summaries.
+
+`/api/v1/import/reconcile-events?cluster=...` applies checked event updates and
+tombstones in one Durable Object transaction. `/api/v1/import/reconcile-state`
+sets the source's saved inventory, heartbeat, profile, receipt times and latest
+metric observations, with an expected state hash. It preserves source clocks
+rather than marking an imported observation fresh. Apply state only after its
+history and registry have been reconciled.
+
+For a final incremental reconciliation, capture source row membership and
+changes to existing rows, including source retention deletions. A maximum ID or
+timestamp alone misses same-ID updates, late arrivals and deleted rows. Fence
+every source writer, including background maintenance, and prove the final
+boundary before enabling the target. Any source change journal must be installed
+and validated under the source owner's resource and failure controls.
 
 For legacy inventory observations that never recorded a profile, heartbeat or
 receipt time, preserve those fields as `null`. Historical snapshots report
@@ -78,6 +105,15 @@ while a writer is active is not a consistent backup: fence writes, drain pending
 work and verify the same boundary before creating a recovery manifest. Recovery
 also needs registry verifiers and Durable Object state; telemetry exports alone
 do not recover enrollment or acknowledgments.
+
+`/api/v1/import/drain?cluster=...` drains bounded pending archival work while
+machine ingestion is fenced, including the current partial source bucket.
+Repeat until buffered points, dirty partitions and pending inventories are zero.
+Protected `/api/v1/export/state` then exports saved observation metadata, exact
+latest points and their state hash. `/api/v1/export/events` enumerates lifecycle
+records in pages with checksums. Both exports require workspace and cluster scope.
+These are parts of a recovery manifest; registry verifiers, referenced R2 objects
+and any retry state still require coordinated protected backup.
 
 After parity and recovery checks, redeploy without `MONITOR_MIGRATION`. Confirm
 import routes return `403` and only then redirect live agents to the target.

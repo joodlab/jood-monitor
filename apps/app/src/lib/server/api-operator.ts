@@ -19,6 +19,7 @@ import {
   eventsSchema,
   historySchema,
   profileSchema,
+  recoveryExportSchema,
   snapshotSchema,
   workspaceSchema,
 } from "../../schemas/clusters";
@@ -105,6 +106,24 @@ export async function operatorApi(request: Request, env: Env, url: URL) {
       case "/api/v1/export/archives":
       case "/api/v1/export/archive":
         return json(await exportArchives(env, url));
+      case "/api/v1/export/state":
+      case "/api/v1/export/events": {
+        const input = recoveryExportSchema.parse(query);
+        const cluster = await requireCluster(
+          env,
+          input.cluster,
+          input.workspace
+        );
+        return json(
+          unwrap(
+            await clusterState(env, cluster.id).command(
+              cluster,
+              path.endsWith("/state") ? "exportState" : "exportEvents",
+              input.cursor ?? ""
+            )
+          )
+        );
+      }
       default:
         return controlApi(request, env, path);
     }

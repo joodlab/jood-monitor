@@ -75,6 +75,23 @@ function legacyScopeValid(data: unknown, clusterId: string) {
 const metricKinds = new Set(["raw", "diagnostic"]);
 const compactKinds = new Set(["inventory-content", "inventory-receipts"]);
 
+function archivePrecondition(
+  previous: { contentHash: string } | null,
+  desiredHash: string,
+  expectedHash?: string | null
+) {
+  if (previous?.contentHash === desiredHash) {
+    return;
+  }
+  if (
+    expectedHash === undefined
+      ? !!previous
+      : (previous?.contentHash ?? null) !== expectedHash
+  ) {
+    throw new HttpError(409, "archive restore checksum precondition differs");
+  }
+}
+
 async function compactInventory(
   env: Env,
   clusterId: string,
@@ -116,7 +133,8 @@ async function compactInventory(
 export async function importArchive(
   env: Env,
   clusterId: string,
-  input: z.infer<typeof archiveImportSchema>
+  input: z.infer<typeof archiveImportSchema>,
+  expectedContentHash?: string | null
 ) {
   const sourceStart = normalizeTime(input.sourceStart);
   const sourceEnd = normalizeTime(input.sourceEnd);
@@ -201,16 +219,12 @@ export async function importArchive(
   const id = archiveId(clusterId, input.kind, input.entityUid, sourceStart);
   const contentHash = hash(JSON.stringify(document));
   const previous = await findArchive(getDb(env.DB), id);
-  if (previous && previous.contentHash !== contentHash) {
-    throw new HttpError(
-      409,
-      "existing archive cannot be overwritten during restore"
-    );
-  }
+  archivePrecondition(previous, contentHash, expectedContentHash);
   // Re-uploading identical content also repairs an indexed object lost before a retry.
   await writeArchive(env, document, input.points);
   return {
-    status: previous ? "already restored" : "restored",
+    status:
+      previous?.contentHash === contentHash ? "already restored" : "restored",
     id,
     contentHash,
     sourceDigest: input.sourceDigest,

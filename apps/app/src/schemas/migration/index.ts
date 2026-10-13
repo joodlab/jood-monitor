@@ -25,9 +25,9 @@ export const observationImportSchema = z.strictObject({
   heartbeat: heartbeatSchema,
   profile: profileSchema,
   times: z.strictObject({
-    inventoryTime: z.string().nullable(),
-    receivedAt: z.string().nullable(),
-    heartbeatAt: z.string().nullable(),
+    inventoryTime: z.string().datetime({ precision: null }).nullable(),
+    receivedAt: z.string().datetime({ precision: null }).nullable(),
+    heartbeatAt: z.string().datetime({ precision: null }).nullable(),
   }),
 });
 
@@ -65,7 +65,7 @@ export const storedMetricSchema = z.strictObject({
   scope: z.string().max(8192),
   attributes: z.string().max(8192),
 });
-const lifecycle = z.strictObject({
+const lifecycleImportSchema = z.strictObject({
   id: z.string().min(1).max(128),
   clusterId: z.string().min(1).max(64),
   kind: z.string().max(64),
@@ -79,7 +79,7 @@ const lifecycle = z.strictObject({
 export const historyImportSchema = z.strictObject({
   batchId: z.string().regex(/^[a-f0-9]{64}$/),
   metrics: z.array(storedMetricSchema).max(5000).default([]),
-  events: z.array(lifecycle).max(1000).default([]),
+  events: z.array(lifecycleImportSchema).max(1000).default([]),
   observations: z
     .array(
       observationImportSchema.extend({
@@ -110,3 +110,50 @@ export const archiveImportSchema = z.strictObject({
   data: z.unknown(),
 });
 export const archivesImportSchema = archiveImportSchema.array().min(1).max(32);
+
+const checksum = z.string().regex(/^[a-f0-9]{64}$/);
+export const archivesReconcileSchema = z
+  .strictObject({
+    replacements: z
+      .array(
+        z.strictObject({
+          expectedContentHash: checksum.nullable(),
+          archive: archiveImportSchema,
+        })
+      )
+      .max(32)
+      .default([]),
+    deletions: z
+      .array(
+        z.strictObject({
+          id: checksum,
+          expectedContentHash: checksum,
+          kind: archiveImportSchema.shape.kind.exclude(["inventory-content"]),
+          entityUid: z.string().max(128),
+          sourceStart: z.string(),
+        })
+      )
+      .max(32)
+      .default([]),
+  })
+  .refine((input) => {
+    const count = input.replacements.length + input.deletions.length;
+    return count > 0 && count <= 32;
+  });
+
+export const stateReconcileSchema = z.strictObject({
+  expectedStateHash: checksum.nullable(),
+  observation: observationImportSchema,
+  latestMetrics: z.array(storedMetricSchema).max(6000),
+});
+
+export const eventsReconcileSchema = z
+  .array(
+    z.strictObject({
+      id: z.string().min(1).max(128),
+      expectedHash: checksum.nullable(),
+      event: lifecycleImportSchema.nullable(),
+    })
+  )
+  .min(1)
+  .max(1000);

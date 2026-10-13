@@ -634,7 +634,7 @@ try {
   const originalWorker = mf;
   mf = new Miniflare(options("0", "1", join(temporary, "recovery")));
   try {
-    const recoveryDb = await mf.getD1Database("DB");
+    let recoveryDb = await mf.getD1Database("DB");
     for (const file of readdirSync(join(root, "src/db/migrations/d1"))
       .filter((name) => name.endsWith(".sql"))
       .sort()) {
@@ -937,6 +937,464 @@ try {
       (await call("/v1/metrics", { method: "POST" })).status,
       503,
       "migration candidates must not become live writers"
+    );
+    assert.equal(
+      (
+        await call("/api/v1/workspaces", {
+          method: "POST",
+          body: JSON.stringify({
+            id: "interference",
+            name: "Concurrent operator",
+          }),
+        })
+      ).status,
+      503,
+      "normal operator writes must also remain fenced during restore"
+    );
+    const nextExport = await (
+      await ok(
+        `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${batchRestored[1].id}`
+      )
+    ).json();
+    const amendedArchive = {
+      ...nextArchive,
+      sourceDigest: "e".repeat(64),
+      data: [
+        { ...nextPoint, value: (BigInt(nextPoint.value) + 1n).toString() },
+      ],
+    };
+    const reconciliation = {
+      replacements: [
+        {
+          expectedContentHash: nextExport.index.contentHash,
+          archive: amendedArchive,
+        },
+      ],
+    };
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({
+            replacements: [
+              { expectedContentHash: "0".repeat(64), archive: amendedArchive },
+            ],
+          }),
+        })
+      ).status,
+      409
+    );
+    await mf.setOptions(options("index", "1", join(temporary, "recovery")));
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify(reconciliation),
+        })
+      ).status,
+      503,
+      "uploaded replacement must not become visible after a failed index commit"
+    );
+    await mf.setOptions(options("0", "1", join(temporary, "recovery")));
+    recoveryDb = await mf.getD1Database("DB");
+    assert.equal(
+      (
+        await (
+          await ok(
+            `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${batchRestored[1].id}`
+          )
+        ).json()
+      ).index.contentHash,
+      nextExport.index.contentHash
+    );
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(reconciliation),
+    });
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(reconciliation),
+    });
+    const amendedExport = await (
+      await ok(
+        `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${batchRestored[1].id}`
+      )
+    ).json();
+    assert.equal(
+      amendedExport.document.data[0].value,
+      amendedArchive.data[0].value
+    );
+    assert.equal(
+      amendedExport.document.data[0].receivedAt,
+      legacyPoint.receivedAt
+    );
+    const deleteNext = {
+      deletions: [
+        {
+          id: amendedExport.index.id,
+          expectedContentHash: amendedExport.index.contentHash,
+          kind: "raw",
+          entityUid: nextArchive.entityUid,
+          sourceStart: nextArchive.sourceStart,
+        },
+      ],
+    };
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(deleteNext),
+    });
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(deleteNext),
+    });
+    assert.equal(
+      (
+        await call(
+          `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${batchRestored[1].id}`
+        )
+      ).status,
+      404
+    );
+    const deletedFive = await recoveryDb
+      .prepare(
+        'SELECT id FROM "Archive" WHERE clusterId=? AND kind=? AND sourceStart=?'
+      )
+      .bind("migrated", "5m", amendedExport.index.sourceStart)
+      .first("id");
+    assert.deepEqual(
+      (
+        await (
+          await ok(
+            `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${deletedFive}`
+          )
+        ).json()
+      ).document.data,
+      [],
+      "fresh tombstones must remove deleted derived series"
+    );
+    assert.ok(
+      await recoveryDb
+        .prepare(
+          'SELECT count(*) AS count FROM "Operation" WHERE clusterId=? AND kind=?'
+        )
+        .bind("migrated", "archive-gc")
+        .first("count"),
+      "retired immutable objects remain in the garbage outbox"
+    );
+    const recoveryState = {
+      expectedStateHash: null,
+      observation: restoration,
+      latestMetrics: [legacyPoint],
+    };
+    const stateReceipt = await (
+      await ok("/api/v1/import/reconcile-state?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify(recoveryState),
+      })
+    ).json();
+    assert.equal(
+      (
+        await (
+          await ok("/api/v1/import/reconcile-state?cluster=migrated", {
+            method: "POST",
+            body: JSON.stringify(recoveryState),
+          })
+        ).json()
+      ).status,
+      "already reconciled"
+    );
+    const exportedState = await (
+      await ok("/api/v1/export/state?workspace=migrated&cluster=migrated")
+    ).json();
+    assert.equal(exportedState.stateHash, stateReceipt.stateHash);
+    assert.equal(exportedState.latestMetrics[0].id, legacyPoint.id);
+    assert.equal(
+      exportedState.latestMetrics[0].receivedAt,
+      legacyPoint.receivedAt
+    );
+    assert.equal(
+      exportedState.observation.times.heartbeatAt,
+      restoration.times.heartbeatAt
+    );
+    assert.equal(
+      (await call("/api/v1/export/state?workspace=fixture&cluster=migrated"))
+        .status,
+      403
+    );
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-state?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({
+            ...recoveryState,
+            latestMetrics: [{ ...legacyPoint, value: "42" }],
+          }),
+        })
+      ).status,
+      409
+    );
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-state?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({
+            ...recoveryState,
+            expectedStateHash: stateReceipt.stateHash,
+            latestMetrics: [{ ...legacyPoint, clusterId: "other" }],
+          }),
+        })
+      ).status,
+      400
+    );
+    await ok("/api/v1/import/drain?cluster=migrated", { method: "POST" });
+    const advancedState = {
+      expectedStateHash: stateReceipt.stateHash,
+      observation: restoration,
+      latestMetrics: [nextPoint],
+    };
+    await ok("/api/v1/import/reconcile-state?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(advancedState),
+    });
+    await ok("/api/v1/import/history?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify({
+        batchId: "9".repeat(64),
+        metrics: [
+          {
+            ...legacyPoint,
+            id: legacyPoint.id + 1,
+            receivedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    });
+    await ok("/api/v1/import/drain?cluster=migrated", { method: "POST" });
+    const duplicateExport = await (
+      await ok(
+        `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${restore.id}`
+      )
+    ).json();
+    assert.equal(duplicateExport.document.data.length, 1);
+    assert.equal(duplicateExport.document.data[0].id, legacyPoint.id);
+    assert.equal(
+      duplicateExport.document.data[0].receivedAt,
+      legacyPoint.receivedAt,
+      "an archived duplicate must preserve the first receipt and source ID"
+    );
+    const fullWidth = Array.from({ length: 32 }, (_, partition) => {
+      const bucket =
+        Date.parse(restoredArchive.sourceStart) - (partition + 1) * 300_000;
+      const rows = Array.from({ length: 60 }, (_, ordinal) => {
+        const nano = BigInt(bucket + ordinal * 1000) * 1_000_000n;
+        return {
+          ...legacyPoint,
+          id: legacyPoint.id + 1000 + partition * 100 + ordinal,
+          timeUnixNano: String(nano),
+          sourceTime: new Date(Number(nano / 1_000_000n))
+            .toISOString()
+            .replace(".000Z", ".000000000Z"),
+          startTimeUnixNano: "0",
+          value: (BigInt(legacyPoint.value) + BigInt(ordinal)).toString(),
+          resource: JSON.stringify({
+            attributes: [
+              {
+                key: "fixture.padding",
+                value: { stringValue: "x".repeat(1024) },
+              },
+            ],
+          }),
+        };
+      });
+      return {
+        ...restoredArchive,
+        sourceStart: new Date(bucket).toISOString(),
+        sourceEnd: new Date(bucket + 299_999)
+          .toISOString()
+          .replace(".999Z", ".999999999Z"),
+        expiresAt: new Date(bucket + 7 * 86_400_000 + 300_000).toISOString(),
+        points: rows.length,
+        data: rows,
+      };
+    });
+    assert.ok(Buffer.byteLength(JSON.stringify(fullWidth)) < 4 * 1024 * 1024);
+    const wideReceipts = await (
+      await ok("/api/v1/import/archives?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify(fullWidth),
+      })
+    ).json();
+    assert.equal(wideReceipts.length, 32);
+    for (const ordinal of [0, 31]) {
+      const exported = await (
+        await ok(
+          `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${wideReceipts[ordinal].id}`
+        )
+      ).json();
+      assert.equal(exported.document.data.length, 60);
+      assert.equal(
+        exported.document.data[59].value,
+        fullWidth[ordinal].data[59].value
+      );
+      assert.equal(
+        exported.document.data[59].resource,
+        fullWidth[ordinal].data[59].resource
+      );
+    }
+    const importedEvent = {
+      ...historyInput.events[0],
+      observedAt: new Date(Date.now() - 181 * 86_400_000).toISOString(),
+    };
+    await ok("/api/v1/import/history?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify({
+        batchId: "1".repeat(64),
+        events: Array.from({ length: 105 }, (_, i) => ({
+          ...importedEvent,
+          id: `frozen-${i}`,
+        })),
+      }),
+    });
+    await ok("/api/v1/import/drain?cluster=migrated", { method: "POST" });
+    const eventRows = [];
+    let eventCursor = "";
+    do {
+      const page = await (
+        await ok(
+          `/api/v1/export/events?workspace=migrated&cluster=migrated&cursor=${encodeURIComponent(eventCursor)}`
+        )
+      ).json();
+      eventRows.push(...page.rows);
+      eventCursor = page.cursor;
+    } while (eventCursor);
+    assert.equal(
+      eventRows.length,
+      105,
+      "migration maintenance must preserve expired source events for exact verification"
+    );
+    const eventBefore = eventRows[0];
+    const changedEvent = {
+      ...eventBefore.event,
+      evidence: "same-ID source update",
+    };
+    const eventChanges = [
+      {
+        id: changedEvent.id,
+        expectedHash: eventBefore.contentHash,
+        event: changedEvent,
+      },
+    ];
+    await ok("/api/v1/import/reconcile-events?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(eventChanges),
+    });
+    const afterEvents = await (
+      await ok("/api/v1/export/events?workspace=migrated&cluster=migrated")
+    ).json();
+    assert.equal(afterEvents.rows[0].event.evidence, changedEvent.evidence);
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-events?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify([
+            {
+              id: changedEvent.id,
+              expectedHash: afterEvents.rows[0].contentHash,
+              event: { ...changedEvent, evidence: "must roll back" },
+            },
+            {
+              id: "wrong-scope",
+              expectedHash: null,
+              event: { ...changedEvent, id: "wrong-scope", clusterId: "other" },
+            },
+          ]),
+        })
+      ).status,
+      400
+    );
+    assert.equal(
+      (
+        await (
+          await ok("/api/v1/export/events?workspace=migrated&cluster=migrated")
+        ).json()
+      ).rows[0].event.evidence,
+      changedEvent.evidence,
+      "a later event conflict must roll back earlier updates"
+    );
+    const eventDelete = [
+      {
+        id: changedEvent.id,
+        expectedHash: afterEvents.rows[0].contentHash,
+        event: null,
+      },
+    ];
+    await ok("/api/v1/import/reconcile-events?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(eventDelete),
+    });
+    await ok("/api/v1/import/reconcile-events?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(eventDelete),
+    });
+    const oldStart = new Date(
+      Math.floor((Date.now() - 9 * 86_400_000) / 300_000) * 300_000
+    ).toISOString();
+    const oldPoint = {
+      ...legacyPoint,
+      id: legacyPoint.id + 99,
+      sourceTime: oldStart.replace(".000Z", ".000000000Z"),
+      timeUnixNano: String(BigInt(Date.parse(oldStart)) * 1_000_000n),
+      startTimeUnixNano: "0",
+    };
+    const oldArchive = {
+      ...restoredArchive,
+      sourceStart: oldStart,
+      sourceEnd: new Date(Date.parse(oldStart) + 299_999)
+        .toISOString()
+        .replace(".999Z", ".999999999Z"),
+      expiresAt: new Date(
+        Date.parse(oldStart) + 7 * 86_400_000 + 300_000
+      ).toISOString(),
+      data: [oldPoint],
+    };
+    const expiredReceipt = await (
+      await ok("/api/v1/import/archive?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify(oldArchive),
+      })
+    ).json();
+    await ok("/api/v1/import/drain?cluster=migrated", { method: "POST" });
+    await ok(
+      `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${expiredReceipt.id}`
+    );
+    await mf.setOptions(options("0", "0", join(temporary, "recovery")));
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify(reconciliation),
+        })
+      ).status,
+      403
+    );
+    await ok("/__test/flush?cluster=migrated");
+    assert.equal(
+      (
+        await call(
+          `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${expiredReceipt.id}`
+        )
+      ).status,
+      404,
+      "normal mode resumes raw expiry after summaries commit"
+    );
+    assert.equal(
+      (
+        await (
+          await ok("/api/v1/export/events?workspace=migrated&cluster=migrated")
+        ).json()
+      ).rows.length,
+      0,
+      "normal mode resumes event retention"
     );
   } finally {
     await mf.dispose();

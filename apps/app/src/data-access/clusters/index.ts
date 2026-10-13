@@ -170,6 +170,22 @@ export function removeArchive(db: Db, row: ArchiveRow) {
   return db.runtime().execute(plan);
 }
 
+export async function retireArchive(db: Db, row: ArchiveRow) {
+  const now = new Date().toISOString();
+  const garbage = db.raw
+    .sql`INSERT INTO "Operation" ("id","clusterId","kind","data","createdAt")
+    SELECT 'archive-gc:' || "objectKey", "clusterId", 'archive-gc', "objectKey", ${now}
+    FROM "Archive" WHERE "id"=${row.id} AND "contentHash"=${row.contentHash}
+    ON CONFLICT("id") DO NOTHING`
+    .affectedCount()
+    .build();
+  const deletion = db.raw
+    .sql`DELETE FROM "Archive" WHERE "id"=${row.id} AND "contentHash"=${row.contentHash}`
+    .affectedCount()
+    .build();
+  await db.batch((batch) => [batch.execute(garbage), batch.execute(deletion)]);
+}
+
 export async function persistProfile(
   db: Db,
   clusterId: string,
