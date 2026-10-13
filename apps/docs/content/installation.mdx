@@ -42,6 +42,8 @@ pnpm deploy:docs
 ```
 
 Set `MONITOR_DOCS_URL` to the docs site's `/docs` URL when deploying the hub.
+Set `MONITOR_HUB_URL` to your hub's HTTPS origin when deploying the docs app.
+Its Dashboard link then opens your hub from the separate documentation site.
 The hub redirects documentation links to that independent Worker. Optional
 `MONITOR_WORKER_NAME` selects an isolated hub and its resources;
 `MONITOR_DB_ID` must match that database. `MONITOR_DOMAIN` and

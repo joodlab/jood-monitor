@@ -1,5 +1,26 @@
 import { bindings, defineConfig } from "cf/config";
 
+function hubOrigin() {
+  const value = process.env.MONITOR_HUB_URL;
+  if (!value) {
+    return "";
+  }
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "MONITOR_HUB_URL must be an HTTPS origin without credentials"
+    );
+  }
+  return url.origin;
+}
+
 export default defineConfig({
   accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
   worker: {
@@ -15,6 +36,9 @@ export default defineConfig({
       enabled: true,
       logs: { enabled: true, invocationLogs: false },
     },
-    env: { RELEASE: bindings.versionMetadata() },
+    env: {
+      RELEASE: bindings.versionMetadata(),
+      HUB_URL: bindings.text(hubOrigin()),
+    },
   },
 });

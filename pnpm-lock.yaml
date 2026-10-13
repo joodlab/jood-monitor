@@ -200,6 +200,9 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 2.0.0-beta.sha-52b0dc0e9
         version: 2.0.0-beta.sha-52b0dc0e9(@types/node@22.19.15)(vite@8.2.1(@types/node@22.19.15)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(workerd@1.20261006.1)
+      '@cloudflare/workers-types':
+        specifier: 5.20261013.1
+        version: 5.20261013.1
       '@tailwindcss/vite':
         specifier: 4.3.3
         version: 4.3.3(vite@8.2.1(@types/node@22.19.15)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
