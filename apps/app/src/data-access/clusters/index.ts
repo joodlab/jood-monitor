@@ -98,7 +98,8 @@ export async function saveArchive(db: Db, row: ArchiveRow) {
     .sql`INSERT INTO "Archive" ("id", "clusterId", "kind", "entityUid", "sourceStart", "sourceEnd", "objectKey", "contentHash", "receivedAt", "expiresAt", "points")
     VALUES (${row.id}, ${row.clusterId}, ${row.kind}, ${row.entityUid}, ${row.sourceStart}, ${row.sourceEnd}, ${row.objectKey}, ${row.contentHash}, ${row.receivedAt}, ${row.expiresAt}, ${row.points})
     ON CONFLICT ("id") DO UPDATE SET "objectKey" = excluded."objectKey", "contentHash" = excluded."contentHash",
-    "receivedAt" = excluded."receivedAt", "expiresAt" = excluded."expiresAt", "points" = excluded."points"`
+    "receivedAt" = excluded."receivedAt", "expiresAt" = excluded."expiresAt", "points" = excluded."points",
+    "sourceEnd" = excluded."sourceEnd"`
     .affectedCount()
     .build();
   const superseded = db.raw

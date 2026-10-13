@@ -1081,6 +1081,54 @@ try {
         .first("count"),
       "retired immutable objects remain in the garbage outbox"
     );
+    const legacyWindow = {
+      kind: "legacy-changes",
+      entityUid: "legacy-window",
+      points: 0,
+      sourceDigest: "2".repeat(64),
+      sourceStart: source,
+      sourceEnd: new Date(Date.parse(source) + 60_000).toISOString(),
+      expiresAt: new Date(Date.parse(source) + 180 * 86_400_000).toISOString(),
+      data: [
+        { id: "original-change", cluster_id: "migrated", created_at: source },
+      ],
+    };
+    const legacyWindowReceipt = await (
+      await ok("/api/v1/import/archive?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify(legacyWindow),
+      })
+    ).json();
+    const extendedWindow = {
+      ...legacyWindow,
+      sourceEnd: new Date(Date.parse(source) + 120_000).toISOString(),
+      sourceDigest: "3".repeat(64),
+    };
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify({
+        replacements: [
+          {
+            expectedContentHash: legacyWindowReceipt.contentHash,
+            archive: extendedWindow,
+          },
+        ],
+      }),
+    });
+    const extendedExport = await (
+      await ok(
+        `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${legacyWindowReceipt.id}`
+      )
+    ).json();
+    assert.equal(
+      extendedExport.index.sourceEnd,
+      extendedExport.document.sourceEnd,
+      "a replacement index must cover the updated immutable document interval"
+    );
+    assert.equal(
+      Date.parse(extendedExport.index.sourceEnd),
+      Date.parse(extendedWindow.sourceEnd)
+    );
     const recoveryState = {
       expectedStateHash: null,
       observation: restoration,
