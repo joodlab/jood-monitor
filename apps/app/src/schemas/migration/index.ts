@@ -109,3 +109,4 @@ export const archiveImportSchema = z.strictObject({
   sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
   data: z.unknown(),
 });
+export const archivesImportSchema = archiveImportSchema.array().min(1).max(32);
