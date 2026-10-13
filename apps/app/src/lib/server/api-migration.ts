@@ -5,9 +5,12 @@ import { idSchema } from "../../schemas/clusters";
 import {
   archiveImportSchema,
   archivesImportSchema,
+  archivesReconcileSchema,
+  eventsReconcileSchema,
   historyImportSchema,
   observationImportSchema,
   registryImportSchema,
+  stateReconcileSchema,
 } from "../../schemas/migration";
 import { hash } from "./crypto";
 import { HttpError, json, readBody, readJson } from "./http";
@@ -32,6 +35,42 @@ export async function migrationApi(request: Request, env: Env, url: URL) {
     env,
     idSchema.parse(url.searchParams.get("cluster"))
   );
+  if (url.pathname === "/api/v1/import/drain") {
+    return json(
+      unwrap(
+        await clusterState(env, cluster.id).command(
+          cluster,
+          "importDrain",
+          null
+        )
+      )
+    );
+  }
+  const reconciliation = {
+    "/api/v1/import/reconcile-archives": {
+      schema: archivesReconcileSchema,
+      command: "reconcileArchives",
+    },
+    "/api/v1/import/reconcile-state": {
+      schema: stateReconcileSchema,
+      command: "reconcileState",
+    },
+    "/api/v1/import/reconcile-events": {
+      schema: eventsReconcileSchema,
+      command: "reconcileEvents",
+    },
+  }[url.pathname];
+  if (reconciliation) {
+    return json(
+      unwrap(
+        await clusterState(env, cluster.id).command(
+          cluster,
+          reconciliation.command,
+          reconciliation.schema.parse(await readJson(request))
+        )
+      )
+    );
+  }
   if (url.pathname === "/api/v1/import/archives") {
     const input = archivesImportSchema.parse(await readJson(request));
     return json(

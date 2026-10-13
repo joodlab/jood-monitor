@@ -10,6 +10,7 @@ import {
 import { maintainArchives } from "../actions/archives/maintenance";
 import { normalizeTime } from "../actions/clusters";
 import { historicalMetric, importArchive } from "../actions/migration/archives";
+import { deleteMigrationArchive } from "../actions/migration/reconcile";
 import type {
   ClusterView,
   Heartbeat,
@@ -42,8 +43,11 @@ import { profileSchema } from "../schemas/clusters";
 import {
   archiveImportSchema,
   archivesImportSchema,
+  archivesReconcileSchema,
+  eventsReconcileSchema,
   historyImportSchema,
   observationImportSchema,
+  stateReconcileSchema,
 } from "../schemas/migration";
 import {
   heartbeatSchema,
@@ -70,6 +74,14 @@ const emptyHeartbeat = (): Heartbeat => ({
   outcome: "not connected",
   nodes: [],
 });
+const migrationCommandPattern = /^(import|restore|reconcile|export)/;
+function metricForRecovery({
+  key: _key,
+  series: _series,
+  ...metric
+}: StoredMetric) {
+  return metric;
+}
 
 export class ClusterState extends DurableObject<Env> {
   private readonly db: ClusterStorage;
@@ -152,19 +164,10 @@ export class ClusterState extends DurableObject<Env> {
       if (this.restoring) {
         throw new HttpError(503, "archive restore in progress; retry");
       }
-      if (kind === "importArchive") {
-        return { ok: true, value: await this.restoreArchive(cluster, input) };
-      }
-      if (kind === "importArchives") {
-        return { ok: true, value: await this.restoreArchives(cluster, input) };
-      }
-      if (kind === "importHistory") {
-        return { ok: true, value: await this.importHistory(cluster, input) };
-      }
-      if (kind === "restoreObservation") {
+      if (migrationCommandPattern.test(kind)) {
         return {
           ok: true,
-          value: await this.restoreObservation(cluster, input),
+          value: await this.migrationCommand(cluster, kind, input),
         };
       }
       if (
@@ -280,6 +283,44 @@ export class ClusterState extends DurableObject<Env> {
     return { ok: false, status: 503, error: "durable operation failed; retry" };
   }
 
+  private migrationCommand(cluster: ClusterRow, kind: string, raw: unknown) {
+    switch (kind) {
+      case "importArchive":
+        return this.restoreArchive(cluster, raw);
+      case "importArchives":
+        return this.restoreArchives(cluster, raw);
+      case "importHistory":
+        return this.importHistory(cluster, raw);
+      case "restoreObservation":
+        return this.restoreObservation(cluster, raw);
+      case "importDrain":
+        if (this.env.MIGRATION_ENABLED !== "1") {
+          throw new HttpError(403, "migration window closed");
+        }
+        return this.flush();
+      case "reconcileArchives":
+        return this.reconcileArchives(cluster, raw);
+      case "reconcileState":
+        return this.reconcileState(cluster, raw);
+      case "reconcileEvents":
+        return this.reconcileEvents(cluster, raw);
+      case "exportState":
+        return this.exportState();
+      case "exportEvents": {
+        const exported = this.db.exportEvents(String(raw ?? ""));
+        return {
+          ...exported,
+          rows: exported.rows.map((event) => ({
+            event,
+            contentHash: hash(JSON.stringify(event)),
+          })),
+        };
+      }
+      default:
+        throw new HttpError(404, "unsupported migration operation");
+    }
+  }
+
   private async restoreArchive(cluster: ClusterRow, raw: unknown) {
     return (
       await this.restoreArchives(cluster, [archiveImportSchema.parse(raw)])
@@ -313,10 +354,11 @@ export class ClusterState extends DurableObject<Env> {
         throw new HttpError(400, "duplicate restore archive identities");
       }
       const results: Awaited<ReturnType<typeof importArchive>>[] = [];
-      for (let offset = 0; offset < inputs.length; offset += 8) {
+      // The decompressed request bounds total payload across all 32 partitions.
+      for (let offset = 0; offset < inputs.length; offset += 32) {
         const settled = await Promise.allSettled(
           inputs
-            .slice(offset, offset + 8)
+            .slice(offset, offset + 32)
             .map((input) => importArchive(this.env, cluster.id, input))
         );
         let failure: unknown;
@@ -373,10 +415,10 @@ export class ClusterState extends DurableObject<Env> {
       fives.set(id, group);
     }
     const groups = [...fives.values()];
-    for (let offset = 0; offset < groups.length; offset += 8) {
+    for (let offset = 0; offset < groups.length; offset += 16) {
       const settled = await Promise.allSettled(
         groups
-          .slice(offset, offset + 8)
+          .slice(offset, offset + 16)
           .map((group) =>
             this.summarizeFive(clusterId, group.partition, group.rows)
           )
@@ -406,6 +448,247 @@ export class ClusterState extends DurableObject<Env> {
         throw failed.reason;
       }
     }
+  }
+
+  private async reconcileArchives(cluster: ClusterRow, raw: unknown) {
+    if (this.env.MIGRATION_ENABLED !== "1") {
+      throw new HttpError(403, "migration window closed");
+    }
+    const status = this.db.status();
+    if (this.flushing || status.dirtyPartitions || status.pendingInventories) {
+      throw new HttpError(
+        409,
+        "reconciliation requires a drained archive writer"
+      );
+    }
+    const input = archivesReconcileSchema.parse(raw);
+    const ids = [
+      ...input.replacements.map(({ archive }) =>
+        archiveId(
+          cluster.id,
+          archive.kind,
+          archive.entityUid,
+          normalizeTime(archive.sourceStart)
+        )
+      ),
+      ...input.deletions.map((entry) => entry.id),
+    ];
+    if (new Set(ids).size !== ids.length) {
+      throw new HttpError(400, "duplicate reconciliation archive identities");
+    }
+    this.restoring = true;
+    this.flushing = true;
+    try {
+      const receipts: { id: string; status: string; contentHash?: string }[] =
+        [];
+      for (const replacement of input.replacements) {
+        const { metrics: _metrics, ...receipt } = await importArchive(
+          this.env,
+          cluster.id,
+          replacement.archive,
+          replacement.expectedContentHash
+        );
+        this.db.transaction(() =>
+          this.db.put(
+            "metricSequence",
+            Math.max(
+              this.db.get<number>("metricSequence") ?? 0,
+              receipt.maximumId
+            )
+          )
+        );
+        receipts.push(receipt);
+      }
+      for (const deletion of input.deletions) {
+        receipts.push(
+          await deleteMigrationArchive(this.env, cluster.id, deletion)
+        );
+      }
+      const partitions = new Map<string, DirtyPartition>();
+      for (const archive of [
+        ...input.replacements.map((entry) => entry.archive),
+        ...input.deletions,
+      ]) {
+        if (!["raw", "diagnostic"].includes(archive.kind)) {
+          continue;
+        }
+        const bucket = normalizeTime(archive.sourceStart);
+        const retention = archive.kind === "diagnostic" ? 1 : 7;
+        // Expired raw deletions retain already committed historical summaries.
+        if (
+          Date.parse(bucket) + retention * 86_400_000 + 300_000 <=
+          Date.now()
+        ) {
+          continue;
+        }
+        partitions.set(JSON.stringify([archive.entityUid, bucket]), {
+          entity: archive.entityUid,
+          bucket,
+          diagnostic: 0,
+          generation: 0,
+        });
+      }
+      const hours = new Map<string, DirtyPartition>();
+      for (const partition of partitions.values()) {
+        const rows: StoredMetric[] = [];
+        for (const kind of ["raw", "diagnostic"]) {
+          const document = await readArchive<StoredMetric[]>(
+            this.env,
+            archiveId(cluster.id, kind, partition.entity, partition.bucket)
+          );
+          rows.push(...(document?.data ?? []));
+        }
+        // A complete replacement must also remove summaries of deleted series.
+        const five = aggregateMetrics(rows);
+        await writeArchive(
+          this.env,
+          archiveDocument(
+            cluster.id,
+            "5m",
+            partition.entity,
+            partition.bucket,
+            300,
+            30,
+            five
+          ),
+          five.reduce((count, row) => count + row.count, 0)
+        );
+        const hour = {
+          ...partition,
+          bucket: bucketStart(timestampNano(partition.bucket).toString(), 3600),
+        };
+        hours.set(JSON.stringify([hour.entity, hour.bucket]), hour);
+      }
+      for (const hour of hours.values()) {
+        await this.summarizeHour(cluster.id, hour);
+      }
+      return receipts;
+    } finally {
+      this.flushing = false;
+      this.restoring = false;
+    }
+  }
+
+  private exportState() {
+    const status = this.db.status();
+    if (
+      status.dirtyPartitions ||
+      status.pendingInventories ||
+      status.bufferedPoints
+    ) {
+      throw new HttpError(409, "state export requires drained archival work");
+    }
+    const inventory = this.db.get<Inventory>("inventory");
+    const observation = inventory
+      ? {
+          inventory,
+          heartbeat: this.db.get<Heartbeat>("heartbeat") ?? emptyHeartbeat(),
+          profile: this.db.get<Profile>("profile"),
+          times: this.db.get("times"),
+        }
+      : null;
+    const latestMetrics = this.db.latestForRecovery().map(metricForRecovery);
+    return {
+      observation,
+      latestMetrics,
+      stateHash: observation
+        ? hash(JSON.stringify({ observation, latestMetrics }))
+        : null,
+      status,
+    };
+  }
+
+  private reconcileState(cluster: ClusterRow, raw: unknown) {
+    if (this.env.MIGRATION_ENABLED !== "1") {
+      throw new HttpError(403, "migration window closed");
+    }
+    const input = stateReconcileSchema.parse(raw);
+    const status = this.db.status();
+    if (this.flushing || status.dirtyPartitions || status.pendingInventories) {
+      throw new HttpError(
+        409,
+        "state reconciliation requires a drained writer"
+      );
+    }
+    const rows = input.latestMetrics
+      .map((row) => historicalMetric(row, cluster.id))
+      .sort((a, b) => a.series.localeCompare(b.series));
+    encodeTelemetry(rows);
+    if (new Set(rows.map((row) => row.series)).size !== rows.length) {
+      throw new HttpError(400, "duplicate latest metric series");
+    }
+    const desiredHash = hash(
+      JSON.stringify({
+        observation: input.observation,
+        latestMetrics: rows.map(metricForRecovery),
+      })
+    );
+    const previousHash = this.exportState().stateHash;
+    if (previousHash === desiredHash) {
+      return { status: "already reconciled", stateHash: desiredHash };
+    }
+    if (previousHash !== input.expectedStateHash) {
+      throw new HttpError(
+        409,
+        "state reconciliation checksum precondition differs"
+      );
+    }
+    this.db.checkCapacity(Buffer.byteLength(JSON.stringify(input)) * 4);
+    this.db.transaction(() => {
+      const observation = input.observation;
+      this.db.put("inventory", observation.inventory);
+      this.db.put("heartbeat", observation.heartbeat);
+      this.db.put("profile", observation.profile);
+      this.db.put("times", observation.times);
+      this.db.put("profileDirty", true);
+      this.db.replaceLatest(rows);
+      this.db.changed();
+      this.db.checkCapacity();
+    });
+    this.notify(cluster);
+    return { status: "reconciled", stateHash: desiredHash };
+  }
+
+  private reconcileEvents(cluster: ClusterRow, raw: unknown) {
+    if (this.env.MIGRATION_ENABLED !== "1") {
+      throw new HttpError(403, "migration window closed");
+    }
+    const input = eventsReconcileSchema.parse(raw);
+    if (new Set(input.map((entry) => entry.id)).size !== input.length) {
+      throw new HttpError(400, "duplicate event reconciliation identities");
+    }
+    return this.db.transaction(() => {
+      const receipts: { id: string; contentHash: string | null }[] = [];
+      for (const entry of input) {
+        const event = entry.event
+          ? {
+              ...entry.event,
+              observedAt: normalizeTime(entry.event.observedAt),
+              receivedAt: normalizeTime(entry.event.receivedAt),
+            }
+          : null;
+        if (
+          event &&
+          (event.clusterId !== cluster.id || event.id !== entry.id)
+        ) {
+          throw new HttpError(400, "event reconciliation scope differs");
+        }
+        const previous = this.db.event(entry.id);
+        const before = previous ? hash(JSON.stringify(previous)) : null;
+        const after = event ? hash(JSON.stringify(event)) : null;
+        if (before !== after && before !== entry.expectedHash) {
+          throw new HttpError(
+            409,
+            "event reconciliation checksum precondition differs"
+          );
+        }
+        this.db.replaceEvent(entry.id, event);
+        receipts.push({ id: entry.id, contentHash: after });
+      }
+      this.db.checkCapacity();
+      this.db.changed();
+      return receipts;
+    });
   }
 
   private async restoreObservation(cluster: ClusterRow, raw: unknown) {
@@ -751,9 +1034,10 @@ export class ClusterState extends DurableObject<Env> {
       this.env,
       archiveId(clusterId, kind, partition.entity, partition.bucket)
     );
+    // Retries that reach an already archived key preserve its first source receipt and ID.
     const rows = [
       ...new Map(
-        [...(previous?.data ?? []), ...fresh].map((row) => [row.key, row])
+        [...fresh, ...(previous?.data ?? [])].map((row) => [row.key, row])
       ).values(),
     ].sort(compareMetrics);
     await writeArchive(
@@ -896,7 +1180,9 @@ export class ClusterState extends DurableObject<Env> {
         );
         this.db.completeInventory(pending.stamp);
       }
-      for (const partition of this.db.dirty(Date.now())) {
+      const drainTime =
+        Date.now() + (this.env.MIGRATION_ENABLED === "1" ? 330_000 : 0);
+      for (const partition of this.db.dirty(drainTime)) {
         await this.flushPartition(identity.id, partition);
       }
       if (this.db.get<boolean>("profileDirty")) {
@@ -912,8 +1198,12 @@ export class ClusterState extends DurableObject<Env> {
           }
         });
       }
-      this.db.maintenance(Date.now());
-      await maintainArchives(this.env, identity.id, this.db);
+      // An isolated restore must keep its base stable until the operator applies the
+      // source's exact retention tombstones. Normal deployment resumes expiration.
+      if (this.env.MIGRATION_ENABLED !== "1") {
+        this.db.maintenance(Date.now());
+        await maintainArchives(this.env, identity.id, this.db);
+      }
       this.db.transaction(() => this.db.put("archiveError", null));
     } catch {
       this.db.transaction(() =>

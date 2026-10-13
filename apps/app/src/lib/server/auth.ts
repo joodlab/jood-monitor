@@ -70,6 +70,16 @@ export function requireOperator(request: Request, env: Env) {
   ) {
     throw new HttpError(403, "origin and CSRF header required");
   }
+  if (
+    env.MIGRATION_ENABLED === "1" &&
+    !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
+    !new URL(request.url).pathname.startsWith("/api/v1/import/")
+  ) {
+    throw new HttpError(
+      503,
+      "isolated migration target; operator writes closed"
+    );
+  }
 }
 
 export async function requireMachine(request: Request, env: Env) {

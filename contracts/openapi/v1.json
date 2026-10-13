@@ -935,6 +935,116 @@
           "document"
         ],
         "type": "object"
+      },
+      "RecoveryObservation": {
+        "type": "object",
+        "properties": {
+          "inventory": {
+            "$ref": "#/components/schemas/Inventory"
+          },
+          "heartbeat": {
+            "$ref": "#/components/schemas/Heartbeat"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "times": {
+            "type": "object",
+            "properties": {
+              "inventoryTime": {
+                "type": "string",
+                "nullable": true
+              },
+              "receivedAt": {
+                "type": "string",
+                "nullable": true
+              },
+              "heartbeatAt": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "inventoryTime",
+              "receivedAt",
+              "heartbeatAt"
+            ]
+          }
+        },
+        "required": [
+          "inventory",
+          "heartbeat",
+          "profile",
+          "times"
+        ]
+      },
+      "RecoveryState": {
+        "type": "object",
+        "properties": {
+          "observation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RecoveryObservation"
+              }
+            ],
+            "nullable": true
+          },
+          "latestMetrics": {
+            "type": "array",
+            "maxItems": 6000,
+            "items": {
+              "$ref": "#/components/schemas/Metric"
+            }
+          },
+          "stateHash": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/StatusResponse"
+          }
+        },
+        "required": [
+          "observation",
+          "latestMetrics",
+          "stateHash",
+          "status"
+        ]
+      },
+      "RecoveryEvent": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/Lifecycle"
+          },
+          "contentHash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event",
+          "contentHash"
+        ]
+      },
+      "RecoveryEventPage": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/RecoveryEvent"
+            }
+          },
+          "cursor": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "rows",
+          "cursor"
+        ]
       }
     },
     "securitySchemes": {
@@ -1722,6 +1832,125 @@
           },
           "503": {
             "description": "Archive unavailable or integrity check failed"
+          }
+        },
+        "security": [
+          {
+            "operator": []
+          }
+        ]
+      }
+    },
+    "/api/v1/export/state": {
+      "get": {
+        "operationId": "exportRecoveryState",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Protected scoped recovery export; freeze writers and verify a common boundary before backing up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded scope or cursor"
+          },
+          "401": {
+            "description": "Operator authentication required"
+          },
+          "403": {
+            "description": "Workspace mismatch"
+          },
+          "409": {
+            "description": "Pending archival work must drain before state export"
+          },
+          "503": {
+            "description": "Storage unavailable or restore writer active"
+          }
+        },
+        "security": [
+          {
+            "operator": []
+          }
+        ]
+      }
+    },
+    "/api/v1/export/events": {
+      "get": {
+        "operationId": "exportRecoveryEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Protected scoped recovery export; freeze writers and verify a common boundary before backing up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryEventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded scope or cursor"
+          },
+          "401": {
+            "description": "Operator authentication required"
+          },
+          "403": {
+            "description": "Workspace mismatch"
+          },
+          "409": {
+            "description": "Pending archival work must drain before state export"
+          },
+          "503": {
+            "description": "Storage unavailable or restore writer active"
           }
         },
         "security": [

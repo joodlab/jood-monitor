@@ -51,6 +51,11 @@ export const eventsSchema = snapshotSchema.extend({
   from: z.string().optional(),
   to: z.string().optional(),
 });
+export const recoveryExportSchema = z.strictObject({
+  workspace: z.union([idSchema, z.literal("global")]),
+  cluster: idSchema,
+  cursor: z.string().max(128).optional(),
+});
 
 export function defaultProfile() {
   return {

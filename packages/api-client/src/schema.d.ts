@@ -260,6 +260,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/export/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["exportRecoveryState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/export/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["exportRecoveryEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -512,6 +544,30 @@ export interface components {
         ArchiveExport: {
             document: components["schemas"]["ArchiveDocument"];
             index: components["schemas"]["ArchiveIndex"];
+        };
+        RecoveryObservation: {
+            inventory: components["schemas"]["Inventory"];
+            heartbeat: components["schemas"]["Heartbeat"];
+            profile: components["schemas"]["Profile"];
+            times: {
+                inventoryTime: string | null;
+                receivedAt: string | null;
+                heartbeatAt: string | null;
+            };
+        };
+        RecoveryState: {
+            observation: components["schemas"]["RecoveryObservation"] | null;
+            latestMetrics: components["schemas"]["Metric"][];
+            stateHash: string | null;
+            status: components["schemas"]["StatusResponse"];
+        };
+        RecoveryEvent: {
+            event: components["schemas"]["Lifecycle"];
+            contentHash: string;
+        };
+        RecoveryEventPage: {
+            rows: components["schemas"]["RecoveryEvent"][];
+            cursor: string | null;
         };
     };
     responses: never;
@@ -1267,6 +1323,123 @@ export interface operations {
                 content?: never;
             };
             /** @description Archive unavailable or integrity check failed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportRecoveryState: {
+        parameters: {
+            query: {
+                workspace: string;
+                cluster: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Protected scoped recovery export; freeze writers and verify a common boundary before backing up. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryState"];
+                };
+            };
+            /** @description Invalid bounded scope or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operator authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace mismatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pending archival work must drain before state export */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Storage unavailable or restore writer active */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportRecoveryEvents: {
+        parameters: {
+            query: {
+                workspace: string;
+                cluster: string;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Protected scoped recovery export; freeze writers and verify a common boundary before backing up. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryEventPage"];
+                };
+            };
+            /** @description Invalid bounded scope or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operator authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace mismatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pending archival work must drain before state export */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Storage unavailable or restore writer active */
             503: {
                 headers: {
                     [name: string]: unknown;

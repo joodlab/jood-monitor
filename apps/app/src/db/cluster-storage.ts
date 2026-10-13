@@ -150,6 +150,15 @@ export class ClusterStorage {
     this.transaction(() => {
       const dirty = new Set<string>();
       for (const [index, row] of rows.entries()) {
+        const latestKey = this.storage.sql
+          .exec<{ key: string }>(
+            "SELECT json_extract(payload,'$.key') AS key FROM latest WHERE series=?",
+            row.series
+          )
+          .toArray()[0]?.key;
+        if (latestKey === row.key) {
+          continue;
+        }
         const bucket = bucketStart(row.timeUnixNano);
         const diagnostic = row.diagnostic ? 1 : 0;
         const saved = this.storage.sql.exec(
@@ -235,6 +244,35 @@ export class ClusterStorage {
       )
       .toArray()
       .map((r) => JSON.parse(r.payload) as StoredMetric);
+  }
+
+  latestForRecovery() {
+    const rows = this.storage.sql
+      .exec<PayloadRow>("SELECT payload FROM latest ORDER BY series LIMIT 6001")
+      .toArray();
+    if (rows.length > 6000) {
+      throw new HttpError(413, "recovery latest-series quota");
+    }
+    return rows.map((row) => JSON.parse(row.payload) as StoredMetric);
+  }
+
+  replaceLatest(rows: StoredMetric[]) {
+    this.storage.sql.exec("DELETE FROM latest");
+    for (const row of rows) {
+      this.storage.sql.exec(
+        "INSERT INTO latest(series,source,payload) VALUES(?,?,?)",
+        row.series,
+        row.sourceTime,
+        JSON.stringify(row)
+      );
+    }
+    this.put(
+      "metricSequence",
+      Math.max(
+        this.get<number>("metricSequence") ?? 0,
+        ...rows.map((r) => r.id)
+      )
+    );
   }
 
   history(from: string, to: string, entity?: string, name?: string) {
@@ -330,6 +368,34 @@ export class ClusterStorage {
       event.observedAt,
       JSON.stringify(event)
     );
+  }
+
+  event(id: string) {
+    const row = this.storage.sql
+      .exec<PayloadRow>("SELECT payload FROM events WHERE id=?", id)
+      .toArray()[0];
+    return row ? (JSON.parse(row.payload) as Lifecycle) : null;
+  }
+
+  replaceEvent(id: string, event: Lifecycle | null) {
+    this.storage.sql.exec("DELETE FROM events WHERE id=?", id);
+    if (event) {
+      this.appendEvent(event);
+    }
+  }
+
+  exportEvents(cursor: string) {
+    const rows = this.storage.sql
+      .exec<PayloadRow>(
+        "SELECT payload FROM events WHERE id>? ORDER BY id LIMIT 101",
+        cursor
+      )
+      .toArray()
+      .map((row) => JSON.parse(row.payload) as Lifecycle);
+    return {
+      rows: rows.slice(0, 100),
+      cursor: rows.length > 100 ? rows[99].id : null,
+    };
   }
 
   events(from: string, to: string) {
