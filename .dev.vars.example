@@ -1,0 +1,3 @@
+# Used by the Cloudflare Deploy button. Supply a fresh random password, not this file's defaults.
+OPERATOR_USER=admin
+OPERATOR_PASSWORD=

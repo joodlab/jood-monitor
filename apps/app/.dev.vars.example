@@ -1,0 +1,4 @@
+# Private local development only. Set a random password before starting Vite.
+OPERATOR_USER=admin
+OPERATOR_PASSWORD=
+APP_ORIGIN=http://127.0.0.1:3040

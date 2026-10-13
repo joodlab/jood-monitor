@@ -1,0 +1,47 @@
+// use prisma-8
+// D1 registry and archive index. Exact OTLP values and nanoseconds stay strings.
+// No interactive transactions or cascading foreign keys on D1.
+
+model Workspace {
+  id String @id
+  name String
+}
+
+model Cluster {
+  id String @id
+  workspaceId String
+  name String
+  environment String
+  enrollmentHash String? @unique
+  enrollmentExpiry String?
+  credentialHash String? @unique
+  revoked Int @default(0)
+  profileJson String
+  @@index([workspaceId, id])
+}
+
+model Archive {
+  id String @id
+  clusterId String
+  kind String
+  entityUid String
+  sourceStart String
+  sourceEnd String
+  objectKey String @unique
+  contentHash String
+  receivedAt String
+  expiresAt String
+  points Int
+  @@index([clusterId, kind, entityUid, sourceStart])
+  @@index([clusterId, kind, sourceEnd])
+  @@index([expiresAt])
+}
+
+model Operation {
+  id String @id
+  clusterId String
+  kind String
+  data String
+  createdAt String
+  @@index([clusterId, createdAt])
+}

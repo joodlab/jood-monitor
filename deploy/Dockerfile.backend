@@ -1,0 +1,12 @@
+FROM golang:1.27.2-alpine AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY internal internal
+COPY apps/agent apps/agent
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/jood-monitor ./apps/agent
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/jood-monitor /jood-monitor
+USER 65532:65532
+ENTRYPOINT ["/jood-monitor"]

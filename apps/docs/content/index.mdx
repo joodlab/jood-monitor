@@ -1,0 +1,20 @@
+---
+title: Jood Monitor
+description: A serverless monitoring hub with lightweight Go collectors.
+---
+
+Jood Monitor connects scoped infrastructure collectors to a full-stack TanStack
+Start dashboard on Cloudflare. The hub has no application server or container
+to maintain. Go collectors stay on the infrastructure they observe.
+
+Use the dashboard to inspect source CPU and memory, discovered resource
+relationships, collection acknowledgments, freshness and observed scaling events.
+It supports an explicit historical observation time and responsive resource tables.
+
+Start with [installation](/docs/installation), then
+[enroll an agent](/docs/agents). Consult the [metric catalog](/docs/metrics)
+for supported telemetry and [security](/docs/security) for identity and access.
+
+Prisma 8 and its SQLite target are experimental. The D1 driver is maintained
+by this project and tested in native workerd. Read the pinned versions and
+upgrade notes in the repository's database documentation before upgrading.

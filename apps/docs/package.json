@@ -1,0 +1,34 @@
+{
+  "name": "@jood-monitor/docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "fumadocs-mdx && vite --port 3041",
+    "build": "node ../../scripts/release/licenses.mjs public/third-party-licenses.txt && fumadocs-mdx && vite build",
+    "typecheck": "fumadocs-mdx && tsc --noEmit",
+    "deploy": "node ../../scripts/cloudflare/deploy.mjs docs"
+  },
+  "dependencies": {
+    "@tanstack/react-router": "1.170.40",
+    "@tanstack/react-start": "1.168.59",
+    "fumadocs-core": "16.9.3",
+    "fumadocs-mdx": "15.0.10",
+    "fumadocs-ui": "16.9.3",
+    "lucide-react": "1.49.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "tailwindcss": "4.3.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/mdx": "2.0.13",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "vite": "8.2.1",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
+    "cf": "1.0.0-beta.12"
+  }
+}

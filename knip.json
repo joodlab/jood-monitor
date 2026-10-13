@@ -1,0 +1,35 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreBinaries": ["go", "gofmt"],
+  "ignoreDependencies": ["@biomejs/biome"],
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/**/*.{ts,mjs}"],
+      "ignoreDependencies": ["@bufbuild/protoc-gen-es"]
+    },
+    "apps/app": {
+      "ignoreDependencies": ["tailwindcss", "tw-animate-css", "cloudflare"],
+      "ignore": ["src/contracts/generated/**", "src/db/migrations/**"],
+      "entry": [
+        "src/routes/**/*.{ts,tsx}",
+        "src/router.tsx",
+        "src/server.ts",
+        "tests/**/*.ts",
+        "scripts/**/*.mjs",
+        "cloudflare.config.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "apps/docs": {
+      "ignoreDependencies": ["tailwindcss"],
+      "entry": [
+        "src/routes/**/*.{ts,tsx}",
+        "src/router.tsx",
+        "source.config.ts",
+        "cloudflare.config.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/ui": { "entry": ["src/components/*.tsx"] }
+  }
+}

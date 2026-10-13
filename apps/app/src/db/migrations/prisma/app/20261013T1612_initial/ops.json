@@ -1,0 +1,371 @@
+[
+  {
+    "id": "table.Archive",
+    "label": "Create table Archive",
+    "summary": "Creates table Archive with required columns",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "table",
+        "name": "Archive"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"Archive\" does not exist",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Archive"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"Archive\"",
+        "sql": "CREATE TABLE \"Archive\" (\n  \"clusterId\" TEXT NOT NULL,\n  \"contentHash\" TEXT NOT NULL,\n  \"entityUid\" TEXT NOT NULL,\n  \"expiresAt\" TEXT NOT NULL,\n  \"id\" TEXT NOT NULL,\n  \"kind\" TEXT NOT NULL,\n  \"objectKey\" TEXT NOT NULL,\n  \"points\" INTEGER NOT NULL,\n  \"receivedAt\" TEXT NOT NULL,\n  \"sourceEnd\" TEXT NOT NULL,\n  \"sourceStart\" TEXT NOT NULL,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"objectKey\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"Archive\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Archive"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.Cluster",
+    "label": "Create table Cluster",
+    "summary": "Creates table Cluster with required columns",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "table",
+        "name": "Cluster"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"Cluster\" does not exist",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Cluster"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"Cluster\"",
+        "sql": "CREATE TABLE \"Cluster\" (\n  \"credentialHash\" TEXT,\n  \"enrollmentExpiry\" TEXT,\n  \"enrollmentHash\" TEXT,\n  \"environment\" TEXT NOT NULL,\n  \"id\" TEXT NOT NULL,\n  \"name\" TEXT NOT NULL,\n  \"profileJson\" TEXT NOT NULL,\n  \"revoked\" INTEGER NOT NULL DEFAULT 0,\n  \"workspaceId\" TEXT NOT NULL,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"enrollmentHash\"),\n  UNIQUE (\"credentialHash\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"Cluster\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Cluster"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.Operation",
+    "label": "Create table Operation",
+    "summary": "Creates table Operation with required columns",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "table",
+        "name": "Operation"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"Operation\" does not exist",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Operation"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"Operation\"",
+        "sql": "CREATE TABLE \"Operation\" (\n  \"clusterId\" TEXT NOT NULL,\n  \"createdAt\" TEXT NOT NULL,\n  \"data\" TEXT NOT NULL,\n  \"id\" TEXT NOT NULL,\n  \"kind\" TEXT NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"Operation\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Operation"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.Workspace",
+    "label": "Create table Workspace",
+    "summary": "Creates table Workspace with required columns",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "table",
+        "name": "Workspace"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"Workspace\" does not exist",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Workspace"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"Workspace\"",
+        "sql": "CREATE TABLE \"Workspace\" (\n  \"id\" TEXT NOT NULL,\n  \"name\" TEXT NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"Workspace\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "table",
+          "Workspace"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Archive.Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7",
+    "label": "Create index Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7 on Archive",
+    "summary": "Creates index Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7 on Archive",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "index",
+        "name": "Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7",
+        "table": "Archive"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7\" is missing",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7\"",
+        "sql": "CREATE INDEX \"Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7\" ON \"Archive\" (\"clusterId\", \"kind\", \"entityUid\", \"sourceStart\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_clusterId_kind_entityUid_sourceStart_idx_619feac7"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Archive.Archive_clusterId_kind_sourceEnd_idx_c5ac8243",
+    "label": "Create index Archive_clusterId_kind_sourceEnd_idx_c5ac8243 on Archive",
+    "summary": "Creates index Archive_clusterId_kind_sourceEnd_idx_c5ac8243 on Archive",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "index",
+        "name": "Archive_clusterId_kind_sourceEnd_idx_c5ac8243",
+        "table": "Archive"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Archive_clusterId_kind_sourceEnd_idx_c5ac8243\" is missing",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_clusterId_kind_sourceEnd_idx_c5ac8243"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Archive_clusterId_kind_sourceEnd_idx_c5ac8243\"",
+        "sql": "CREATE INDEX \"Archive_clusterId_kind_sourceEnd_idx_c5ac8243\" ON \"Archive\" (\"clusterId\", \"kind\", \"sourceEnd\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Archive_clusterId_kind_sourceEnd_idx_c5ac8243\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_clusterId_kind_sourceEnd_idx_c5ac8243"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Archive.Archive_expiresAt_idx_6b6b8c10",
+    "label": "Create index Archive_expiresAt_idx_6b6b8c10 on Archive",
+    "summary": "Creates index Archive_expiresAt_idx_6b6b8c10 on Archive",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "index",
+        "name": "Archive_expiresAt_idx_6b6b8c10",
+        "table": "Archive"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Archive_expiresAt_idx_6b6b8c10\" is missing",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_expiresAt_idx_6b6b8c10"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Archive_expiresAt_idx_6b6b8c10\"",
+        "sql": "CREATE INDEX \"Archive_expiresAt_idx_6b6b8c10\" ON \"Archive\" (\"expiresAt\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Archive_expiresAt_idx_6b6b8c10\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Archive_expiresAt_idx_6b6b8c10"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Cluster.Cluster_workspaceId_id_idx_d62baced",
+    "label": "Create index Cluster_workspaceId_id_idx_d62baced on Cluster",
+    "summary": "Creates index Cluster_workspaceId_id_idx_d62baced on Cluster",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "index",
+        "name": "Cluster_workspaceId_id_idx_d62baced",
+        "table": "Cluster"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Cluster_workspaceId_id_idx_d62baced\" is missing",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Cluster_workspaceId_id_idx_d62baced"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Cluster_workspaceId_id_idx_d62baced\"",
+        "sql": "CREATE INDEX \"Cluster_workspaceId_id_idx_d62baced\" ON \"Cluster\" (\"workspaceId\", \"id\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Cluster_workspaceId_id_idx_d62baced\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Cluster_workspaceId_id_idx_d62baced"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.Operation.Operation_clusterId_createdAt_idx_eb857867",
+    "label": "Create index Operation_clusterId_createdAt_idx_eb857867 on Operation",
+    "summary": "Creates index Operation_clusterId_createdAt_idx_eb857867 on Operation",
+    "operationClass": "additive",
+    "target": {
+      "id": "sqlite",
+      "details": {
+        "schema": "main",
+        "objectType": "index",
+        "name": "Operation_clusterId_createdAt_idx_eb857867",
+        "table": "Operation"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"Operation_clusterId_createdAt_idx_eb857867\" is missing",
+        "sql": "SELECT COUNT(*) = 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Operation_clusterId_createdAt_idx_eb857867"
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"Operation_clusterId_createdAt_idx_eb857867\"",
+        "sql": "CREATE INDEX \"Operation_clusterId_createdAt_idx_eb857867\" ON \"Operation\" (\"clusterId\", \"createdAt\")"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"Operation_clusterId_createdAt_idx_eb857867\" exists",
+        "sql": "SELECT COUNT(*) > 0 AS \"result\" FROM \"sqlite_master\" WHERE (\"type\" = ? AND \"name\" = ?)",
+        "params": [
+          "index",
+          "Operation_clusterId_createdAt_idx_eb857867"
+        ]
+      }
+    ]
+  }
+]

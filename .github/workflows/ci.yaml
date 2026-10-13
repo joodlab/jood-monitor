@@ -1,0 +1,51 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with: {node-version: 24, cache: pnpm}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm generate && pnpm proto:generate && pnpm db:emit && node scripts/db/prisma-to-d1.mjs --check && git diff --exit-code
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:worker
+      - run: pnpm knip
+      - run: python scripts/test-install-helpers.py
+      - name: Independent OpenMetrics consumer
+        run: |
+          python -m pip install prometheus-client==0.26.0
+          OPENMETRICS_TEST_OUTPUT=/tmp/monitor-openmetrics.txt pnpm --filter @jood-monitor/app test
+          python scripts/check-openmetrics.py /tmp/monitor-openmetrics.txt
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: {go-version-file: go.mod, cache: true}
+      - run: test -z "$(gofmt -l apps/agent internal)"
+      - run: go vet ./...
+      - run: go test -race ./... -count=1
+      - uses: golangci/golangci-lint-action@v8
+        with: {version: v2.14.0}
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4.3.1
+      - run: helm lint deploy/helm/jood-monitor --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --set hubURL=https://monitor.example.com
+      - run: python scripts/test-counter-chart.py

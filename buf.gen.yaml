@@ -1,0 +1,7 @@
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: apps/app/src/contracts/generated
+    opt: target=ts
+inputs:
+  - directory: contracts/proto

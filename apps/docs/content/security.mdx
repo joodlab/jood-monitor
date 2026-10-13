@@ -1,0 +1,29 @@
+---
+title: Security
+description: Operator access, scoped credentials, TLS and private data.
+---
+
+Operator pages, server functions and API routes require Basic Auth. Passwords
+must have at least sixteen characters. Mutations require the exact configured
+origin and `X-Jood-CSRF: 1`. Use HTTPS for deployed hubs.
+
+Machine routes require a cluster credential. D1 stores SHA-256 verifiers;
+operator responses never expose them. One-use enrollment tokens expire after
+thirty minutes. Credential changes require explicit operator action.
+
+An enrolled machine cannot access another cluster's state or operator routes.
+Ingestion requires a known inventory UID, supported metric and unit, allowed
+attributes, valid temporality and retained source time. Quotas and bounded
+buffers provide backpressure.
+
+The observer and node collectors use verified TLS and Kubernetes identity.
+Keep private keys, projected tokens and spool files outside repositories and
+public artifacts. R2 archives are private; exports require operator access.
+
+The control API exposes collection settings only. It cannot execute remote
+commands, capture Kubernetes Secrets or modify infrastructure. Provider
+attribution is reported or unknown unless separately verified.
+
+Do not publish private operational histories, screenshots, dumps or credentials
+when opening source. A clean current checkout alone does not sanitize old Git
+commits, pull requests or release assets.

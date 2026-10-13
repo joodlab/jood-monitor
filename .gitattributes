@@ -1,0 +1,4 @@
+# Preserve upstream protocol text and deterministic generator output verbatim.
+contracts/proto/** -whitespace
+apps/app/src/contracts/generated/** -whitespace
+licenses/** -whitespace
