@@ -40,6 +40,7 @@ import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
 import { profileSchema } from "../schemas/clusters";
 import {
   archiveImportSchema,
+  archivesImportSchema,
   historyImportSchema,
   observationImportSchema,
 } from "../schemas/migration";
@@ -152,6 +153,9 @@ export class ClusterState extends DurableObject<Env> {
       }
       if (kind === "importArchive") {
         return { ok: true, value: await this.restoreArchive(cluster, input) };
+      }
+      if (kind === "importArchives") {
+        return { ok: true, value: await this.restoreArchives(cluster, input) };
       }
       if (kind === "importHistory") {
         return { ok: true, value: await this.importHistory(cluster, input) };
@@ -276,6 +280,12 @@ export class ClusterState extends DurableObject<Env> {
   }
 
   private async restoreArchive(cluster: ClusterRow, raw: unknown) {
+    return (
+      await this.restoreArchives(cluster, [archiveImportSchema.parse(raw)])
+    )[0];
+  }
+
+  private async restoreArchives(cluster: ClusterRow, raw: unknown) {
     if (this.env.MIGRATION_ENABLED !== "1") {
       throw new HttpError(403, "migration window closed");
     }
@@ -289,34 +299,111 @@ export class ClusterState extends DurableObject<Env> {
     this.restoring = true;
     this.flushing = true;
     try {
-      const result = await importArchive(
-        this.env,
-        cluster.id,
-        archiveImportSchema.parse(raw)
-      );
-      this.db.transaction(() =>
-        this.db.put(
-          "metricSequence",
-          Math.max(this.db.get<number>("metricSequence") ?? 0, result.maximumId)
+      const inputs = archivesImportSchema.parse(raw);
+      const ids = inputs.map((input) =>
+        archiveId(
+          cluster.id,
+          input.kind,
+          input.entityUid,
+          normalizeTime(input.sourceStart)
         )
       );
-      const { metrics, ...receipt } = result;
-      if (metrics?.length) {
-        await this.summarizePartition(
-          cluster.id,
-          {
-            entity: metrics[0].entityUid,
-            bucket: bucketStart(metrics[0].timeUnixNano),
-            diagnostic: metrics[0].diagnostic ? 1 : 0,
-            generation: 0,
-          },
-          metrics
-        );
+      if (new Set(ids).size !== inputs.length) {
+        throw new HttpError(400, "duplicate restore archive identities");
       }
-      return receipt;
+      const results: Awaited<ReturnType<typeof importArchive>>[] = [];
+      for (let offset = 0; offset < inputs.length; offset += 8) {
+        const settled = await Promise.allSettled(
+          inputs
+            .slice(offset, offset + 8)
+            .map((input) => importArchive(this.env, cluster.id, input))
+        );
+        let failure: unknown;
+        for (const result of settled) {
+          if (result.status === "rejected") {
+            failure = result.reason;
+            continue;
+          }
+          results.push(result.value);
+          this.db.transaction(() =>
+            this.db.put(
+              "metricSequence",
+              Math.max(
+                this.db.get<number>("metricSequence") ?? 0,
+                result.value.maximumId
+              )
+            )
+          );
+        }
+        if (failure) {
+          throw failure;
+        }
+      }
+      await this.restoreSummaries(cluster.id, results);
+      return results.map(({ metrics: _metrics, ...receipt }) => receipt);
     } finally {
       this.flushing = false;
       this.restoring = false;
+    }
+  }
+
+  private async restoreSummaries(
+    clusterId: string,
+    results: Awaited<ReturnType<typeof importArchive>>[]
+  ) {
+    const fives = new Map<
+      string,
+      { partition: DirtyPartition; rows: StoredMetric[] }
+    >();
+    for (const { metrics } of results) {
+      if (!metrics?.length) {
+        continue;
+      }
+      const partition = {
+        entity: metrics[0].entityUid,
+        bucket: bucketStart(metrics[0].timeUnixNano),
+        diagnostic: 0,
+        generation: 0,
+      };
+      const id = JSON.stringify([partition.entity, partition.bucket]);
+      const group: { partition: DirtyPartition; rows: StoredMetric[] } =
+        fives.get(id) ?? { partition, rows: [] };
+      group.rows.push(...metrics);
+      fives.set(id, group);
+    }
+    const groups = [...fives.values()];
+    for (let offset = 0; offset < groups.length; offset += 8) {
+      const settled = await Promise.allSettled(
+        groups
+          .slice(offset, offset + 8)
+          .map((group) =>
+            this.summarizeFive(clusterId, group.partition, group.rows)
+          )
+      );
+      const failed = settled.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") {
+        throw failed.reason;
+      }
+    }
+    const hours = new Map<string, DirtyPartition>();
+    for (const { partition } of groups) {
+      const hour = {
+        ...partition,
+        bucket: bucketStart(timestampNano(partition.bucket).toString(), 3600),
+      };
+      hours.set(JSON.stringify([hour.entity, hour.bucket]), hour);
+    }
+    const hourly = [...hours.values()];
+    for (let offset = 0; offset < hourly.length; offset += 8) {
+      const settled = await Promise.allSettled(
+        hourly
+          .slice(offset, offset + 8)
+          .map((partition) => this.summarizeHour(clusterId, partition))
+      );
+      const failed = settled.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") {
+        throw failed.reason;
+      }
     }
   }
 
@@ -693,6 +780,15 @@ export class ClusterState extends DurableObject<Env> {
     partition: DirtyPartition,
     rows: StoredMetric[]
   ) {
+    await this.summarizeFive(clusterId, partition, rows);
+    await this.summarizeHour(clusterId, partition);
+  }
+
+  private async summarizeFive(
+    clusterId: string,
+    partition: DirtyPartition,
+    rows: StoredMetric[]
+  ) {
     const summaries = aggregateMetrics(rows);
     const fiveId = archiveId(
       clusterId,
@@ -719,6 +815,9 @@ export class ClusterState extends DurableObject<Env> {
       ),
       five.reduce((n, r) => n + r.count, 0)
     );
+  }
+
+  private async summarizeHour(clusterId: string, partition: DirtyPartition) {
     const hour = bucketStart(timestampNano(partition.bucket).toString(), 3600);
     const parts = await listArchives(getDb(this.env.DB), {
       clusterId,

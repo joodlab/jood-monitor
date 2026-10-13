@@ -717,6 +717,76 @@ try {
       )
     ).json();
     assert.equal(recoveredHistory[0].value, legacyPoint.value);
+    const nextPartitionStart = new Date(
+      Date.parse(restoredArchive.sourceStart) + 300_000
+    ).toISOString();
+    const nextPoint = {
+      ...legacyPoint,
+      id: legacyPoint.id + 10,
+      timeUnixNano: String(BigInt(legacyPoint.timeUnixNano) + 300_000_000_000n),
+      sourceTime: new Date(
+        Number(
+          (BigInt(legacyPoint.timeUnixNano) + 300_000_000_000n) / 1_000_000_000n
+        ) * 1000
+      )
+        .toISOString()
+        .replace(
+          ".000Z",
+          `.${((BigInt(legacyPoint.timeUnixNano) + 300_000_000_000n) % 1_000_000_000n).toString().padStart(9, "0")}Z`
+        ),
+    };
+    const nextArchive = {
+      ...restoredArchive,
+      sourceStart: nextPartitionStart,
+      sourceEnd: new Date(Date.parse(nextPartitionStart) + 299_999)
+        .toISOString()
+        .replace(".999Z", ".999999999Z"),
+      expiresAt: new Date(
+        Date.parse(nextPartitionStart) + 7 * 86_400_000 + 300_000
+      ).toISOString(),
+      data: [nextPoint],
+    };
+    const batchRestored = await (
+      await ok("/api/v1/import/archives?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify([restoredArchive, nextArchive]),
+      })
+    ).json();
+    assert.equal(batchRestored.length, 2);
+    assert.equal(batchRestored[0].status, "already restored");
+    assert.equal(
+      (
+        await call("/api/v1/import/archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify([nextArchive, nextArchive]),
+        })
+      ).status,
+      400
+    );
+    const badArchive = {
+      ...nextArchive,
+      entityUid: "wrong-partition",
+      data: [{ ...nextPoint, clusterId: "other-scope" }],
+    };
+    assert.equal(
+      (
+        await call("/api/v1/import/archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify([nextArchive, badArchive]),
+        })
+      ).status,
+      400
+    );
+    const retriedBatch = await (
+      await ok("/api/v1/import/archives?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify([restoredArchive, nextArchive]),
+      })
+    ).json();
+    assert.equal(
+      retriedBatch.every((r) => r.status === "already restored"),
+      true
+    );
     const historicalInventory = {
       ...restoration,
       profile: null,

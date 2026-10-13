@@ -49,6 +49,13 @@ without passing through the live queue. Raw restores regenerate modern
 five-minute and hourly summaries. Existing archives with different content
 return a conflict. Retries of an identical completed restore are idempotent.
 
+`/api/v1/import/archives?cluster=...` accepts up to 32 complete partitions within
+the same bounded request size. It keeps one cluster writer while uploading
+independent immutable objects in bounded groups, then commits five-minute
+summaries before rebuilding affected hours. A failed batch may have durably
+stored some objects; retry the same inputs and require all receipts before
+marking the batch complete or opening live ingestion.
+
 For legacy inventory observations that never recorded a profile, heartbeat or
 receipt time, preserve those fields as `null`. Historical snapshots report
 `observationMetadataAvailable` rather than borrowing current acknowledgments.

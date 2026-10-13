@@ -4,6 +4,7 @@ import { clusterState, type Env } from "../../env";
 import { idSchema } from "../../schemas/clusters";
 import {
   archiveImportSchema,
+  archivesImportSchema,
   historyImportSchema,
   observationImportSchema,
   registryImportSchema,
@@ -31,6 +32,18 @@ export async function migrationApi(request: Request, env: Env, url: URL) {
     env,
     idSchema.parse(url.searchParams.get("cluster"))
   );
+  if (url.pathname === "/api/v1/import/archives") {
+    const input = archivesImportSchema.parse(await readJson(request));
+    return json(
+      unwrap(
+        await clusterState(env, cluster.id).command(
+          cluster,
+          "importArchives",
+          input
+        )
+      )
+    );
+  }
   if (url.pathname === "/api/v1/import/archive") {
     const input = archiveImportSchema.parse(await readJson(request));
     return json(
