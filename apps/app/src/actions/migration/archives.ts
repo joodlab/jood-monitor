@@ -18,9 +18,12 @@ import {
 import {
   type archiveImportSchema,
   historicalObservationSchema,
+  inventoryReceiptSchema,
   storedMetricSchema,
 } from "../../schemas/migration";
+import { inventorySchema } from "../../schemas/telemetry";
 import { archiveId, writeArchive } from "../archives";
+import { contentEpoch, validateInventoryReceipts } from "../archives/inventory";
 import { normalizeTime } from "../clusters";
 
 export function historicalMetric(
@@ -70,6 +73,45 @@ function legacyScopeValid(data: unknown, clusterId: string) {
 }
 
 const metricKinds = new Set(["raw", "diagnostic"]);
+const compactKinds = new Set(["inventory-content", "inventory-receipts"]);
+
+async function compactInventory(
+  env: Env,
+  clusterId: string,
+  input: z.infer<typeof archiveImportSchema>,
+  start: string,
+  end: string
+) {
+  if (input.kind === "inventory-content") {
+    const inventory = inventorySchema.parse(input.data);
+    if (
+      start !== contentEpoch ||
+      end !== contentEpoch ||
+      input.points !== 0 ||
+      inventory.sourceTime !== "0001-01-01T00:00:00Z"
+    ) {
+      throw new HttpError(400, "inventory content must be timeless");
+    }
+    return inventory;
+  }
+  const receipts = inventoryReceiptSchema
+    .array()
+    .min(1)
+    .max(5000)
+    .parse(input.data)
+    .map((r) => ({ ...r, sourceTime: normalizeTime(r.sourceTime) }));
+  if (
+    input.points !== receipts.length ||
+    start !== bucketStart(timestampNano(start).toString(), 86_400) ||
+    timestampNano(end) !== timestampNano(start) + 86_400_000_000_000n - 1n ||
+    receipts.some((r) => r.sourceTime < start || r.sourceTime > end) ||
+    new Set(receipts.map((r) => r.id)).size !== receipts.length
+  ) {
+    throw new HttpError(400, "inventory receipt partition mismatch");
+  }
+  await validateInventoryReceipts(env, clusterId, receipts, input.expiresAt);
+  return receipts;
+}
 
 export async function importArchive(
   env: Env,
@@ -133,6 +175,14 @@ export async function importArchive(
       throw new HttpError(400, "archive observation scope mismatch");
     }
     data = observation;
+  } else if (compactKinds.has(input.kind)) {
+    data = await compactInventory(
+      env,
+      clusterId,
+      input,
+      sourceStart,
+      sourceEnd
+    );
   } else if (!legacyScopeValid(data, clusterId)) {
     throw new HttpError(400, "legacy archive scope mismatch");
   }

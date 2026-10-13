@@ -15,6 +15,15 @@ const registry = JSON.parse(
 const sections = [
   "Jood Monitor third-party dependency licenses\n\nDependencies retain their original licenses. This inventory includes runtime and build dependencies; inclusion does not imply that every package is shipped in the runtime bundle.",
 ];
+for (const file of [
+  "LICENSE",
+  "contracts/proto/LICENSE",
+  "licenses/shadcn-MIT.txt",
+]) {
+  sections.push(
+    `${file}\n${readFileSync(new URL(`../../${file}`, import.meta.url), "utf8")}`
+  );
+}
 const known = new Set();
 const licenseFile = /^(licen[sc]e|copying|notice|copyright)([.-]|$)/i;
 const supplemental = {
@@ -85,6 +94,15 @@ for (const license of Object.keys(registry).sort()) {
   }
 }
 if (process.argv.includes("--go")) {
+  const goRoot = execFileSync("go", ["env", "GOROOT"], {
+    encoding: "utf8",
+  }).trim();
+  const goVersion = execFileSync("go", ["version"], {
+    encoding: "utf8",
+  }).trim();
+  sections.push(
+    `${goVersion}\nGo standard library and runtime\n${readFileSync(join(goRoot, "LICENSE"), "utf8")}`
+  );
   const raw = execFileSync("go", ["list", "-m", "-json", "all"], {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,

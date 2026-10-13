@@ -749,6 +749,120 @@ try {
       { profile: false, heartbeat: false }
     );
     assert.equal(recoveredObservation.clusters[0].cluster.heartbeatAt, null);
+    const contentInput = {
+      kind: "inventory-content",
+      entityUid: "d".repeat(64),
+      sourceStart: "1970-01-01T00:00:00Z",
+      sourceEnd: "1970-01-01T00:00:00Z",
+      expiresAt: new Date(Date.now() + 187 * 86_400_000).toISOString(),
+      points: 0,
+      sourceDigest: "d".repeat(64),
+      data: {
+        ...restoration.inventory,
+        sourceTime: "0001-01-01T00:00:00Z",
+        entities: restoration.inventory.entities.map((e) => ({
+          ...e,
+          name: "First compact observation",
+        })),
+      },
+    };
+    await ok("/api/v1/import/archive?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(contentInput),
+    });
+    await ok("/api/v1/import/archive?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify({
+        ...contentInput,
+        entityUid: "e".repeat(64),
+        sourceDigest: "e".repeat(64),
+        data: {
+          ...contentInput.data,
+          entities: contentInput.data.entities.map((e) => ({
+            ...e,
+            name: "Second compact observation",
+          })),
+        },
+      }),
+    });
+    const firstStamp = source.replace("Z", "123456Z"),
+      nextStamp = source.replace("Z", "123457Z");
+    const dayStart = new Date(
+      Math.floor(Date.parse(source) / 86_400_000) * 86_400_000
+    ).toISOString();
+    const compactInput = {
+      kind: "inventory-receipts",
+      entityUid: "f".repeat(64),
+      sourceStart: dayStart,
+      sourceEnd: new Date(Date.parse(dayStart) + 86_400_000 - 1)
+        .toISOString()
+        .replace(".999Z", ".999999999Z"),
+      expiresAt: new Date(
+        Date.parse(dayStart) + 181 * 86_400_000
+      ).toISOString(),
+      points: 3,
+      sourceDigest: "f".repeat(64),
+      data: [
+        {
+          id: "9007199254740993",
+          sourceTime: firstStamp,
+          contentId: "d".repeat(64),
+          sourceDigest: "d".repeat(64),
+        },
+        {
+          id: "9007199254740994",
+          sourceTime: firstStamp,
+          contentId: "e".repeat(64),
+          sourceDigest: "e".repeat(64),
+        },
+        {
+          id: "9007199254740995",
+          sourceTime: nextStamp,
+          contentId: "d".repeat(64),
+          sourceDigest: "d".repeat(64),
+        },
+      ],
+    };
+    await ok("/api/v1/import/archive?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify(compactInput),
+    });
+    const preciseInventory = await (
+      await ok(
+        `/api/v1/snapshot?workspace=migrated&at=${encodeURIComponent(firstStamp)}`
+      )
+    ).json();
+    assert.equal(
+      preciseInventory.clusters[0].inventory.entities[0].name,
+      "Second compact observation"
+    );
+    assert.equal(preciseInventory.clusters[0].inventory.sourceTime, firstStamp);
+    const followingInventory = await (
+      await ok(
+        `/api/v1/snapshot?workspace=migrated&at=${encodeURIComponent(nextStamp)}`
+      )
+    ).json();
+    assert.equal(
+      followingInventory.clusters[0].inventory.entities[0].name,
+      "First compact observation"
+    );
+    assert.equal(
+      (
+        await call("/api/v1/import/archive?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({
+            ...compactInput,
+            entityUid: "a".repeat(64),
+            data: compactInput.data.map((r) => ({
+              ...r,
+              contentId: "a".repeat(64),
+            })),
+          }),
+        })
+      ).status,
+      409,
+      "missing content must fail before a receipt can reference it"
+    );
     assert.equal(
       (await call("/v1/metrics", { method: "POST" })).status,
       503,
