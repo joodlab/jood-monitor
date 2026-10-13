@@ -1,4 +1,5 @@
-# Preserve upstream protocol text and deterministic generator output verbatim.
+* text=auto eol=lf
+# Preserve upstream protocol whitespace and deterministic generator output.
 contracts/proto/** -whitespace
 apps/app/src/contracts/generated/** -whitespace
 licenses/** -whitespace

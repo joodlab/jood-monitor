@@ -14,6 +14,8 @@ facade modules with a D1 driver adapted from JoodLab's HR-Hajj project. HR-Hajj 
 Keenpix inform the project conventions; Keenpix application code is not included.
 
 React and TanStack packages use MIT licenses. Fumadocs is MIT licensed.
+Shared shadcn component primitives retain the upstream MIT license included
+at `licenses/shadcn-MIT.txt`.
 Kubernetes Go client libraries use Apache-2.0. Consult the lockfiles and installed
 packages for each dependency's complete license and notices.
 
