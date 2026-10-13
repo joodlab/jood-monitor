@@ -52,6 +52,28 @@ function row(
 }
 
 describe("lossless telemetry compatibility", () => {
+  it("preserves signed float zero in raw protobuf values and point identity", () => {
+    const now = Date.now(),
+      nano = BigInt(now) * 1_000_000n;
+    const negative = row("-0", nano, {
+      name: "k8s.node.cpu.usage",
+      unit: "{cpu}",
+      kind: "gauge",
+      temporality: 0,
+      monotonic: false,
+      integer: false,
+    });
+    const positive = { ...negative, value: "0" };
+    expect(metricKey(negative)).not.toBe(metricKey(positive));
+    const decoded = decodeTelemetry(
+      encodeTelemetry([negative]),
+      "fixture",
+      new Set(["node-fixture"]),
+      now
+    );
+    expect(decoded.rows[0].value).toBe("-0");
+    expect(Object.is(Number(decoded.rows[0].value), -0)).toBe(true);
+  });
   it("rejects points marked without a recorded value instead of displaying a numeric placeholder", () => {
     const now = Date.now();
     const request = fromBinary(

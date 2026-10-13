@@ -167,6 +167,9 @@ export function metricKey(
     | "temporality"
   >
 ) {
+  const numeric = row.integer
+    ? BigInt(row.value).toString()
+    : Number(row.value);
   return hash(
     canonical([
       row.clusterId,
@@ -176,7 +179,7 @@ export function metricKey(
       JSON.parse(row.attributes),
       JSON.parse(row.resource),
       JSON.parse(row.scope),
-      row.integer ? BigInt(row.value).toString() : String(Number(row.value)),
+      Object.is(numeric, -0) ? "-0" : String(numeric),
       row.integer,
       row.startTimeUnixNano,
       row.unit,
@@ -380,7 +383,7 @@ function decodePoint(
     temporality: context.temporality,
     monotonic: context.monotonic,
     integer: point.value.case === "asInt",
-    value: String(point.value.value),
+    value: Object.is(point.value.value, -0) ? "-0" : String(point.value.value),
     timeUnixNano: String(point.timeUnixNano),
     startTimeUnixNano: String(point.startTimeUnixNano),
     sourceTime: nanoTimestamp(point.timeUnixNano),
