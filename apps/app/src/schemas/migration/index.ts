@@ -37,6 +37,13 @@ export const historicalObservationSchema = observationImportSchema.extend({
   observationId: z.string().min(1).max(128),
 });
 
+export const inventoryReceiptSchema = z.strictObject({
+  id: z.string().regex(/^\d{1,20}$/),
+  sourceTime: z.string(),
+  contentId: z.string().regex(/^[a-f0-9]{64}$/),
+  sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
 const exactInteger = z.string().regex(/^-?\d{1,20}$/);
 export const storedMetricSchema = z.strictObject({
   id: z.number().int().nonnegative().safe(),
@@ -88,6 +95,8 @@ export const archiveImportSchema = z.strictObject({
     "raw",
     "diagnostic",
     "inventory",
+    "inventory-content",
+    "inventory-receipts",
     "legacy-rollups",
     "legacy-changes",
     "legacy-dirty",

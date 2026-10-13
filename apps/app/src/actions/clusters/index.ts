@@ -1,8 +1,6 @@
 import type { z } from "zod";
 import type {
   ClusterView,
-  Heartbeat,
-  Inventory,
   Lifecycle,
   Profile,
   Snapshot,
@@ -16,7 +14,6 @@ import {
   getCluster,
   getWorkspace,
   insertCluster,
-  lastInventory,
   listArchives,
   listClusters,
   listWorkspaces,
@@ -38,6 +35,7 @@ import {
   type workspaceSchema,
 } from "../../schemas/clusters";
 import { readArchiveObject } from "../archives";
+import { historicalInventory } from "../archives/inventory";
 
 export async function registerWorkspace(
   env: Env,
@@ -187,19 +185,8 @@ export async function getSnapshot(
     ) as ClusterView & { revision: number };
     revisions.push([cluster.id, view.revision]);
     if (input.at) {
-      const inventoryRow = await lastInventory(
-        getDb(env.DB),
-        cluster.id,
-        normalizeTime(input.at)
-      );
-      const observation = inventoryRow
-        ? await readArchiveObject<{
-            inventory: Inventory;
-            profile: Profile | null;
-            heartbeat: Heartbeat | null;
-            times: Partial<ClusterView["cluster"]>;
-          }>(env, inventoryRow.objectKey, inventoryRow.contentHash)
-        : null;
+      const saved = await historicalInventory(env, cluster.id, input.at);
+      const observation = saved ? { data: saved } : null;
       if (observation) {
         view.inventory = observation.data.inventory;
         view.profile = observation.data.profile ?? {
@@ -237,11 +224,13 @@ export async function getSnapshot(
         view.cluster.heartbeatAt = null;
       }
       const points =
-        at >= Date.now() - 7 * 86_400_000
+        at >= Date.now() - 7 * 86_400_000 + 1000
           ? await getHistory(env, {
               workspace: input.workspace,
               cluster: cluster.id,
-              from: new Date(at - 180_000).toISOString(),
+              from: new Date(
+                Math.max(at - 180_000, Date.now() - 7 * 86_400_000 + 1000)
+              ).toISOString(),
               to: input.at,
             })
           : [];

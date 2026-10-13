@@ -53,6 +53,11 @@ For legacy inventory observations that never recorded a profile, heartbeat or
 receipt time, preserve those fields as `null`. Historical snapshots report
 `observationMetadataAvailable` rather than borrowing current acknowledgments.
 
+Bulk migrations may store an immutable `inventory-content` object once and
+reference it from daily `inventory-receipts` archives. Receipt IDs and original
+source nanoseconds determine historical ordering. Content must exist, pass its
+checksum and remain retained at least as long as every referencing receipt.
+
 Legacy summary, change and pending-rollup records can be preserved as
 `legacy-rollups`, `legacy-changes` and `legacy-dirty` archives. These are retained
 source evidence; they are not presented as modern summaries with fields absent
