@@ -18,6 +18,7 @@ const slugsSchema = z.array(z.string().min(1).max(200)).max(20);
 
 interface DocsData {
   description?: string;
+  hubURL?: string;
   pageTree: Awaited<ReturnType<typeof source.serializePageTree>>;
   path: string;
   title: string;
@@ -30,8 +31,11 @@ const loadPage = createServerFn({ method: "GET" })
     if (!page) {
       throw notFound();
     }
+    const { env } = await import("cloudflare:workers");
+    const hubURL = (env as { HUB_URL?: string }).HUB_URL;
     return {
       description: page.data.description,
+      hubURL: hubURL || undefined,
       pageTree: await source.serializePageTree(source.getPageTree()),
       path: page.path,
       title: page.data.title,
@@ -78,7 +82,9 @@ function Docs() {
   return (
     <DocsLayout
       links={[
-        { text: "Dashboard", url: "/", external: true },
+        ...(data.hubURL
+          ? [{ text: "Dashboard", url: data.hubURL, external: true }]
+          : []),
         { text: "GitHub", url: "https://github.com/lord007tn/jood-monitor" },
       ]}
       nav={{ title: "Jood Monitor docs", url: "/docs" }}

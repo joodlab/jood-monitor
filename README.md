@@ -13,6 +13,8 @@ the dashboard, API and storage run on Cloudflare.
 The button clones the entire workspace and deploys the full-stack hub with the
 `cf` CLI. Documentation is a separate app, deployed with `pnpm deploy:docs`.
 Set `MONITOR_DOCS_URL` to its `/docs` URL when building the hub.
+Set `MONITOR_HUB_URL` to the hub's HTTPS origin when deploying docs so the
+Dashboard link opens your app.
 `wrangler.json` is discovery metadata for Cloudflare's button; actual builds
 and deployments use the native `cloudflare.config.ts` files and `cf`.
 
