@@ -4,6 +4,7 @@ import {
   archiveDocument,
   archiveId,
   readArchive,
+  readArchiveObject,
   writeArchive,
 } from "../actions/archives";
 import { maintainArchives } from "../actions/archives/maintenance";
@@ -828,12 +829,24 @@ export class ClusterState extends DurableObject<Env> {
       limit: 13,
     });
     const summariesOfHour: Rollup[] = [];
-    for (const part of parts) {
-      const document = await readArchive<Rollup[]>(this.env, part.id);
-      if (!document) {
-        throw new Error("hourly source summary unavailable");
+    for (let offset = 0; offset < parts.length; offset += 4) {
+      const settled = await Promise.allSettled(
+        parts
+          .slice(offset, offset + 4)
+          .map((part) =>
+            readArchiveObject<Rollup[]>(
+              this.env,
+              part.objectKey,
+              part.contentHash
+            )
+          )
+      );
+      for (const result of settled) {
+        if (result.status === "rejected") {
+          throw result.reason;
+        }
+        summariesOfHour.push(...result.value.data);
       }
-      summariesOfHour.push(...document.data);
     }
     const hourly = combineRollups(summariesOfHour);
     await writeArchive(
