@@ -52,6 +52,25 @@ function row(
 }
 
 describe("lossless telemetry compatibility", () => {
+  it("keeps historical monotonic flags distinct without changing existing Go identities", () => {
+    const counter = row("9007199254740993", 1_700_000_000_123_456_789n);
+    expect(counter.key).toBe(
+      "0a9113734649dd77b9aafe4facf0f5c231ef96809de72f72d3532a944a391cbb"
+    );
+    expect(metricKey({ ...counter, monotonic: false })).not.toBe(counter.key);
+    const now = Date.now();
+    const nonmonotonic = row("1", BigInt(now) * 1_000_000n, {
+      monotonic: false,
+    });
+    const rejected = decodeTelemetry(
+      encodeTelemetry([nonmonotonic]),
+      "fixture",
+      new Set(["node-fixture"]),
+      now
+    );
+    expect(rejected.rows).toHaveLength(0);
+    expect(rejected.rejected).toBe(1);
+  });
   it("preserves signed float zero in raw protobuf values and point identity", () => {
     const now = Date.now(),
       nano = BigInt(now) * 1_000_000n;

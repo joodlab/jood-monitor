@@ -1635,6 +1635,41 @@ try {
       ...historyInput.events[0],
       observedAt: new Date(Date.now() - 181 * 86_400_000).toISOString(),
     };
+    const historicalSums = [true, false].map((monotonic, ordinal) => ({
+      ...legacyPoint,
+      id: legacyPoint.id + 100_000 + ordinal,
+      entityUid: "historical-sum-flags",
+      name: "system.network.io",
+      kind: "sum",
+      temporality: 2,
+      monotonic,
+      startTimeUnixNano: "1",
+    }));
+    const sumArchive = await (
+      await ok("/api/v1/import/archive?cluster=migrated", {
+        method: "POST",
+        body: JSON.stringify({
+          ...restoredArchive,
+          entityUid: "historical-sum-flags",
+          points: historicalSums.length,
+          data: historicalSums,
+        }),
+      })
+    ).json();
+    const sumExport = await (
+      await ok(
+        `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${sumArchive.id}`
+      )
+    ).json();
+    assert.equal(sumExport.document.data.length, 2);
+    assert.equal(
+      new Set(sumExport.document.data.map((point) => point.key)).size,
+      2
+    );
+    assert.deepEqual(
+      sumExport.document.data.map((point) => point.monotonic),
+      [true, false]
+    );
     await ok("/api/v1/import/history?cluster=migrated", {
       method: "POST",
       body: JSON.stringify({
