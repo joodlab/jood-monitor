@@ -362,11 +362,16 @@ export class ClusterStorage {
   }
 
   appendEvent(event: Lifecycle) {
+    const normalized = {
+      ...event,
+      observedAt: nanoTimestamp(timestampNano(event.observedAt)),
+      receivedAt: nanoTimestamp(timestampNano(event.receivedAt)),
+    };
     this.storage.sql.exec(
       "INSERT OR IGNORE INTO events(id,source,payload) VALUES(?,?,?)",
-      event.id,
-      event.observedAt,
-      JSON.stringify(event)
+      normalized.id,
+      normalized.observedAt,
+      JSON.stringify(normalized)
     );
   }
 
@@ -429,15 +434,15 @@ export class ClusterStorage {
       );
       this.storage.sql.exec(
         "DELETE FROM latest WHERE source < ?",
-        new Date(now - 7 * 86_400_000).toISOString()
+        nanoTimestamp(BigInt(now - 7 * 86_400_000) * 1_000_000n)
       );
       this.storage.sql.exec(
         "DELETE FROM events WHERE source < ?",
-        new Date(now - 180 * 86_400_000).toISOString()
+        nanoTimestamp(BigInt(now - 180 * 86_400_000) * 1_000_000n)
       );
       this.storage.sql.exec(
         "DELETE FROM partition_stats WHERE bucket < ?",
-        new Date(now - 8 * 86_400_000).toISOString()
+        nanoTimestamp(BigInt(now - 8 * 86_400_000) * 1_000_000n)
       );
     });
   }
