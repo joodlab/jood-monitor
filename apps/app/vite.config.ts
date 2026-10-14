@@ -10,7 +10,7 @@ export default defineConfig({
     ...(process.env.NODE_ENV === "development" ? [devtools()] : []),
     cloudflare({ viteEnvironment: { name: "ssr" } }),
     tailwindcss(),
-    tanstackStart({ server: { entry: "./src/server.ts" } }),
+    tanstackStart({ server: { entry: "./server.ts" } }),
     react(),
   ],
 });
