@@ -281,7 +281,121 @@ try {
     },
     body: gzipSync(body),
   };
+  await mf.setOptions(options("0", "1", temporary, "1"));
+  const fencedBefore = await (
+    await ok("/api/v1/snapshot?workspace=fixture")
+  ).json();
+  const fencedStatus = await (
+    await ok("/api/v1/clusters/fixture/status")
+  ).json();
+  assert.equal(fencedStatus.migrationEnabled, true);
+  for (const [path, init] of [
+    ["/v1/metrics", delivery],
+    [
+      "/machine/v1/inventory",
+      {
+        method: "PUT",
+        headers: machine,
+        body: JSON.stringify(inventory),
+      },
+    ],
+    [
+      "/machine/v1/heartbeat",
+      {
+        method: "POST",
+        headers: machine,
+        body: JSON.stringify({
+          version: "stale-worker-fixture",
+          appliedRevision: 1,
+          queueBytes: 0,
+          dropped: 0,
+          rejectedPoints: 0,
+          capabilities: [],
+          outcome: "connected",
+          nodes: [],
+        }),
+      },
+    ],
+    [
+      "/machine/v1/lifecycle",
+      {
+        method: "POST",
+        headers: machine,
+        body: JSON.stringify({
+          id: "stale-worker-receipt",
+          action: "resize",
+          serverId: "fixture-server",
+          before: "small",
+          after: "large",
+          observedAt: source,
+          correlationId: "fixture",
+        }),
+      },
+    ],
+  ]) {
+    assert.equal(
+      (await call(`/__test/stale-machine${path}`, init)).status,
+      503,
+      `fenced Durable Object must reject delayed live Worker writes: ${path}`
+    );
+  }
+  assert.equal(
+    (
+      await call("/__test/stale-machine/machine/v1/profile", {
+        headers: machine,
+      })
+    ).status,
+    200,
+    "read-only profile access remains available during a fence"
+  );
+  assert.equal(
+    (
+      await call("/__test/stale-operator/api/v1/clusters/fixture/profile", {
+        method: "POST",
+        body: JSON.stringify({ ...profile, revision: profile.revision + 1 }),
+      })
+    ).status,
+    503,
+    "fenced Durable Object must reject a delayed operator profile RPC"
+  );
+  const fencedAfter = await (
+    await ok("/api/v1/snapshot?workspace=fixture")
+  ).json();
+  assert.deepEqual(
+    fencedAfter.clusters,
+    fencedBefore.clusters,
+    "delayed calls must not change fenced observations, profiles or latest metrics"
+  );
+  const statusAfterFence = await (
+    await ok("/api/v1/clusters/fixture/status")
+  ).json();
+  for (const field of ["revision", "metricSequence", "bufferedPoints"]) {
+    assert.equal(
+      statusAfterFence[field],
+      fencedStatus[field],
+      `delayed calls must not change fenced ${field}`
+    );
+  }
+  assert.deepEqual(
+    (
+      await (
+        await ok("/api/v1/export/batches?workspace=fixture&cluster=fixture")
+      ).json()
+    ).rows,
+    [],
+    "fenced calls must not create accepted-batch receipts"
+  );
   await mf.setOptions(options("0", "0", temporary, "1"));
+  assert.equal(
+    (
+      await call("/__test/stale-operator/api/v1/clusters/fixture/profile", {
+        method: "POST",
+        body: JSON.stringify({ ...profile, revision: profile.revision + 1 }),
+      })
+    ).status,
+    503,
+    "recovery Durable Object must keep delayed operator profile writes closed"
+  );
   assert.equal(
     (
       await call("/api/v1/clusters/fixture/profile", {
@@ -1948,6 +2062,50 @@ try {
       assert.equal(summary.total, "6");
     }
   }
+  await ok("/api/v1/import/observation?cluster=parallel", {
+    method: "POST",
+    body: JSON.stringify(restoration),
+  });
+  const otlpImport = {
+    ...delivery,
+    headers: { ...delivery.headers, Authorization: operator.Authorization },
+  };
+  const importBefore = await (
+    await ok("/api/v1/clusters/parallel/status")
+  ).json();
+  assert.equal(importBefore.migrationEnabled, true);
+  const importedOtlp = await ok(
+    "/api/v1/import/otlp?cluster=parallel",
+    otlpImport
+  );
+  assert.equal(
+    (await importedOtlp.arrayBuffer()).byteLength,
+    0,
+    "authenticated operator OTLP imports retain the protobuf acknowledgment"
+  );
+  const importAfter = await (
+    await ok("/api/v1/clusters/parallel/status")
+  ).json();
+  assert.equal(importAfter.metricSequence, importBefore.metricSequence + 1);
+  assert.equal(importAfter.bufferedPoints, importBefore.bufferedPoints + 1);
+  await ok("/api/v1/import/otlp?cluster=parallel", otlpImport);
+  assert.equal(
+    (await (await ok("/api/v1/clusters/parallel/status")).json())
+      .metricSequence,
+    importAfter.metricSequence,
+    "operator OTLP import retries remain idempotent"
+  );
+  await mf.setOptions(options("0", "0", temporary, "1"));
+  assert.equal(
+    (
+      await call(
+        "/__test/stale-migration/api/v1/import/otlp?cluster=parallel",
+        otlpImport
+      )
+    ).status,
+    403,
+    "live Durable Object must reject a delayed migration import RPC"
+  );
   process.stdout.write(
     "PASS: native D1 migrations/Prisma atomic rollback, scoped auth and WebSocket origins, one-use enrollment, gzip OTLP/int64/nanos, retry/restart, archival failure/backpressure recovery, concurrent dedupe/profile guards, exact source variants and durable garbage collection.\n"
   );

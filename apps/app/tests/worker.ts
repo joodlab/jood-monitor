@@ -4,6 +4,7 @@ import { ClusterStorage } from "../src/db/cluster-storage";
 import { ClusterState } from "../src/durable-objects/cluster-state";
 import { clusterState, type Env } from "../src/env";
 import { apiError, dispatchApi } from "../src/lib/server/api";
+import { machineApi } from "../src/lib/server/api-machine";
 import { requireOperator } from "../src/lib/server/auth";
 import { nanoTimestamp } from "../src/lib/server/time";
 
@@ -91,6 +92,31 @@ export default {
   async fetch(request: Request, env: Env) {
     try {
       const url = new URL(request.url);
+      if (url.pathname.startsWith("/__test/stale-machine/")) {
+        // Simulate a request admitted by the previous live Worker while the
+        // shared Durable Object already has its fenced deployment environment.
+        const path = url.pathname.slice("/__test/stale-machine".length);
+        return await machineApi(
+          request,
+          { ...env, MIGRATION_ENABLED: "0" },
+          path
+        );
+      }
+      if (url.pathname.startsWith("/__test/stale-operator/")) {
+        url.pathname = url.pathname.slice("/__test/stale-operator".length);
+        return await dispatchApi(new Request(url, request), {
+          ...env,
+          MIGRATION_ENABLED: "0",
+          RECOVERY_ENABLED: "0",
+        });
+      }
+      if (url.pathname.startsWith("/__test/stale-migration/")) {
+        url.pathname = url.pathname.slice("/__test/stale-migration".length);
+        return await dispatchApi(new Request(url, request), {
+          ...env,
+          MIGRATION_ENABLED: "1",
+        });
+      }
       if (url.pathname.startsWith("/__test/")) {
         requireOperator(request, env);
         if (url.pathname === "/__test/batch-rollback") {

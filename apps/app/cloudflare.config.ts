@@ -91,7 +91,7 @@ export default defineConfig(({ mode }) => ({
       ...(process.env.MONITOR_DOCS_URL
         ? { DOCS_URL: bindings.text(process.env.MONITOR_DOCS_URL) }
         : {}),
-      VERSION: bindings.text("0.1.0"),
+      VERSION: bindings.text("0.1.1"),
       RELEASE: bindings.versionMetadata(),
     },
   },
