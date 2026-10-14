@@ -4,12 +4,13 @@ import { getDb } from "../../db";
 import type { Env } from "../../env";
 import { HttpError } from "../../lib/server/http";
 import { idSchema } from "../../schemas/clusters";
-import { requireCluster } from "../clusters";
+import { requireCluster, validRangeTime } from "../clusters";
 import { readArchiveObject } from "./index";
 
 const querySchema = z.object({
   workspace: idSchema.or(z.literal("global")),
   cluster: idSchema,
+  receivedSince: z.string().optional(),
   cursor: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
@@ -42,6 +43,12 @@ export async function exportArchives(env: Env, url: URL) {
     };
   }
   let query = db.orm.Archive.where({ clusterId: cluster.id });
+  if (input.receivedSince) {
+    // Index receipt clocks are milliseconds. Include their whole boundary millisecond,
+    // then select accepted rows by the recorded sequence to retain late source times.
+    const since = new Date(validRangeTime(input.receivedSince)).toISOString();
+    query = query.where((a) => a.receivedAt.gte(since));
+  }
   if (input.cursor) {
     query = query.where((a) => a.id.gt(input.cursor ?? ""));
   }

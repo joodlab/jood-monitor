@@ -115,6 +115,16 @@ records in pages with checksums. Both exports require workspace and cluster scop
 These are parts of a recovery manifest; registry verifiers, referenced R2 objects
 and any retry state still require coordinated protected backup.
 
+Record the cluster status's `metricSequence` and `revision` at the writer boundary.
+Archive enumeration accepts `receivedSince` to select indexes saved after that
+boundary, independently of their source-time interval. Its boundary millisecond
+is included conservatively. Fence and drain before a reverse export, then use
+the recorded sequence and original identities to select post-boundary samples;
+a source-time filter alone would omit late arrivals. Read back the selected
+objects and reconcile observation, registry and event changes separately before
+returning writes to an earlier hub. Export selection is not a completed rollback
+or a substitute for a tested target-to-source replay adapter.
+
 After parity and recovery checks, redeploy without `MONITOR_MIGRATION`. Confirm
 import routes return `403` and only then redirect live agents to the target.
 

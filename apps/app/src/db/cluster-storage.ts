@@ -459,6 +459,8 @@ export class ClusterStorage {
       bytes: this.size,
       allocatedBytes: this.storage.sql.databaseSize,
       quotaBytes: 448 * 1024 * 1024,
+      metricSequence: this.get<number>("metricSequence") ?? 0,
+      revision: this.revision,
       archiveError: this.get("archiveError"),
     };
   }

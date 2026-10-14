@@ -507,6 +507,8 @@ export interface components {
         };
         StatusResponse: {
             status: string;
+            metricSequence: number;
+            revision: number;
         };
         Workspace: {
             id: string;
@@ -1219,6 +1221,8 @@ export interface operations {
                 workspace: string;
                 cluster: string;
                 cursor?: string;
+                /** @description Include archives saved at or after this receipt boundary. Fence writers and drain before consistent rollback export; source time alone misses late arrivals. */
+                receivedSince?: string;
             };
             header?: never;
             path?: never;
