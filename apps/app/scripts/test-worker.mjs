@@ -1485,6 +1485,106 @@ try {
         fullWidth[ordinal].data[59].resource
       );
     }
+    const wideReplacements = fullWidth.map((archive, ordinal) => ({
+      expectedContentHash: wideReceipts[ordinal].contentHash,
+      archive: {
+        ...archive,
+        sourceDigest: "4".repeat(64),
+        data: archive.data.map((point) => ({
+          ...point,
+          value: (BigInt(point.value) + 5n).toString(),
+        })),
+      },
+    }));
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({
+            replacements: wideReplacements.map((entry, ordinal) =>
+              ordinal === 31
+                ? { ...entry, expectedContentHash: "0".repeat(64) }
+                : entry
+            ),
+          }),
+        })
+      ).status,
+      409,
+      "a stale final member must not publish the earlier replacements"
+    );
+    const assertWideUnchanged = async () => {
+      for (const receipt of wideReceipts) {
+        assert.equal(
+          await recoveryDb
+            .prepare('SELECT contentHash FROM "Archive" WHERE id=?')
+            .bind(receipt.id)
+            .first("contentHash"),
+          receipt.contentHash
+        );
+      }
+    };
+    await assertWideUnchanged();
+    await mf.setOptions(options("index", "1", join(temporary, "recovery")));
+    assert.equal(
+      (
+        await call("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({ replacements: wideReplacements }),
+        })
+      ).status,
+      503
+    );
+    await mf.setOptions(options("0", "1", join(temporary, "recovery")));
+    recoveryDb = await mf.getD1Database("DB");
+    await assertWideUnchanged();
+    let wideAmended;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      wideAmended = await (
+        await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+          method: "POST",
+          body: JSON.stringify({ replacements: wideReplacements }),
+        })
+      ).json();
+      assert.equal(wideAmended.length, 32);
+    }
+    for (const [ordinal, replacement] of wideReplacements.entries()) {
+      const exported = await (
+        await ok(
+          `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${wideAmended[ordinal].id}`
+        )
+      ).json();
+      assert.equal(exported.document.data.length, 60);
+      for (const [pointIndex, expected] of replacement.archive.data.entries()) {
+        const {
+          key: _key,
+          series: _series,
+          ...point
+        } = exported.document.data[pointIndex];
+        assert.deepEqual(point, expected);
+      }
+    }
+    await ok("/api/v1/import/reconcile-archives?cluster=migrated", {
+      method: "POST",
+      body: JSON.stringify({
+        deletions: wideAmended.map((receipt, ordinal) => ({
+          id: receipt.id,
+          expectedContentHash: receipt.contentHash,
+          kind: "raw",
+          entityUid: fullWidth[ordinal].entityUid,
+          sourceStart: fullWidth[ordinal].sourceStart,
+        })),
+      }),
+    });
+    for (const receipt of wideAmended) {
+      assert.equal(
+        (
+          await call(
+            `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${receipt.id}`
+          )
+        ).status,
+        404
+      );
+    }
     const importedEvent = {
       ...historyInput.events[0],
       observedAt: new Date(Date.now() - 181 * 86_400_000).toISOString(),
