@@ -191,6 +191,28 @@ try {
     headers: machine,
     body: JSON.stringify(inventory),
   });
+  const sameInstantEvents = await (
+    await ok(
+      `/api/v1/events?workspace=fixture&cluster=fixture&from=${encodeURIComponent(source)}&to=${encodeURIComponent(source)}`
+    )
+  ).json();
+  assert.equal(
+    sameInstantEvents.length,
+    1,
+    "inventory lifecycle events must match an exact-time range despite differing fractional precision"
+  );
+  assert.equal(
+    BigInt(Date.parse(sameInstantEvents[0].observedAt)) * 1_000_000n,
+    BigInt(Date.parse(source)) * 1_000_000n
+  );
+  const retentionBoundary = await (
+    await ok("/__test/retention-boundary?cluster=fixture")
+  ).json();
+  assert.deepEqual(
+    retentionBoundary,
+    { before: false, after: true },
+    "expiration must distinguish both sides of a one-nanosecond boundary"
+  );
   const profile = await (
     await ok("/machine/v1/profile", { headers: machine })
   ).json();

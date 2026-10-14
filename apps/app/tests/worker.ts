@@ -1,9 +1,11 @@
 import { requireCluster } from "../src/actions/clusters";
 import { getDb } from "../src/db";
+import { ClusterStorage } from "../src/db/cluster-storage";
 import { ClusterState } from "../src/durable-objects/cluster-state";
 import { clusterState, type Env } from "../src/env";
 import { apiError, dispatchApi } from "../src/lib/server/api";
 import { requireOperator } from "../src/lib/server/auth";
+import { nanoTimestamp } from "../src/lib/server/time";
 
 // biome-ignore lint/performance/noBarrelFile: The isolated Worker test entry must export its Durable Object classes.
 export { WorkspaceStream } from "../src/durable-objects/workspace-stream";
@@ -50,6 +52,31 @@ export class TestClusterState extends ClusterState {
     this.fixtureStorage.sql.exec(
       `UPDATE buffer_usage SET bytes=${expression} WHERE id=1`
     );
+  }
+  fixtureRetentionBoundary() {
+    const store = new ClusterStorage(this.fixtureStorage);
+    const now = Date.now();
+    const cutoff = BigInt(now - 180 * 86_400_000) * 1_000_000n;
+    store.transaction(() => {
+      for (const delta of [-1n, 1n]) {
+        store.appendEvent({
+          id: `fixture-clock-${delta}`,
+          clusterId: "fixture",
+          kind: "fixture",
+          before: "null",
+          after: "null",
+          evidence: "Synthetic retention boundary",
+          attribution: "unknown",
+          observedAt: nanoTimestamp(cutoff + delta),
+          receivedAt: nanoTimestamp(cutoff + delta),
+        });
+      }
+    });
+    store.maintenance(now);
+    return {
+      before: store.event("fixture-clock--1") !== null,
+      after: store.event("fixture-clock-1") !== null,
+    };
   }
 }
 
@@ -111,6 +138,12 @@ export default {
             ((await request.json()) as { block: boolean }).block
           );
           return Response.json({ ok: true });
+        }
+        if (url.pathname === "/__test/retention-boundary") {
+          const stub = env.CLUSTERS.get(
+            env.CLUSTERS.idFromName(cluster.id)
+          ) as DurableObjectStub<TestClusterState>;
+          return Response.json(await stub.fixtureRetentionBoundary());
         }
         return Response.json(
           await clusterState(env, cluster.id).command(cluster, "status", null)
