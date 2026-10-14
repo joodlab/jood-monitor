@@ -125,7 +125,7 @@ export async function migrationApi(request: Request, env: Env, url: URL) {
     }
     const body = await readBody(request);
     const receipt = unwrap(
-      await clusterState(env, cluster.id).ingest(
+      await clusterState(env, cluster.id).importOtlp(
         cluster,
         body,
         request.headers.get("X-Jood-Batch-ID") ?? hash(body)

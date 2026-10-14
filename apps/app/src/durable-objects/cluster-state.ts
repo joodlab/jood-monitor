@@ -156,12 +156,33 @@ export class ClusterState extends DurableObject<Env> {
     );
   }
 
+  private requireLiveWrites(kind: string) {
+    if (this.env.MIGRATION_ENABLED === "1") {
+      throw new HttpError(
+        503,
+        "isolated migration target; live ingestion closed"
+      );
+    }
+    if (kind === "profile" && this.env.RECOVERY_ENABLED === "1") {
+      throw new HttpError(503, "recovery window; operator writes closed");
+    }
+  }
+
   async command(
     cluster: ClusterRow,
     kind: string,
     input: unknown
   ): Promise<ClusterReply> {
     try {
+      // A previous Worker version may have admitted this RPC before the fence.
+      // Reject it here before initialization, quota accounting or scheduling.
+      if (
+        ["inventory", "heartbeat", "profile", "lifecycle", "ingest"].includes(
+          kind
+        )
+      ) {
+        this.requireLiveWrites(kind);
+      }
       this.initialize(cluster);
       if (this.restoring) {
         throw new HttpError(503, "archive restore in progress; retry");
@@ -243,7 +264,31 @@ export class ClusterState extends DurableObject<Env> {
     body: Uint8Array,
     batchId: string
   ): Promise<ClusterReply<{ rejected: number }>> {
+    return await this.acceptTelemetry(cluster, body, batchId, false);
+  }
+
+  async importOtlp(
+    cluster: ClusterRow,
+    body: Uint8Array,
+    batchId: string
+  ): Promise<ClusterReply<{ rejected: number }>> {
+    return await this.acceptTelemetry(cluster, body, batchId, true);
+  }
+
+  private async acceptTelemetry(
+    cluster: ClusterRow,
+    body: Uint8Array,
+    batchId: string,
+    migrationImport: boolean
+  ): Promise<ClusterReply<{ rejected: number }>> {
     try {
+      if (migrationImport) {
+        if (this.env.MIGRATION_ENABLED !== "1") {
+          throw new HttpError(403, "migration window closed");
+        }
+      } else {
+        this.requireLiveWrites("ingest");
+      }
       if (this.restoring) {
         throw new HttpError(503, "archive restore in progress; retry");
       }
