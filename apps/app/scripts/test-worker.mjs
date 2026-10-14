@@ -851,6 +851,52 @@ try {
         `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${restore.id}`
       )
     ).json();
+    for (const [field, value] of [
+      ["attributes", "[]"],
+      ["attributes", "invalid-json"],
+      ["resource", "[]"],
+      ["scope", "[]"],
+      [
+        "resource",
+        '{"attributes":[{"key":"fixture","value":{"intValue":"invalid"}}]}',
+      ],
+    ]) {
+      const invalid = { ...legacyPoint, [field]: value };
+      for (const [path, body] of [
+        ["archive", { ...restoredArchive, data: [invalid] }],
+        ["history", { batchId: "7".repeat(64), metrics: [invalid] }],
+        [
+          "reconcile-state",
+          {
+            expectedStateHash: null,
+            observation: restoration,
+            latestMetrics: [invalid],
+          },
+        ],
+      ]) {
+        assert.equal(
+          (
+            await call(`/api/v1/import/${path}?cluster=migrated`, {
+              method: "POST",
+              body: JSON.stringify(body),
+            })
+          ).status,
+          400,
+          `malformed ${field} must be a validation error for ${path}`
+        );
+      }
+    }
+    assert.equal(
+      (
+        await (
+          await ok(
+            `/api/v1/export/archive?workspace=migrated&cluster=migrated&id=${restore.id}`
+          )
+        ).json()
+      ).index.contentHash,
+      recoveredExport.index.contentHash,
+      "invalid source representations must not replace existing history"
+    );
     assert.equal(
       recoveredExport.document.data[0].receivedAt,
       legacyPoint.receivedAt

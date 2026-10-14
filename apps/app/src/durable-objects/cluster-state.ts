@@ -9,7 +9,10 @@ import {
 } from "../actions/archives";
 import { maintainArchives } from "../actions/archives/maintenance";
 import { normalizeTime } from "../actions/clusters";
-import { historicalMetric, importArchive } from "../actions/migration/archives";
+import {
+  historicalMetrics,
+  importArchive,
+} from "../actions/migration/archives";
 import { deleteMigrationArchive } from "../actions/migration/reconcile";
 import type {
   ClusterView,
@@ -36,11 +39,7 @@ import {
   combineRollups,
   type Rollup,
 } from "../lib/server/rollups";
-import {
-  compareMetrics,
-  decodeTelemetry,
-  encodeTelemetry,
-} from "../lib/server/telemetry";
+import { compareMetrics, decodeTelemetry } from "../lib/server/telemetry";
 import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
 import { profileSchema } from "../schemas/clusters";
 import {
@@ -700,10 +699,9 @@ export class ClusterState extends DurableObject<Env> {
         "state reconciliation requires a drained writer"
       );
     }
-    const rows = input.latestMetrics
-      .map((row) => historicalMetric(row, cluster.id))
-      .sort((a, b) => a.series.localeCompare(b.series));
-    encodeTelemetry(rows);
+    const rows = historicalMetrics(input.latestMetrics, cluster.id).sort(
+      (a, b) => a.series.localeCompare(b.series)
+    );
     if (new Set(rows.map((row) => row.series)).size !== rows.length) {
       throw new HttpError(400, "duplicate latest metric series");
     }
@@ -828,10 +826,7 @@ export class ClusterState extends DurableObject<Env> {
     if (this.db.batch(batch)) {
       return { status: "already committed" };
     }
-    const rows: StoredMetric[] = input.metrics.map((row) =>
-      historicalMetric(row, cluster.id)
-    );
-    encodeTelemetry(rows);
+    const rows = historicalMetrics(input.metrics, cluster.id);
     if (input.events.some((event) => event.clusterId !== cluster.id)) {
       throw new HttpError(400, "historical event scope mismatch");
     }
