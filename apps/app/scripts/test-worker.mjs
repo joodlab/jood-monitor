@@ -1835,6 +1835,119 @@ try {
     ).status,
     403
   );
+  await mf.setOptions(options("0", "1"));
+  const parallelRegistry = structuredClone(sourceRegistry);
+  parallelRegistry.workspaces = [
+    { id: "parallel", name: "Synthetic archival" },
+  ];
+  parallelRegistry.clusters[0].id = "parallel";
+  parallelRegistry.clusters[0].workspaceId = "parallel";
+  parallelRegistry.clusters[0].credentialHash = createHash("sha256")
+    .update("synthetic-parallel-credential")
+    .digest("hex");
+  await ok("/api/v1/import/registry", {
+    method: "POST",
+    body: JSON.stringify(parallelRegistry),
+  });
+  // Two buckets in one hour plus raw/diagnostic series exercise shared-summary writes.
+  const parallelHour =
+    Math.floor((Date.now() - 7_200_000) / 3_600_000) * 3_600_000;
+  const parallelPoints = [];
+  for (let entity = 0; entity < 42; entity++) {
+    for (let bucket = 0; bucket < 2; bucket++) {
+      for (const diagnostic of entity < 6 ? [false, true] : [false]) {
+        for (let sample = 0; sample < 2; sample++) {
+          const instant = parallelHour + bucket * 300_000 + sample * 1000;
+          parallelPoints.push({
+            ...legacyPoint,
+            id: 2_000_000 + parallelPoints.length,
+            clusterId: "parallel",
+            entityUid: `parallel-node-${entity}`,
+            diagnostic,
+            name: diagnostic ? "process.cpu.utilization" : legacyPoint.name,
+            value: String(sample + 1),
+            timeUnixNano: String(BigInt(instant) * 1_000_000n),
+            sourceTime: new Date(instant).toISOString(),
+          });
+        }
+      }
+    }
+  }
+  await ok("/api/v1/import/history?cluster=parallel", {
+    method: "POST",
+    body: JSON.stringify({
+      batchId: "8".repeat(64),
+      metrics: parallelPoints,
+    }),
+  });
+  await mf.setOptions(options("index", "1"));
+  assert.equal((await call("/__test/flush?cluster=parallel")).status, 503);
+  assert.equal(
+    (await (await ok("/api/v1/clusters/parallel/status")).json())
+      .bufferedPoints,
+    parallelPoints.length,
+    "failed publication must retain all buffered samples"
+  );
+  await mf.setOptions(options("0", "1"));
+  await ok("/api/v1/import/history?cluster=parallel", {
+    method: "POST",
+    body: JSON.stringify({
+      batchId: "9".repeat(64),
+      observations: Array.from({ length: 20 }, (_, index) => ({
+        ...restoration,
+        observationId: `parallel-inventory-${index}`,
+      })),
+    }),
+  });
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const status = await (await ok("/__test/flush?cluster=parallel")).json();
+    if (
+      !(
+        status.bufferedPoints ||
+        status.pendingInventories ||
+        status.dirtyPartitions
+      )
+    ) {
+      break;
+    }
+    assert.ok(attempt < 29, "parallel archival must drain bounded work");
+  }
+  const parallelIndexes = await (
+    await ok("/api/v1/export/archives?workspace=parallel&cluster=parallel")
+  ).json();
+  assert.equal(
+    parallelIndexes.rows.filter((row) => row.kind === "inventory").length,
+    20
+  );
+  const parallelRaw = parallelIndexes.rows.filter((row) =>
+    ["raw", "diagnostic"].includes(row.kind)
+  );
+  assert.equal(
+    parallelRaw.reduce((sum, row) => sum + row.points, 0),
+    parallelPoints.length
+  );
+  const parallelHours = parallelIndexes.rows.filter(
+    (row) => row.kind === "hour"
+  );
+  assert.equal(parallelHours.length, 42);
+  for (const row of parallelHours) {
+    const exported = await (
+      await ok(
+        `/api/v1/export/archive?workspace=parallel&cluster=parallel&id=${row.id}`
+      )
+    ).json();
+    const series =
+      Number(row.entityUid.replace("parallel-node-", "")) < 6 ? 2 : 1;
+    assert.equal(exported.document.data.length, series);
+    for (const summary of exported.document.data) {
+      assert.equal(
+        summary.count,
+        4,
+        "both buckets must survive shared hourly updates"
+      );
+      assert.equal(summary.total, "6");
+    }
+  }
   process.stdout.write(
     "PASS: native D1 migrations/Prisma atomic rollback, scoped auth and WebSocket origins, one-use enrollment, gzip OTLP/int64/nanos, retry/restart, archival failure/backpressure recovery, concurrent dedupe/profile guards, exact source variants and durable garbage collection.\n"
   );
