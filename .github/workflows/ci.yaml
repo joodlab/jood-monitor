@@ -20,6 +20,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm generate && pnpm proto:generate && pnpm db:emit && node scripts/db/prisma-to-d1.mjs --check && git diff --exit-code
       - run: pnpm build
+      - run: pnpm test:start
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm test:worker

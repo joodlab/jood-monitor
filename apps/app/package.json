@@ -13,7 +13,8 @@
     "db:migrate:local": "node ../../scripts/db/migrate.mjs --local",
     "db:migrate:remote": "node ../../scripts/db/migrate.mjs --remote",
     "deploy": "node ../../scripts/cloudflare/deploy.mjs app",
-    "test:worker": "node scripts/test-worker.mjs"
+    "test:worker": "node scripts/test-worker.mjs",
+    "test:start": "node scripts/test-start.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",
@@ -27,9 +28,9 @@
     "@tanstack/react-form-devtools": "0.2.27",
     "@tanstack/react-query": "5.104.0",
     "@tanstack/react-query-devtools": "5.104.0",
-    "@tanstack/react-router": "1.170.40",
+    "@tanstack/react-router": "1.170.44",
     "@tanstack/react-router-devtools": "1.167.2",
-    "@tanstack/react-start": "1.168.59",
+    "@tanstack/react-start": "1.169.1",
     "@tanstack/react-table": "8.21.3",
     "@xyflow/react": "12.10.1",
     "decimal.js": "10.6.0",
@@ -52,6 +53,7 @@
     "esbuild": "0.28.2",
     "miniflare": "5.20261006.2-beta",
     "prisma": "8.0.0-rc.22",
+    "seroval": "1.6.9",
     "vite": "8.2.1",
     "cf": "1.0.0-beta.12"
   }

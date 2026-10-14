@@ -37,7 +37,10 @@ are pinned and native runtime tests cover database writes and recovery. Read
 
 ## Run locally
 
-Use Node.js 24, pnpm 10.30.3 and the Go version in `go.mod`.
+Use Node.js 24.11 or later in the 24.x line, pnpm 10.30.3 and the Go version in
+`go.mod`. Both web apps pin TanStack Start 1.169.1 and Vite 8.2.1. Start requires
+Node.js 22.12 and the pinned Prisma CLI requires 22.18; release tooling sets the
+workspace's supported Node ranges to `^22.19.0 || ^24.11.0 || >=26.0.0`.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -91,6 +94,7 @@ pnpm typecheck
 pnpm build
 pnpm test
 pnpm test:worker
+pnpm test:start # exercises both compiled Cloudflare Workers; run after pnpm build
 pnpm knip
 go vet ./...
 go test ./...
