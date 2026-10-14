@@ -81,6 +81,23 @@ export function findArchive(db: Db, id: string) {
   return db.orm.Archive.where({ id }).first();
 }
 
+export async function archiveChecksums(db: Db, ids: string[]) {
+  if (!ids.length) {
+    return new Map<string, { contentHash: string }>();
+  }
+  const query = `SELECT "id","contentHash" FROM "Archive" WHERE "id" IN (${ids.map(() => "?").join(",")})`;
+  const found = await db.d1
+    .prepare(query)
+    .bind(...ids)
+    .all<{ id: string; contentHash: string }>();
+  return new Map(
+    (found.results ?? []).map((row) => [
+      row.id,
+      { contentHash: row.contentHash },
+    ])
+  );
+}
+
 export function lastInventory(db: Db, clusterId: string, at: string) {
   return db.orm.Archive.where({ clusterId, kind: "inventory" })
     .where((a) => a.sourceStart.lte(at))
@@ -92,7 +109,7 @@ export function lastInventory(db: Db, clusterId: string, at: string) {
     .first();
 }
 
-export async function saveArchive(db: Db, row: ArchiveRow) {
+function archivePlans(db: Db, row: ArchiveRow) {
   // One statement: ORM upsert on D1 may perform a non-atomic read followed by a write.
   const plan = db.raw
     .sql`INSERT INTO "Archive" ("id", "clusterId", "kind", "entityUid", "sourceStart", "sourceEnd", "objectKey", "contentHash", "receivedAt", "expiresAt", "points")
@@ -109,7 +126,16 @@ export async function saveArchive(db: Db, row: ArchiveRow) {
     ON CONFLICT("id") DO NOTHING`
     .affectedCount()
     .build();
-  await db.batch((batch) => [batch.execute(superseded), batch.execute(plan)]);
+  return [superseded, plan];
+}
+
+export async function saveArchives(db: Db, rows: ArchiveRow[]) {
+  const plans = rows.flatMap((row) => archivePlans(db, row));
+  await db.batch((batch) => plans.map((plan) => batch.execute(plan)));
+}
+
+export function saveArchive(db: Db, row: ArchiveRow) {
+  return saveArchives(db, [row]);
 }
 
 export async function listArchives(

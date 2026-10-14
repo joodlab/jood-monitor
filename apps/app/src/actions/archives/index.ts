@@ -1,5 +1,9 @@
 import type { ArchiveDocument } from "../../contracts/types";
-import { findArchive, saveArchive } from "../../data-access/clusters";
+import {
+  type ArchiveRow,
+  findArchive,
+  saveArchive,
+} from "../../data-access/clusters";
 import { getDb } from "../../db";
 import type { Env } from "../../env";
 import { hash } from "../../lib/server/crypto";
@@ -48,7 +52,8 @@ export async function readArchiveObject<T>(
 export async function writeArchive<T>(
   env: Env,
   document: ArchiveDocument<T>,
-  points: number
+  points: number,
+  pendingIndexes?: ArchiveRow[]
 ) {
   const raw = new TextEncoder().encode(JSON.stringify(document));
   if (raw.byteLength > 32 * 1024 * 1024) {
@@ -71,7 +76,7 @@ export async function writeArchive<T>(
     customMetadata: { sha256: contentHash, archiveId: id },
   });
   // The immutable object must exist before its index is visible to readers.
-  await saveArchive(getDb(env.DB), {
+  const index = {
     id,
     clusterId: document.clusterId,
     kind: document.kind,
@@ -83,7 +88,12 @@ export async function writeArchive<T>(
     points,
     receivedAt: new Date().toISOString(),
     expiresAt: document.expiresAt,
-  });
+  };
+  if (pendingIndexes) {
+    pendingIndexes.push(index);
+  } else {
+    await saveArchive(getDb(env.DB), index);
+  }
 }
 
 export function archiveDocument<T>(

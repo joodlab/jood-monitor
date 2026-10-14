@@ -19,9 +19,12 @@ import type {
   StoredMetric,
 } from "../contracts/types";
 import {
+  type ArchiveRow,
+  archiveChecksums,
   type ClusterRow,
   listArchives,
   persistProfile,
+  saveArchives,
 } from "../data-access/clusters";
 import { getDb } from "../db";
 import { ClusterStorage, type DirtyPartition } from "../db/cluster-storage";
@@ -381,13 +384,18 @@ export class ClusterState extends DurableObject<Env> {
       if (new Set(ids).size !== inputs.length) {
         throw new HttpError(400, "duplicate restore archive identities");
       }
+      const checksums = await archiveChecksums(getDb(this.env.DB), ids);
+      const pendingIndexes: ArchiveRow[] = [];
       const results: Awaited<ReturnType<typeof importArchive>>[] = [];
       // The decompressed request bounds total payload across all 32 partitions.
       for (let offset = 0; offset < inputs.length; offset += 32) {
         const settled = await Promise.allSettled(
-          inputs
-            .slice(offset, offset + 32)
-            .map((input) => importArchive(this.env, cluster.id, input))
+          inputs.slice(offset, offset + 32).map((input, index) =>
+            importArchive(this.env, cluster.id, input, undefined, {
+              previous: checksums.get(ids[offset + index]) ?? null,
+              pendingIndexes,
+            })
+          )
         );
         let failure: unknown;
         for (const result of settled) {
@@ -410,6 +418,8 @@ export class ClusterState extends DurableObject<Env> {
           throw failure;
         }
       }
+      // All immutable objects exist before their indexes and garbage outboxes publish atomically.
+      await saveArchives(getDb(this.env.DB), pendingIndexes);
       await this.restoreSummaries(cluster.id, results);
       return results.map(({ metrics: _metrics, ...receipt }) => receipt);
     } finally {
@@ -444,17 +454,19 @@ export class ClusterState extends DurableObject<Env> {
     }
     const groups = [...fives.values()];
     for (let offset = 0; offset < groups.length; offset += 16) {
+      const indexes: ArchiveRow[] = [];
       const settled = await Promise.allSettled(
         groups
           .slice(offset, offset + 16)
           .map((group) =>
-            this.summarizeFive(clusterId, group.partition, group.rows)
+            this.summarizeFive(clusterId, group.partition, group.rows, indexes)
           )
       );
       const failed = settled.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") {
         throw failed.reason;
       }
+      await saveArchives(getDb(this.env.DB), indexes);
     }
     const hours = new Map<string, DirtyPartition>();
     for (const { partition } of groups) {
@@ -466,15 +478,17 @@ export class ClusterState extends DurableObject<Env> {
     }
     const hourly = [...hours.values()];
     for (let offset = 0; offset < hourly.length; offset += 8) {
+      const indexes: ArchiveRow[] = [];
       const settled = await Promise.allSettled(
         hourly
           .slice(offset, offset + 8)
-          .map((partition) => this.summarizeHour(clusterId, partition))
+          .map((partition) => this.summarizeHour(clusterId, partition, indexes))
       );
       const failed = settled.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") {
         throw failed.reason;
       }
+      await saveArchives(getDb(this.env.DB), indexes);
     }
   }
 
@@ -1100,7 +1114,8 @@ export class ClusterState extends DurableObject<Env> {
   private async summarizeFive(
     clusterId: string,
     partition: DirtyPartition,
-    rows: StoredMetric[]
+    rows: StoredMetric[],
+    pendingIndexes?: ArchiveRow[]
   ) {
     const summaries = aggregateMetrics(rows);
     const fiveId = archiveId(
@@ -1126,11 +1141,16 @@ export class ClusterState extends DurableObject<Env> {
         30,
         five
       ),
-      five.reduce((n, r) => n + r.count, 0)
+      five.reduce((n, r) => n + r.count, 0),
+      pendingIndexes
     );
   }
 
-  private async summarizeHour(clusterId: string, partition: DirtyPartition) {
+  private async summarizeHour(
+    clusterId: string,
+    partition: DirtyPartition,
+    pendingIndexes?: ArchiveRow[]
+  ) {
     const hour = bucketStart(timestampNano(partition.bucket).toString(), 3600);
     const parts = await listArchives(getDb(this.env.DB), {
       clusterId,
@@ -1172,7 +1192,8 @@ export class ClusterState extends DurableObject<Env> {
         180,
         hourly
       ),
-      hourly.reduce((n, r) => n + r.count, 0)
+      hourly.reduce((n, r) => n + r.count, 0),
+      pendingIndexes
     );
   }
 

@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { ArchiveDocument, StoredMetric } from "../../contracts/types";
-import { findArchive } from "../../data-access/clusters";
+import { type ArchiveRow, findArchive } from "../../data-access/clusters";
 import { getDb } from "../../db";
 import type { Env } from "../../env";
 import { hash } from "../../lib/server/crypto";
@@ -134,7 +134,11 @@ export async function importArchive(
   env: Env,
   clusterId: string,
   input: z.infer<typeof archiveImportSchema>,
-  expectedContentHash?: string | null
+  expectedContentHash?: string | null,
+  preloaded?: {
+    previous: { contentHash: string } | null;
+    pendingIndexes: ArchiveRow[];
+  }
 ) {
   const sourceStart = normalizeTime(input.sourceStart);
   const sourceEnd = normalizeTime(input.sourceEnd);
@@ -218,10 +222,12 @@ export async function importArchive(
   };
   const id = archiveId(clusterId, input.kind, input.entityUid, sourceStart);
   const contentHash = hash(JSON.stringify(document));
-  const previous = await findArchive(getDb(env.DB), id);
+  const previous = preloaded
+    ? preloaded.previous
+    : await findArchive(getDb(env.DB), id);
   archivePrecondition(previous, contentHash, expectedContentHash);
   // Re-uploading identical content also repairs an indexed object lost before a retry.
-  await writeArchive(env, document, input.points);
+  await writeArchive(env, document, input.points, preloaded?.pendingIndexes);
   return {
     status:
       previous?.contentHash === contentHash ? "already restored" : "restored",
