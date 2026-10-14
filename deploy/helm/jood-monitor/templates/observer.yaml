@@ -1,3 +1,9 @@
+{{- $spool := .Values.observer.spool | default (dict "maxBytes" 8388608 "volumeSizeMiB" 12) -}}
+{{- $spoolBytes := int64 $spool.maxBytes -}}
+{{- $volumeMiB := int64 $spool.volumeSizeMiB -}}
+{{- if lt (mul $volumeMiB 1048576) (add $spoolBytes 4194304) -}}
+{{- fail "observer.spool.volumeSizeMiB must provide at least 4 MiB above observer.spool.maxBytes" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,6 +37,7 @@ spec:
             - {name: JOOD_TLS_CERT_FILE, value: /run/jood-tls/tls.crt}
             - {name: JOOD_TLS_KEY_FILE, value: /run/jood-tls/tls.key}
             - {name: JOOD_SPOOL_DIR, value: /var/spool/jood}
+            - {name: JOOD_SPOOL_MAX_BYTES, value: {{ $spoolBytes | quote }}}
             - {name: JOOD_NAMESPACE, value: {{ .Release.Namespace | quote }}}
             - {name: JOOD_NODE_SERVICE_ACCOUNT, value: jood-monitor-node}
           ports: [{name: https, containerPort: 8081}]
@@ -48,7 +55,7 @@ spec:
         - name: tls
           secret: {secretName: {{ .Values.observerTLSSecret }}, defaultMode: 0440}
         - name: spool
-          emptyDir: {sizeLimit: 12Mi}
+          emptyDir: {sizeLimit: {{ printf "%dMi" $volumeMiB | quote }}}
 ---
 apiVersion: v1
 kind: Service

@@ -1,4 +1,4 @@
-"""Check bounded Standard selector rendering without changing host access."""
+"""Check bounded agent settings without changing resource budgets or access."""
 import json
 from pathlib import Path
 import re
@@ -9,13 +9,16 @@ chart = Path(__file__).resolve().parent.parent / "deploy/helm/jood-monitor"
 base = {"image": {"digest": "sha256:" + "a" * 64}, "hubURL": "https://monitor.example.com"}
 
 
-def render(node):
+def render(node, spool=None):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "values.json"
-        path.write_text(json.dumps({**base, "node": node}))
+        values = {**base, "node": node}
+        if spool is not None:
+            values["observer"] = {"spool": spool}
+        path.write_text(json.dumps(values))
         return subprocess.run(
             ["helm", "template", "monitor", str(chart), "--namespace", "jood-monitor", "--values", str(path)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, encoding="utf-8", check=False,
         )
 
 
@@ -45,3 +48,22 @@ for property_name in ["standardNetworkInterfaces", "standardDiskDevices"]:
     for invalid in [[f"device{i}" for i in range(17)], ["../host"], ["x" * 65], ["eth0", "eth0"]]:
         assert render({property_name: invalid}).returncode != 0, f"unbounded/invalid {property_name} accepted"
 print("counter selections render as bounded JSON; defaults omit counters; schema rejects invalid names and bounds; host access unchanged")
+
+larger = render({}, {"maxBytes": 33554432, "volumeSizeMiB": 48})
+assert larger.returncode == 0, larger.stderr
+assert 'JOOD_SPOOL_MAX_BYTES, value: "8388608"' in empty.stdout
+assert 'emptyDir: {sizeLimit: "12Mi"}' in empty.stdout
+assert 'JOOD_SPOOL_MAX_BYTES, value: "33554432"' in larger.stdout
+assert 'emptyDir: {sizeLimit: "48Mi"}' in larger.stdout
+normalized = larger.stdout.replace('JOOD_SPOOL_MAX_BYTES, value: "33554432"', 'JOOD_SPOOL_MAX_BYTES, value: "8388608"')
+normalized = normalized.replace('emptyDir: {sizeLimit: "48Mi"}', 'emptyDir: {sizeLimit: "12Mi"}')
+assert normalized == empty.stdout, "spool settings changed CPU/memory, identity, mounts, RBAC or security context"
+for invalid in [
+    {"maxBytes": 8388607},
+    {"maxBytes": 268435457, "volumeSizeMiB": 512},
+    {"maxBytes": 33554432.5, "volumeSizeMiB": 48},
+    {"maxBytes": 33554432, "volumeSizeMiB": 32},
+    {"maxBytes": 33554432, "volumeSizeMiB": 1025},
+]:
+    assert render({}, invalid).returncode != 0, "invalid spool limit or volume headroom accepted"
+print("spool quota/volume render independently; invalid limits and insufficient headroom fail; other resources unchanged")

@@ -46,6 +46,23 @@ protobuf acknowledgment. Retries respect backpressure and preserve batch order.
 Node buffers are bounded and have their own expiry. Reported drops and rejected
 points remain visible.
 
+The application spool defaults to 8 MiB. Set `JOOD_SPOOL_MAX_BYTES` to a decimal
+byte limit from 8 MiB to 256 MiB for a binary installation. Invalid limits stop
+the observer at startup. The Helm chart exposes the same limit and an independent
+disk volume size; for example, use this values fragment for a 32 MiB spool:
+
+```yaml
+observer:
+  spool:
+    maxBytes: 33554432
+    volumeSizeMiB: 48
+```
+
+The chart requires at least 4 MiB of additional volume space. Size and measure
+the volume for filesystem overhead, traffic bursts, retries and drain time.
+Changing the disk quota does not change CPU or memory limits, and a configured
+quota alone does not establish an accepted outage window.
+
 Node authentication uses Kubernetes TokenReview, a dedicated audience and the
 bound Pod, service account and node identity. Collectors communicate with the
 observer over verified TLS. The observer authenticates to the hub using its
