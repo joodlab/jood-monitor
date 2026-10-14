@@ -26,7 +26,7 @@ import { archiveId, writeArchive } from "../archives";
 import { contentEpoch, validateInventoryReceipts } from "../archives/inventory";
 import { normalizeTime } from "../clusters";
 
-export function historicalMetric(
+function historicalMetric(
   raw: z.infer<typeof storedMetricSchema>,
   clusterId: string
 ): StoredMetric {
@@ -57,6 +57,22 @@ export function historicalMetric(
   point.key = metricKey(point);
   point.series = metricSeries(point);
   return point;
+}
+
+export function historicalMetrics(
+  raw: z.infer<typeof storedMetricSchema>[],
+  clusterId: string
+): StoredMetric[] {
+  try {
+    const rows = raw.map((row) => historicalMetric(row, clusterId));
+    encodeTelemetry(rows);
+    return rows;
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw error;
+    }
+    throw new HttpError(400, "invalid historical telemetry representation");
+  }
 }
 
 function legacyScopeValid(data: unknown, clusterId: string) {
@@ -152,12 +168,10 @@ export async function importArchive(
   let maximumId = 0;
   let metrics: StoredMetric[] | null = null;
   if (metricKinds.has(input.kind)) {
-    const rows = storedMetricSchema
-      .array()
-      .max(10_000)
-      .parse(data)
-      .map((row) => historicalMetric(row, clusterId));
-    encodeTelemetry(rows);
+    const rows = historicalMetrics(
+      storedMetricSchema.array().max(10_000).parse(data),
+      clusterId
+    );
     if (
       sourceStart !== bucketStart(timestampNano(sourceStart).toString()) ||
       timestampNano(sourceEnd) !==
