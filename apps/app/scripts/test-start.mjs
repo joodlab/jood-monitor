@@ -12,8 +12,14 @@ import { fromCrossJSON, toJSONAsync } from "seroval";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temporary = join(root, ".tmp", `start-test-${randomUUID()}`);
 mkdirSync(temporary, { recursive: true });
-const origin = "http://127.0.0.1:46800";
-const docsOrigin = "http://127.0.0.1:46801";
+const hubPort = Number(process.env.START_TEST_PORT ?? 46_800);
+assert.ok(
+  Number.isInteger(hubPort) && hubPort >= 1024 && hubPort < 65_535,
+  "START_TEST_PORT must leave two valid unprivileged ports"
+);
+const docsPort = hubPort + 1;
+const origin = `http://127.0.0.1:${hubPort}`;
+const docsOrigin = `http://127.0.0.1:${docsPort}`;
 const username = "synthetic-operator";
 const password = randomUUID();
 const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -108,7 +114,7 @@ async function rpc(worker, base, name, data, method = "GET", auth = headers) {
 try {
   const hub = productionWorker(
     root,
-    46_800,
+    hubPort,
     {
       OPERATOR_USER: username,
       OPERATOR_PASSWORD: password,
@@ -140,7 +146,11 @@ try {
     await d1.batch(statements.map((sql) => d1.prepare(sql)));
   }
   for (const path of ["/", "/api/v1/workspaces"]) {
-    for (const auth of [{}, { Authorization: "" }]) {
+    for (const auth of [
+      {},
+      { Authorization: "" },
+      { Authorization: "Basic invalid-fixture" },
+    ]) {
       const response = await call(hub.runtime, origin, path, { headers: auth });
       assert.equal(response.status, 401);
       assert.match(response.headers.get("WWW-Authenticate"), /Basic/);
@@ -164,6 +174,11 @@ try {
   assert.deepEqual(await csrf.json(), {
     error: "origin and CSRF header required",
   });
+  assert.deepEqual(
+    (await deserialize(await rpc(hub, origin, "getWorkspacesFn"))).result,
+    [],
+    "Rejected RPC must not write to D1"
+  );
   const invalid = await rpc(hub, origin, "createWorkspaceFn", {}, "POST");
   assert.equal(invalid.headers.get("x-tss-serialized"), "true");
   assert.ok(
@@ -183,6 +198,23 @@ try {
     await rpc(hub, origin, "getWorkspacesFn")
   );
   assert.equal(workspaces.result[0].id, "synthetic-start");
+  assert.equal(
+    "context" in workspaces,
+    false,
+    "Server-only env must stay private"
+  );
+  const snapshot = await deserialize(
+    await rpc(hub, origin, "getSnapshotFn", { workspace: "synthetic-start" })
+  );
+  assert.ok(snapshot.result && typeof snapshot.result === "object");
+  assert.equal("context" in snapshot, false);
+  const expired = await deserialize(
+    await rpc(hub, origin, "getSnapshotFn", {
+      workspace: "global",
+      at: "2000-01-01T00:00:00Z",
+    })
+  );
+  assert.equal(expired.error.message, "snapshot outside retention");
   let html = await call(hub.runtime, origin, "/", { headers });
   if (html.status === 307) {
     const canonical = new URL(html.headers.get("Location"), origin);
@@ -227,7 +259,7 @@ try {
     await hub.runtime.dispose();
   }
 
-  const docs = productionWorker(join(root, "../docs"), 46_801, {
+  const docs = productionWorker(join(root, "../docs"), docsPort, {
     HUB_URL: origin,
   });
   const redirect = await call(docs.runtime, docsOrigin, "/");
