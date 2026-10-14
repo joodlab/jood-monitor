@@ -27,7 +27,12 @@ const bindings = {
   VERSION: "test",
   FAIL_ARCHIVE: "0",
 };
-const options = (failure = "0", migration = "0", persistence = temporary) =>
+const options = (
+  failure = "0",
+  migration = "0",
+  persistence = temporary,
+  recovery = "0"
+) =>
   convertV4MiniflareOptions({
     name: "worker-tests",
     scriptPath: bundle,
@@ -38,6 +43,7 @@ const options = (failure = "0", migration = "0", persistence = temporary) =>
       ...bindings,
       FAIL_ARCHIVE: failure,
       MIGRATION_ENABLED: migration,
+      RECOVERY_ENABLED: recovery,
     },
     d1Databases: { DB: "fixture-db" },
     d1Persist: join(persistence, "d1"),
@@ -275,6 +281,37 @@ try {
     },
     body: gzipSync(body),
   };
+  await mf.setOptions(options("0", "0", temporary, "1"));
+  assert.equal(
+    (
+      await call("/api/v1/clusters/fixture/profile", {
+        method: "POST",
+        body: "{}",
+      })
+    ).status,
+    503
+  );
+  assert.equal(
+    (await call("/machine/v1/enroll", { method: "POST", body: "{}" })).status,
+    503
+  );
+  await ok("/__test/recovery-quota?cluster=fixture&block=1");
+  assert.equal((await call("/v1/metrics", delivery)).status, 503);
+  assert.equal(
+    (
+      await (
+        await ok("/api/v1/export/batches?workspace=fixture&cluster=fixture")
+      ).json()
+    ).rows.length,
+    0
+  );
+  assert.equal(
+    (await (await ok("/__test/status?cluster=fixture")).json()).value
+      .bufferedPoints,
+    0,
+    "recovery quota failure rolls back samples, batch dedupe and receipt together"
+  );
+  await ok("/__test/recovery-quota?cluster=fixture&block=0");
   const accepted = await ok("/v1/metrics", delivery);
   assert.equal(
     (await accepted.arrayBuffer()).byteLength,
@@ -292,7 +329,62 @@ try {
   );
   let state = await (await ok("/__test/status?cluster=fixture")).json();
   assert.equal(state.value.bufferedPoints, 1);
-  await mf.setOptions(options("1"));
+  const recoveryPage = await (
+    await ok("/api/v1/export/batches?workspace=fixture&cluster=fixture")
+  ).json();
+  assert.equal(recoveryPage.rows.length, 1);
+  const recoveryReceipt = recoveryPage.rows[0].receipt;
+  assert.equal(recoveryReceipt.id, batch);
+  assert.equal(recoveryReceipt.rejected, 0);
+  assert.equal(recoveryReceipt.beforeSequence, 0);
+  assert.equal(recoveryReceipt.afterSequence, 1);
+  assert.equal(recoveryReceipt.pointKeys.length, 1);
+  assert.equal(
+    recoveryPage.rows[0].contentHash,
+    createHash("sha256").update(JSON.stringify(recoveryReceipt)).digest("hex")
+  );
+  assert.equal(
+    (await call("/api/v1/export/batches?workspace=other&cluster=fixture"))
+      .status,
+    403
+  );
+  assert.equal(
+    (
+      await call(
+        "/api/v1/export/batches?workspace=fixture&cluster=fixture&receivedSince=invalid"
+      )
+    ).status,
+    400
+  );
+  assert.equal(
+    (
+      await call(
+        "/api/v1/export/batches?workspace=fixture&cluster=fixture&cursor=invalid"
+      )
+    ).status,
+    400
+  );
+  assert.equal(
+    (
+      await (
+        await ok(
+          `/api/v1/export/batches?workspace=fixture&cluster=fixture&receivedSince=${encodeURIComponent(recoveryReceipt.receivedAt)}`
+        )
+      ).json()
+    ).rows.length,
+    1
+  );
+  assert.equal(
+    (
+      await (
+        await ok(
+          `/api/v1/export/batches?workspace=fixture&cluster=fixture&receivedSince=${encodeURIComponent(new Date(Date.parse(recoveryReceipt.receivedAt) + 1).toISOString())}`
+        )
+      ).json()
+    ).rows.length,
+    0
+  );
+  await mf.setOptions(options("1", "0", temporary, "1"));
   assert.equal((await call("/__test/flush?cluster=fixture")).status, 503);
   state = await (await ok("/__test/status?cluster=fixture")).json();
   assert.equal(
@@ -300,7 +392,7 @@ try {
     1,
     "failed archive cannot clear accepted samples"
   );
-  await mf.setOptions(options("index"));
+  await mf.setOptions(options("index", "0", temporary, "1"));
   assert.equal((await call("/__test/flush?cluster=fixture")).status, 503);
   assert.equal(
     (await (await ok("/__test/status?cluster=fixture")).json()).value
@@ -320,7 +412,7 @@ try {
     "the post-upload fault must leave a real object for recovery"
   );
   await mf.dispose();
-  mf = new Miniflare(options());
+  mf = new Miniflare(options("0", "0", temporary, "1"));
   await ok("/v1/metrics", delivery);
   state = await (await ok("/__test/status?cluster=fixture")).json();
   assert.equal(
@@ -336,6 +428,18 @@ try {
   assert.equal(history.length, 1);
   assert.equal(history[0].value, "9007199254740993");
   assert.equal(history[0].timeUnixNano, nano.toString());
+  assert.deepEqual(
+    await (
+      await ok("/api/v1/export/batches?workspace=fixture&cluster=fixture")
+    ).json(),
+    recoveryPage,
+    "restart and ambiguous retry preserve the exact recovery receipt"
+  );
+  assert.equal(
+    history[0].key,
+    recoveryReceipt.pointKeys[0],
+    "receipt membership reconstructs the original accepted raw sample"
+  );
   await ok("/__test/flush?cluster=fixture");
   state = await (await ok("/__test/status?cluster=fixture")).json();
   assert.equal(state.value.bufferedPoints, 0);
@@ -353,7 +457,7 @@ try {
       .bufferedPoints,
     0
   );
-  const finalDb = await mf.getD1Database("DB");
+  let finalDb = await mf.getD1Database("DB");
   const verifiers = await finalDb
     .prepare('SELECT credentialHash FROM "Cluster" WHERE id=?')
     .bind("fixture")
@@ -369,6 +473,45 @@ try {
     manifests.results.map((r) => r.kind),
     ["5m", "hour", "inventory", "raw"]
   );
+  const runtimeStatus = await (
+    await ok("/api/v1/clusters/fixture/status")
+  ).json();
+  assert.equal(runtimeStatus.recoveryEnabled, true);
+  assert.equal(runtimeStatus.migrationEnabled, false);
+  assert.ok(runtimeStatus.recoveryJournalBytes > 0);
+  const rawIndex = await finalDb
+    .prepare('SELECT id,expiresAt FROM "Archive" WHERE kind=?')
+    .bind("raw")
+    .first();
+  await finalDb
+    .prepare('UPDATE "Archive" SET "expiresAt"=? WHERE id=?')
+    .bind("2000-01-01T00:00:00Z", rawIndex.id)
+    .run();
+  await ok("/__test/flush?cluster=fixture");
+  assert.equal(
+    await finalDb
+      .prepare('SELECT count(*) AS count FROM "Archive" WHERE id=?')
+      .bind(rawIndex.id)
+      .first("count"),
+    1,
+    "an active recovery window suspends actual archive expiration"
+  );
+  assert.equal(
+    (
+      await (
+        await ok(
+          `/api/v1/export/archive?workspace=fixture&cluster=fixture&id=${rawIndex.id}`
+        )
+      ).json()
+    ).document.data[0].value,
+    "9007199254740993"
+  );
+  await finalDb
+    .prepare('UPDATE "Archive" SET "expiresAt"=? WHERE id=?')
+    .bind(rawIndex.expiresAt, rawIndex.id)
+    .run();
+  await mf.setOptions(options());
+  finalDb = await mf.getD1Database("DB");
   const variantBody = message(
     1,
     Buffer.concat([

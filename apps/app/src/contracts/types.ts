@@ -14,6 +14,16 @@ export interface StoredMetric extends Metric {
   series: string;
 }
 
+export interface RecoveryBatch {
+  afterSequence: number;
+  beforeSequence: number;
+  id: string;
+  pointKeys: string[];
+  receivedAt: string;
+  rejected: number;
+  revision: number;
+}
+
 export interface ArchiveDocument<T = unknown> {
   clusterId: string;
   data: T;

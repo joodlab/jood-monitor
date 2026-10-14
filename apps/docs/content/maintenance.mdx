@@ -128,6 +128,31 @@ or a substitute for a tested target-to-source replay adapter.
 After parity and recovery checks, redeploy without `MONITOR_MIGRATION`. Confirm
 import routes return `403` and only then redirect live agents to the target.
 
+For a coordinated initial acceptance window, `MONITOR_RECOVERY=1` keeps normal
+telemetry ingestion open while freezing operator mutations and new enrollment.
+It suspends expiration and records batch identity, accepted semantic point keys,
+rejected count, receipt time, sequence and revision in the same SQLite transaction
+before acknowledgment. A recovery receipt identifies the durable raw records;
+it does not contain Authorization headers, credential verifiers or wire payloads.
+The journal has a separate 64 MiB logical limit and also counts toward the normal
+buffer quota. Exhaustion rolls back the entire acceptance and returns retryable
+backpressure. Monitor `recoveryJournalBytes` and conclude the acceptance window
+before its measured capacity is exhausted.
+
+Protected `/api/v1/export/batches?workspace=...&cluster=...` returns checksummed
+receipts in pages of ten, with an optional inclusive `receivedSince` boundary
+and opaque cursor. Following a writer fence and drain, reconstruct every receipt's
+point keys from verified raw archives, including retries of records already
+present at the boundary. Sequence numbers alone do not identify all retry
+memberships. Reconcile current observation and lifecycle state as well. This
+window still requires a rehearsed reverse adapter and independently verified
+recovery; it does not perform rollback automatically.
+
+Remove `MONITOR_RECOVERY` after acceptance and the protected recovery manifest
+are retained. Normal expiration resumes; receipts expire after one day and
+ordinary batch deduplication retains its existing seven-day horizon. Unconfigured
+deployments do not record the temporary recovery journal.
+
 ## Upgrades
 
 Review release notes and immutable artifacts. Validate new Prisma contracts and

@@ -186,7 +186,14 @@ export class ClusterState extends DurableObject<Env> {
         return { ok: true, value: this.snapshot(cluster) };
       }
       if (kind === "status") {
-        return { ok: true, value: this.db.status() };
+        return {
+          ok: true,
+          value: {
+            ...this.db.status(),
+            migrationEnabled: this.env.MIGRATION_ENABLED === "1",
+            recoveryEnabled: this.env.RECOVERY_ENABLED === "1",
+          },
+        };
       }
       if (kind === "history") {
         const query = input as {
@@ -261,7 +268,14 @@ export class ClusterState extends DurableObject<Env> {
       if (committed) {
         return { ok: true, value: { rejected: committed.rejected } };
       }
-      this.db.accept(batchId, decoded.rows, decoded.rejected, Date.now());
+      this.db.accept(
+        batchId,
+        decoded.rows,
+        decoded.rejected,
+        Date.now(),
+        false,
+        this.env.RECOVERY_ENABLED === "1"
+      );
       this.notify(cluster);
       return { ok: true, value: { rejected: decoded.rejected } };
     } catch (error) {
@@ -313,6 +327,20 @@ export class ClusterState extends DurableObject<Env> {
           rows: exported.rows.map((event) => ({
             event,
             contentHash: hash(JSON.stringify(event)),
+          })),
+        };
+      }
+      case "exportBatches": {
+        const input = raw as { cursor: string; receivedSince: number };
+        const exported = this.db.exportBatches(
+          input.cursor,
+          input.receivedSince
+        );
+        return {
+          ...exported,
+          rows: exported.rows.map((receipt) => ({
+            receipt,
+            contentHash: hash(JSON.stringify(receipt)),
           })),
         };
       }
@@ -1200,7 +1228,10 @@ export class ClusterState extends DurableObject<Env> {
       }
       // An isolated restore must keep its base stable until the operator applies the
       // source's exact retention tombstones. Normal deployment resumes expiration.
-      if (this.env.MIGRATION_ENABLED !== "1") {
+      if (
+        this.env.MIGRATION_ENABLED !== "1" &&
+        this.env.RECOVERY_ENABLED !== "1"
+      ) {
         this.db.maintenance(Date.now());
         await maintainArchives(this.env, identity.id, this.db);
       }

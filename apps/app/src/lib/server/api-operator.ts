@@ -10,6 +10,7 @@ import {
   requireCluster,
   unwrap,
   updateProfile,
+  validRangeTime,
   workspaces,
 } from "../../actions/clusters";
 import type { StoredMetric } from "../../contracts/types";
@@ -19,6 +20,7 @@ import {
   eventsSchema,
   historySchema,
   profileSchema,
+  recoveryBatchExportSchema,
   recoveryExportSchema,
   snapshotSchema,
   workspaceSchema,
@@ -106,6 +108,28 @@ export async function operatorApi(request: Request, env: Env, url: URL) {
       case "/api/v1/export/archives":
       case "/api/v1/export/archive":
         return json(await exportArchives(env, url));
+      case "/api/v1/export/batches": {
+        const input = recoveryBatchExportSchema.parse(query);
+        const cluster = await requireCluster(
+          env,
+          input.cluster,
+          input.workspace
+        );
+        return json(
+          unwrap(
+            await clusterState(env, cluster.id).command(
+              cluster,
+              "exportBatches",
+              {
+                cursor: input.cursor ?? "",
+                receivedSince: input.receivedSince
+                  ? validRangeTime(input.receivedSince)
+                  : 0,
+              }
+            )
+          )
+        );
+      }
       case "/api/v1/export/state":
       case "/api/v1/export/events": {
         const input = recoveryExportSchema.parse(query);

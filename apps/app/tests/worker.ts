@@ -40,7 +40,7 @@ export class TestClusterState extends ClusterState {
     this.fixtureStorage = ctx.storage;
   }
   fixtureCapacity(block: boolean) {
-    const tables = ["documents", "raw", "latest", "events"];
+    const tables = ["documents", "raw", "latest", "events", "recovery_batches"];
     const expression = block
       ? "500000000"
       : tables
@@ -77,6 +77,13 @@ export class TestClusterState extends ClusterState {
       before: store.event("fixture-clock--1") !== null,
       after: store.event("fixture-clock-1") !== null,
     };
+  }
+  fixtureRecoveryCapacity(block: boolean) {
+    this.fixtureStorage.sql.exec(
+      block
+        ? "UPDATE recovery_usage SET bytes=67108864 WHERE id=1"
+        : "UPDATE recovery_usage SET bytes=(SELECT coalesce(sum(length(CAST(payload AS BLOB))*2+512),0) FROM recovery_batches) WHERE id=1"
+    );
   }
 }
 
@@ -144,6 +151,15 @@ export default {
             env.CLUSTERS.idFromName(cluster.id)
           ) as DurableObjectStub<TestClusterState>;
           return Response.json(await stub.fixtureRetentionBoundary());
+        }
+        if (url.pathname === "/__test/recovery-quota") {
+          const stub = env.CLUSTERS.get(
+            env.CLUSTERS.idFromName(cluster.id)
+          ) as DurableObjectStub<TestClusterState>;
+          await stub.fixtureRecoveryCapacity(
+            url.searchParams.get("block") === "1"
+          );
+          return Response.json({ ok: true });
         }
         return Response.json(
           await clusterState(env, cluster.id).command(cluster, "status", null)

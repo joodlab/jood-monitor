@@ -13,6 +13,7 @@ export interface Env {
   MIGRATION_ENABLED?: string;
   OPERATOR_PASSWORD: string;
   OPERATOR_USER: string;
+  RECOVERY_ENABLED?: string;
   RELEASE?: { id: string; tag?: string; timestamp?: string };
   STREAMS: DurableObjectNamespace<WorkspaceStream>;
   VERSION: string;
