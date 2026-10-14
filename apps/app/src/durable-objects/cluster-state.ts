@@ -1240,6 +1240,33 @@ export class ClusterState extends DurableObject<Env> {
     );
   }
 
+  private async flushPartitions(
+    clusterId: string,
+    partitions: DirtyPartition[]
+  ) {
+    const entities = new Map<string, DirtyPartition[]>();
+    for (const partition of partitions) {
+      const group = entities.get(partition.entity) ?? [];
+      group.push(partition);
+      entities.set(partition.entity, group);
+    }
+    const groups = [...entities.values()];
+    for (let offset = 0; offset < groups.length; offset += 4) {
+      const settled = await Promise.allSettled(
+        groups.slice(offset, offset + 4).map(async (group) => {
+          // An entity's raw/diagnostic buckets share five-minute and hourly summaries.
+          for (const partition of group) {
+            await this.flushPartition(clusterId, partition);
+          }
+        })
+      );
+      const failure = settled.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") {
+        throw failure.reason;
+      }
+    }
+  }
+
   async flush() {
     if (this.flushing) {
       return this.db.status();
@@ -1274,9 +1301,7 @@ export class ClusterState extends DurableObject<Env> {
       }
       const drainTime =
         Date.now() + (this.env.MIGRATION_ENABLED === "1" ? 330_000 : 0);
-      for (const partition of this.db.dirty(drainTime)) {
-        await this.flushPartition(identity.id, partition);
-      }
+      await this.flushPartitions(identity.id, this.db.dirty(drainTime));
       if (this.db.get<boolean>("profileDirty")) {
         const profile = this.profile();
         await persistProfile(
