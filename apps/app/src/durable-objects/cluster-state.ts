@@ -523,13 +523,30 @@ export class ClusterState extends DurableObject<Env> {
     try {
       const receipts: { id: string; status: string; contentHash?: string }[] =
         [];
-      for (const replacement of input.replacements) {
-        const { metrics: _metrics, ...receipt } = await importArchive(
-          this.env,
-          cluster.id,
-          replacement.archive,
-          replacement.expectedContentHash
-        );
+      const checksums = await archiveChecksums(getDb(this.env.DB), ids);
+      const pendingIndexes: ArchiveRow[] = [];
+      const settled = await Promise.allSettled(
+        input.replacements.map((replacement, index) =>
+          importArchive(
+            this.env,
+            cluster.id,
+            replacement.archive,
+            replacement.expectedContentHash,
+            { previous: checksums.get(ids[index]) ?? null, pendingIndexes }
+          )
+        )
+      );
+      // A stale member or failed upload cannot publish a prefix of the replacement batch.
+      const failed = settled.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") {
+        throw failed.reason;
+      }
+      await saveArchives(getDb(this.env.DB), pendingIndexes);
+      for (const result of settled) {
+        if (result.status !== "fulfilled") {
+          continue;
+        }
+        const { metrics: _metrics, ...receipt } = result.value;
         this.db.transaction(() =>
           this.db.put(
             "metricSequence",
@@ -546,68 +563,99 @@ export class ClusterState extends DurableObject<Env> {
           await deleteMigrationArchive(this.env, cluster.id, deletion)
         );
       }
-      const partitions = new Map<string, DirtyPartition>();
-      for (const archive of [
+      await this.reconcileSummaries(cluster.id, [
         ...input.replacements.map((entry) => entry.archive),
         ...input.deletions,
-      ]) {
-        if (!["raw", "diagnostic"].includes(archive.kind)) {
-          continue;
-        }
-        const bucket = normalizeTime(archive.sourceStart);
-        const retention = archive.kind === "diagnostic" ? 1 : 7;
-        // Expired raw deletions retain already committed historical summaries.
-        if (
-          Date.parse(bucket) + retention * 86_400_000 + 300_000 <=
-          Date.now()
-        ) {
-          continue;
-        }
-        partitions.set(JSON.stringify([archive.entityUid, bucket]), {
-          entity: archive.entityUid,
-          bucket,
-          diagnostic: 0,
-          generation: 0,
-        });
-      }
-      const hours = new Map<string, DirtyPartition>();
-      for (const partition of partitions.values()) {
-        const rows: StoredMetric[] = [];
-        for (const kind of ["raw", "diagnostic"]) {
-          const document = await readArchive<StoredMetric[]>(
-            this.env,
-            archiveId(cluster.id, kind, partition.entity, partition.bucket)
-          );
-          rows.push(...(document?.data ?? []));
-        }
-        // A complete replacement must also remove summaries of deleted series.
-        const five = aggregateMetrics(rows);
-        await writeArchive(
-          this.env,
-          archiveDocument(
-            cluster.id,
-            "5m",
-            partition.entity,
-            partition.bucket,
-            300,
-            30,
-            five
-          ),
-          five.reduce((count, row) => count + row.count, 0)
-        );
-        const hour = {
-          ...partition,
-          bucket: bucketStart(timestampNano(partition.bucket).toString(), 3600),
-        };
-        hours.set(JSON.stringify([hour.entity, hour.bucket]), hour);
-      }
-      for (const hour of hours.values()) {
-        await this.summarizeHour(cluster.id, hour);
-      }
+      ]);
       return receipts;
     } finally {
       this.flushing = false;
       this.restoring = false;
+    }
+  }
+
+  private async reconcileSummaries(
+    clusterId: string,
+    archives: { kind: string; entityUid: string; sourceStart: string }[]
+  ) {
+    const partitions = new Map<string, DirtyPartition>();
+    for (const archive of archives) {
+      if (!["raw", "diagnostic"].includes(archive.kind)) {
+        continue;
+      }
+      const bucket = normalizeTime(archive.sourceStart);
+      const retention = archive.kind === "diagnostic" ? 1 : 7;
+      // Expired raw deletions retain already committed historical summaries.
+      if (Date.parse(bucket) + retention * 86_400_000 + 300_000 <= Date.now()) {
+        continue;
+      }
+      partitions.set(JSON.stringify([archive.entityUid, bucket]), {
+        entity: archive.entityUid,
+        bucket,
+        diagnostic: 0,
+        generation: 0,
+      });
+    }
+    const hours = new Map<string, DirtyPartition>();
+    const groups = [...partitions.values()];
+    for (let offset = 0; offset < groups.length; offset += 16) {
+      const indexes: ArchiveRow[] = [];
+      const summaries = await Promise.allSettled(
+        groups.slice(offset, offset + 16).map(async (partition) => {
+          const documents = await Promise.all(
+            ["raw", "diagnostic"].map((kind) =>
+              readArchive<StoredMetric[]>(
+                this.env,
+                archiveId(clusterId, kind, partition.entity, partition.bucket)
+              )
+            )
+          );
+          // Complete replacements also remove derived series that the source deleted.
+          const five = aggregateMetrics(
+            documents.flatMap((document) => document?.data ?? [])
+          );
+          await writeArchive(
+            this.env,
+            archiveDocument(
+              clusterId,
+              "5m",
+              partition.entity,
+              partition.bucket,
+              300,
+              30,
+              five
+            ),
+            five.reduce((count, row) => count + row.count, 0),
+            indexes
+          );
+        })
+      );
+      const failure = summaries.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") {
+        throw failure.reason;
+      }
+      await saveArchives(getDb(this.env.DB), indexes);
+    }
+    for (const partition of groups) {
+      const hour = {
+        ...partition,
+        bucket: bucketStart(timestampNano(partition.bucket).toString(), 3600),
+      };
+      hours.set(JSON.stringify([hour.entity, hour.bucket]), hour);
+    }
+    const hourly = [...hours.values()];
+    for (let offset = 0; offset < hourly.length; offset += 8) {
+      const indexes: ArchiveRow[] = [];
+      const summaries = await Promise.allSettled(
+        hourly
+          .slice(offset, offset + 8)
+          .map((hour) => this.summarizeHour(clusterId, hour, indexes))
+      );
+      const failure = summaries.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") {
+        throw failure.reason;
+      }
+      await saveArchives(getDb(this.env.DB), indexes);
     }
   }
 
