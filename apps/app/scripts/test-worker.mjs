@@ -717,6 +717,37 @@ try {
       recoveredExport.document.sourceDigest,
       restoredArchive.sourceDigest
     );
+    const receiptBoundary = new Date(
+      Date.parse(recoveredExport.index.receivedAt) - 1
+    ).toISOString();
+    const receiptFiltered = await (
+      await ok(
+        `/api/v1/export/archives?workspace=migrated&cluster=migrated&receivedSince=${encodeURIComponent(receiptBoundary)}`
+      )
+    ).json();
+    assert.ok(
+      receiptFiltered.rows.some((row) => row.id === restore.id),
+      "receipt-bound export must include older source-time samples"
+    );
+    const emptyReceiptExport = await (
+      await ok(
+        `/api/v1/export/archives?workspace=migrated&cluster=migrated&receivedSince=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`
+      )
+    ).json();
+    assert.deepEqual(emptyReceiptExport.rows, []);
+    assert.equal(
+      (
+        await call(
+          "/api/v1/export/archives?workspace=migrated&cluster=migrated&receivedSince=invalid"
+        )
+      ).status,
+      400
+    );
+    const sequenceStatus = await (
+      await ok("/api/v1/clusters/migrated/status")
+    ).json();
+    assert.ok(sequenceStatus.metricSequence >= legacyPoint.id);
+    assert.ok(Number.isSafeInteger(sequenceStatus.revision));
     assert.equal(
       (
         await call(

@@ -786,10 +786,20 @@
         "properties": {
           "status": {
             "type": "string"
+          },
+          "metricSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": [
-          "status"
+          "status",
+          "metricSequence",
+          "revision"
         ],
         "type": "object"
       },
@@ -1742,6 +1752,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "receivedSince",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Include archives saved at or after this receipt boundary. Fence writers and drain before consistent rollback export; source time alone misses late arrivals."
           }
         ],
         "responses": {
