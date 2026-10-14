@@ -28,6 +28,18 @@ type delivery struct {
 	Type   string `json:"type"`
 	Body   []byte `json:"body"`
 }
+
+func spoolMaximumBytes(value string) (int64, error) {
+	if value == "" {
+		return 8 << 20, nil
+	}
+	maximum, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || maximum < 8<<20 || maximum > 256<<20 {
+		return 0, errors.New("JOOD_SPOOL_MAX_BYTES must be an integer from 8388608 to 268435456")
+	}
+	return maximum, nil
+}
+
 type hubDeliveryError struct {
 	status     int
 	retryAfter time.Duration

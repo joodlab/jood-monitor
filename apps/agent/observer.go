@@ -46,6 +46,10 @@ func runObserver(ctx context.Context) error {
 	if !strings.HasPrefix(hub, "https://") {
 		return errors.New("HTTPS hub URL required")
 	}
+	maximum, err := spoolMaximumBytes(os.Getenv("JOOD_SPOOL_MAX_BYTES"))
+	if err != nil {
+		return err
+	}
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return errors.New("kubernetes in-cluster configuration required")
@@ -68,7 +72,7 @@ func runObserver(ctx context.Context) error {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	sp := &spool{dir: dir, max: 8 << 20, client: httpClient, hub: hub, credentialFile: os.Getenv("JOOD_CREDENTIAL_FILE")}
+	sp := &spool{dir: dir, max: maximum, client: httpClient, hub: hub, credentialFile: os.Getenv("JOOD_CREDENTIAL_FILE")}
 	o := &observer{client: client, dynamic: dyn, spool: sp, profile: contracts.Profile{Name: "basic", Revision: 1}, nodeLast: map[string]time.Time{}, nodeAcknowledgments: map[string]contracts.NodeAcknowledgment{}, seen: map[string]bool{}, dirty: make(chan struct{}, 1)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/node/v1/collect", o.collectNode)

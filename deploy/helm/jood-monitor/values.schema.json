@@ -7,18 +7,29 @@
       "type": "object",
       "required": ["repository", "digest"],
       "properties": {
-        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-        "repository": { "type": "string", "minLength": 1 }
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
-    "hubURL": { "type": "string", "pattern": "^https://[^/]+$" },
+    "hubURL": {
+      "type": "string",
+      "pattern": "^https://[^/]+$"
+    },
     "node": {
       "type": "object",
       "properties": {
         "standardNetworkInterfaces": {
           "$ref": "#/definitions/deviceSelection"
         },
-        "standardDiskDevices": { "$ref": "#/definitions/deviceSelection" },
+        "standardDiskDevices": {
+          "$ref": "#/definitions/deviceSelection"
+        },
         "filesystems": {
           "type": "array",
           "maxItems": 8,
@@ -26,12 +37,39 @@
             "type": "object",
             "required": ["name", "hostPath", "logicalPath"],
             "properties": {
-              "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,20}$" },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,20}$"
+              },
               "hostPath": {
                 "type": "string",
                 "pattern": "^/var/lib/jood-monitor-fs(/[^.]+)?$"
               },
-              "logicalPath": { "type": "string", "pattern": "^/" }
+              "logicalPath": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            }
+          }
+        }
+      }
+    },
+    "observer": {
+      "type": "object",
+      "properties": {
+        "spool": {
+          "type": "object",
+          "required": ["maxBytes", "volumeSizeMiB"],
+          "properties": {
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 8388608,
+              "maximum": 268435456
+            },
+            "volumeSizeMiB": {
+              "type": "integer",
+              "minimum": 12,
+              "maximum": 1024
             }
           }
         }

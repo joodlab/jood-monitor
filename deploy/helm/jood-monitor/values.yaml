@@ -8,6 +8,9 @@ credentialSecret: jood-monitor-hub
 observerTLSSecret: jood-monitor-observer-tls
 observerCAConfigMap: jood-monitor-observer-ca
 observer:
+  spool:
+    maxBytes: 8388608
+    volumeSizeMiB: 12
   nodeSelector: {kubernetes.io/arch: amd64, kubernetes.io/os: linux}
   tolerations: []
   affinity: {}
