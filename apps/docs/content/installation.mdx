@@ -49,6 +49,18 @@ The hub redirects documentation links to that independent Worker. Optional
 `MONITOR_DB_ID` must match that database. `MONITOR_DOMAIN` and
 `MONITOR_DOCS_DOMAIN` configure custom domains after DNS ownership is verified.
 
+For an existing hostname, keep its DNS record and enable Cloudflare proxying,
+then set `MONITOR_ROUTE_HOSTNAME` to the bare hostname and
+`MONITOR_ROUTE_ZONE` to its zone name or ID. The hub installs a `hostname/*`
+Worker route. Set these values on subsequent deployments as well. Choose this
+option or `MONITOR_DOMAIN` for the hub. A custom domain requires a hostname
+without conflicting externally managed DNS records.
+
+During migration, keep the previous hub authoritative while DNS caches update.
+Account for clients that retain the old IP or an existing connection before
+stopping the previous writer. Verify buffering, the final data sync, routing and
+recovery together; a DNS change alone does not establish a safe handover.
+
 Open the hub, authenticate, create a workspace and enroll a cluster.
 `/health` identifies the Worker version and source tag. `/ready` checks operator
 configuration and D1 availability. Check agent freshness separately.

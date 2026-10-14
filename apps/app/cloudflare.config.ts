@@ -9,6 +9,24 @@ import type { ArchiveMessage } from "./src/contracts/types";
 
 const config = settings();
 const { name, queue: history } = config;
+const routeHost = process.env.MONITOR_ROUTE_HOSTNAME;
+if (routeHost) {
+  const origin = new URL(`https://${routeHost}`);
+  if (
+    origin.host !== routeHost ||
+    origin.port ||
+    origin.pathname !== "/" ||
+    origin.search ||
+    origin.hash ||
+    origin.username ||
+    origin.password
+  ) {
+    throw new Error("MONITOR_ROUTE_HOSTNAME must be a bare DNS hostname");
+  }
+  if (process.env.MONITOR_DOMAIN) {
+    throw new Error("Choose MONITOR_DOMAIN or MONITOR_ROUTE_HOSTNAME");
+  }
+}
 
 export default defineConfig(({ mode }) => ({
   accountId: config.accountId,
@@ -24,6 +42,16 @@ export default defineConfig(({ mode }) => ({
       WorkspaceStream: workerExports.durableObject({ storage: "sqlite" }),
     },
     triggers: [
+      ...(routeHost
+        ? [
+            triggers.fetch({
+              pattern: `${routeHost}/*`,
+              ...(process.env.MONITOR_ROUTE_ZONE
+                ? { zone: process.env.MONITOR_ROUTE_ZONE }
+                : {}),
+            }),
+          ]
+        : []),
       triggers.scheduled({ schedule: "*/5 * * * *" }),
       triggers.queue({
         name: history,
