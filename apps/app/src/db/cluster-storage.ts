@@ -1,4 +1,8 @@
-import type { Lifecycle, StoredMetric } from "../contracts/types";
+import type {
+  Lifecycle,
+  RecoveryBatch,
+  StoredMetric,
+} from "../contracts/types";
 import { HttpError } from "../lib/server/http";
 import { compareMetrics } from "../lib/server/telemetry";
 import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
@@ -30,13 +34,16 @@ export class ClusterStorage {
       CREATE TABLE IF NOT EXISTS inventory_outbox (stamp TEXT PRIMARY KEY, source TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, rejected INTEGER NOT NULL, received INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS batches_received ON batches (received);
+      CREATE TABLE IF NOT EXISTS recovery_batches (id TEXT PRIMARY KEY, received INTEGER NOT NULL, payload TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS recovery_batches_received ON recovery_batches (received);
+      CREATE TABLE IF NOT EXISTS recovery_usage (id INTEGER PRIMARY KEY, bytes INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, source TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_source ON events (source);
       CREATE TABLE IF NOT EXISTS partition_stats (entity TEXT NOT NULL, bucket TEXT NOT NULL, diagnostic INTEGER NOT NULL, points INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(entity,bucket,diagnostic));
       CREATE INDEX IF NOT EXISTS partition_stats_bucket ON partition_stats(bucket);
       CREATE TABLE IF NOT EXISTS buffer_usage (id INTEGER PRIMARY KEY, bytes INTEGER NOT NULL);
     `);
-    const tables = ["documents", "raw", "latest", "events"];
+    const tables = ["documents", "raw", "latest", "events", "recovery_batches"];
     const initialized = storage.sql
       .exec("SELECT id FROM buffer_usage WHERE id=1")
       .toArray().length;
@@ -54,6 +61,18 @@ export class ClusterStorage {
         CREATE TRIGGER IF NOT EXISTS ${table}_usage_update AFTER UPDATE OF payload ON ${table} BEGIN UPDATE buffer_usage SET bytes=bytes+(length(CAST(NEW.payload AS BLOB))-length(CAST(OLD.payload AS BLOB)))*2 WHERE id=1; END;
       `);
     }
+    if (
+      !storage.sql.exec("SELECT id FROM recovery_usage WHERE id=1").toArray()
+        .length
+    ) {
+      storage.sql.exec(
+        "INSERT INTO recovery_usage(id,bytes) SELECT 1,coalesce(sum(length(CAST(payload AS BLOB))*2+512),0) FROM recovery_batches"
+      );
+    }
+    storage.sql.exec(`
+      CREATE TRIGGER IF NOT EXISTS recovery_journal_usage_insert AFTER INSERT ON recovery_batches BEGIN UPDATE recovery_usage SET bytes=bytes+length(CAST(NEW.payload AS BLOB))*2+512 WHERE id=1; END;
+      CREATE TRIGGER IF NOT EXISTS recovery_journal_usage_delete AFTER DELETE ON recovery_batches BEGIN UPDATE recovery_usage SET bytes=bytes-length(CAST(OLD.payload AS BLOB))*2-512 WHERE id=1; END;
+    `);
   }
 
   get<T>(name: string): T | null {
@@ -127,7 +146,8 @@ export class ClusterStorage {
     rows: StoredMetric[],
     rejected: number,
     now: number,
-    preserveIds = false
+    preserveIds = false,
+    recovery = false
   ) {
     const sequence = this.get<number>("metricSequence") ?? 0;
     if (!Number.isSafeInteger(sequence + rows.length)) {
@@ -207,6 +227,9 @@ export class ClusterStorage {
         rejected,
         now
       );
+      if (recovery) {
+        this.recordRecoveryBatch(id, rows, rejected, now, sequence);
+      }
       this.put(
         "metricSequence",
         Math.max(sequence + rows.length, ...rows.map((row) => row.id))
@@ -214,6 +237,39 @@ export class ClusterStorage {
       this.changed();
       this.checkCapacity();
     });
+  }
+
+  private recordRecoveryBatch(
+    id: string,
+    rows: StoredMetric[],
+    rejected: number,
+    now: number,
+    sequence: number
+  ) {
+    const receipt: RecoveryBatch = {
+      id,
+      receivedAt: new Date(now).toISOString(),
+      rejected,
+      pointKeys: [...new Set(rows.map((row) => row.key))],
+      beforeSequence: sequence,
+      afterSequence: Math.max(
+        sequence + rows.length,
+        ...rows.map((row) => row.id)
+      ),
+      revision: this.revision + 1,
+    };
+    this.storage.sql.exec(
+      "INSERT INTO recovery_batches(id,received,payload) VALUES(?,?,?)",
+      id,
+      now,
+      JSON.stringify(receipt)
+    );
+    if (this.recoveryBytes > 64 * 1024 * 1024) {
+      throw new HttpError(
+        503,
+        "recovery journal capacity reached; acceptance must resolve"
+      );
+    }
   }
 
   private updateLatest(row: StoredMetric, payload: string) {
@@ -403,6 +459,27 @@ export class ClusterStorage {
     };
   }
 
+  get recoveryBytes() {
+    return this.storage.sql
+      .exec<{ bytes: number }>("SELECT bytes FROM recovery_usage WHERE id=1")
+      .one().bytes;
+  }
+
+  exportBatches(cursor: string, receivedSince: number) {
+    const rows = this.storage.sql
+      .exec<PayloadRow>(
+        "SELECT payload FROM recovery_batches WHERE id>? AND received>=? ORDER BY id LIMIT 11",
+        cursor,
+        receivedSince
+      )
+      .toArray()
+      .map((row) => JSON.parse(row.payload) as RecoveryBatch);
+    return {
+      rows: rows.slice(0, 10),
+      cursor: rows.length > 10 ? rows[9].id : null,
+    };
+  }
+
   events(from: string, to: string) {
     return this.storage.sql
       .exec<PayloadRow>(
@@ -433,6 +510,10 @@ export class ClusterStorage {
         now - 7 * 86_400_000
       );
       this.storage.sql.exec(
+        "DELETE FROM recovery_batches WHERE received < ?",
+        now - 86_400_000
+      );
+      this.storage.sql.exec(
         "DELETE FROM latest WHERE source < ?",
         nanoTimestamp(BigInt(now - 7 * 86_400_000) * 1_000_000n)
       );
@@ -460,6 +541,7 @@ export class ClusterStorage {
       allocatedBytes: this.storage.sql.databaseSize,
       quotaBytes: 448 * 1024 * 1024,
       metricSequence: this.get<number>("metricSequence") ?? 0,
+      recoveryJournalBytes: this.recoveryBytes,
       revision: this.revision,
       archiveError: this.get("archiveError"),
     };

@@ -57,6 +57,9 @@ export default defineConfig(({ mode }) => ({
       ...(process.env.MONITOR_MIGRATION === "1"
         ? { MIGRATION_ENABLED: bindings.text("1") }
         : {}),
+      ...(process.env.MONITOR_RECOVERY === "1"
+        ? { RECOVERY_ENABLED: bindings.text("1") }
+        : {}),
       ...(process.env.MONITOR_DOCS_URL
         ? { DOCS_URL: bindings.text(process.env.MONITOR_DOCS_URL) }
         : {}),

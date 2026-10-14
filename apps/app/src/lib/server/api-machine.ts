@@ -14,6 +14,9 @@ export async function machineApi(request: Request, env: Env, path: string) {
     );
   }
   if (path === "/machine/v1/enroll" && request.method === "POST") {
+    if (env.RECOVERY_ENABLED === "1") {
+      throw new HttpError(503, "recovery window; enrollment closed");
+    }
     const input = enrollmentSchema.parse(await readJson(request));
     return json(
       await enrollCluster(

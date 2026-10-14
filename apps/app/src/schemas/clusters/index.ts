@@ -56,6 +56,13 @@ export const recoveryExportSchema = z.strictObject({
   cluster: idSchema,
   cursor: z.string().max(128).optional(),
 });
+export const recoveryBatchExportSchema = recoveryExportSchema.extend({
+  cursor: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  receivedSince: z.string().optional(),
+});
 
 export function defaultProfile() {
   return {

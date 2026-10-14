@@ -292,6 +292,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/export/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["exportRecoveryBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clusters/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getClusterRuntimeStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -507,8 +539,6 @@ export interface components {
         };
         StatusResponse: {
             status: string;
-            metricSequence: number;
-            revision: number;
         };
         Workspace: {
             id: string;
@@ -561,7 +591,7 @@ export interface components {
             observation: components["schemas"]["RecoveryObservation"] | null;
             latestMetrics: components["schemas"]["Metric"][];
             stateHash: string | null;
-            status: components["schemas"]["StatusResponse"];
+            status: components["schemas"]["ClusterStorageStatus"];
         };
         RecoveryEvent: {
             event: components["schemas"]["Lifecycle"];
@@ -569,6 +599,54 @@ export interface components {
         };
         RecoveryEventPage: {
             rows: components["schemas"]["RecoveryEvent"][];
+            cursor: string | null;
+        };
+        ClusterStorageStatus: {
+            bufferedPoints: number;
+            dirtyPartitions: number;
+            pendingInventories: number;
+            bytes: number;
+            allocatedBytes: number;
+            quotaBytes: number;
+            metricSequence: number;
+            revision: number;
+            recoveryJournalBytes: number;
+            archiveError: {
+                at?: string;
+                error?: string;
+            } | null;
+        };
+        ClusterRuntimeStatus: {
+            bufferedPoints: number;
+            dirtyPartitions: number;
+            pendingInventories: number;
+            bytes: number;
+            allocatedBytes: number;
+            quotaBytes: number;
+            metricSequence: number;
+            revision: number;
+            recoveryJournalBytes: number;
+            archiveError: {
+                at?: string;
+                error?: string;
+            } | null;
+            migrationEnabled: boolean;
+            recoveryEnabled: boolean;
+        };
+        RecoveryBatch: {
+            id: string;
+            receivedAt: string;
+            rejected: number;
+            pointKeys: string[];
+            beforeSequence: number;
+            afterSequence: number;
+            revision: number;
+        };
+        RecoveryBatchPage: {
+            rows: {
+                receipt: components["schemas"]["RecoveryBatch"];
+                contentHash: string;
+            }[];
             cursor: string | null;
         };
     };
@@ -1444,6 +1522,109 @@ export interface operations {
                 content?: never;
             };
             /** @description Storage unavailable or restore writer active */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportRecoveryBatches: {
+        parameters: {
+            query: {
+                workspace: string;
+                cluster: string;
+                cursor?: string;
+                receivedSince?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped accepted-batch membership receipts recorded only during an enabled recovery window; fence and verify a common boundary before recovery. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryBatchPage"];
+                };
+            };
+            /** @description Invalid bounded scope or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operator authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace mismatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pending archival work must drain before state export */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Storage unavailable or restore writer active */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getClusterRuntimeStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable buffer usage and active migration/recovery flags. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterRuntimeStatus"];
+                };
+            };
+            /** @description Operator authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cluster missing */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Storage unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;

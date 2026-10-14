@@ -783,25 +783,15 @@
         "type": "object"
       },
       "StatusResponse": {
+        "type": "object",
         "properties": {
           "status": {
             "type": "string"
-          },
-          "metricSequence": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 0
           }
         },
         "required": [
-          "status",
-          "metricSequence",
-          "revision"
-        ],
-        "type": "object"
+          "status"
+        ]
       },
       "Workspace": {
         "properties": {
@@ -1011,7 +1001,7 @@
             "nullable": true
           },
           "status": {
-            "$ref": "#/components/schemas/StatusResponse"
+            "$ref": "#/components/schemas/ClusterStorageStatus"
           }
         },
         "required": [
@@ -1049,6 +1039,228 @@
           "cursor": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "required": [
+          "rows",
+          "cursor"
+        ]
+      },
+      "ClusterStorageStatus": {
+        "type": "object",
+        "properties": {
+          "bufferedPoints": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dirtyPartitions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingInventories": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "allocatedBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "quotaBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metricSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recoveryJournalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "archiveError": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "bufferedPoints",
+          "dirtyPartitions",
+          "pendingInventories",
+          "bytes",
+          "allocatedBytes",
+          "quotaBytes",
+          "metricSequence",
+          "revision",
+          "recoveryJournalBytes",
+          "archiveError"
+        ]
+      },
+      "ClusterRuntimeStatus": {
+        "type": "object",
+        "properties": {
+          "bufferedPoints": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "dirtyPartitions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingInventories": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "allocatedBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "quotaBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metricSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recoveryJournalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "archiveError": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          },
+          "migrationEnabled": {
+            "type": "boolean"
+          },
+          "recoveryEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bufferedPoints",
+          "dirtyPartitions",
+          "pendingInventories",
+          "bytes",
+          "allocatedBytes",
+          "quotaBytes",
+          "metricSequence",
+          "revision",
+          "recoveryJournalBytes",
+          "archiveError",
+          "migrationEnabled",
+          "recoveryEnabled"
+        ]
+      },
+      "RecoveryBatch": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "receivedAt": {
+            "type": "string"
+          },
+          "rejected": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pointKeys": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "maxItems": 10000
+          },
+          "beforeSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "afterSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "receivedAt",
+          "rejected",
+          "pointKeys",
+          "beforeSequence",
+          "afterSequence",
+          "revision"
+        ]
+      },
+      "RecoveryBatchPage": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "receipt": {
+                  "$ref": "#/components/schemas/RecoveryBatch"
+                },
+                "contentHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "receipt",
+                "contentHash"
+              ]
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1971,6 +2183,120 @@
           },
           "503": {
             "description": "Storage unavailable or restore writer active"
+          }
+        },
+        "security": [
+          {
+            "operator": []
+          }
+        ]
+      }
+    },
+    "/api/v1/export/batches": {
+      "get": {
+        "operationId": "exportRecoveryBatches",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          {
+            "in": "query",
+            "name": "receivedSince",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scoped accepted-batch membership receipts recorded only during an enabled recovery window; fence and verify a common boundary before recovery.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryBatchPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bounded scope or cursor"
+          },
+          "401": {
+            "description": "Operator authentication required"
+          },
+          "403": {
+            "description": "Workspace mismatch"
+          },
+          "409": {
+            "description": "Pending archival work must drain before state export"
+          },
+          "503": {
+            "description": "Storage unavailable or restore writer active"
+          }
+        },
+        "security": [
+          {
+            "operator": []
+          }
+        ]
+      }
+    },
+    "/api/v1/clusters/{id}/status": {
+      "get": {
+        "operationId": "getClusterRuntimeStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable buffer usage and active migration/recovery flags.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterRuntimeStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Operator authentication required"
+          },
+          "404": {
+            "description": "Cluster missing"
+          },
+          "503": {
+            "description": "Storage unavailable"
           }
         },
         "security": [
