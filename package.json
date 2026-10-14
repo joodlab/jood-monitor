@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": "^22.19.0 || ^24.11.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build --filter=@jood-monitor/app --filter=@jood-monitor/docs",
@@ -17,6 +20,7 @@
     "db:emit": "pnpm --filter @jood-monitor/app db:emit",
     "db:sql": "node scripts/db/prisma-to-d1.mjs",
     "test:worker": "pnpm --filter @jood-monitor/app test:worker",
+    "test:start": "pnpm --filter @jood-monitor/app test:start",
     "release:notes": "changelogithub",
     "deploy": "node scripts/cloudflare/deploy.mjs app",
     "deploy:app": "node scripts/cloudflare/deploy.mjs app",
