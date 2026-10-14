@@ -165,28 +165,32 @@ export function metricKey(
     | "unit"
     | "kind"
     | "temporality"
+    | "monotonic"
   >
 ) {
   const numeric = row.integer
     ? BigInt(row.value).toString()
     : Number(row.value);
-  return hash(
-    canonical([
-      row.clusterId,
-      row.entityUid,
-      row.name,
-      row.timeUnixNano,
-      JSON.parse(row.attributes),
-      JSON.parse(row.resource),
-      JSON.parse(row.scope),
-      Object.is(numeric, -0) ? "-0" : String(numeric),
-      row.integer,
-      row.startTimeUnixNano,
-      row.unit,
-      row.kind,
-      row.temporality,
-    ])
-  );
+  const identity = [
+    row.clusterId,
+    row.entityUid,
+    row.name,
+    row.timeUnixNano,
+    JSON.parse(row.attributes),
+    JSON.parse(row.resource),
+    JSON.parse(row.scope),
+    Object.is(numeric, -0) ? "-0" : String(numeric),
+    row.integer,
+    row.startTimeUnixNano,
+    row.unit,
+    row.kind,
+    row.temporality,
+  ];
+  // Retain existing Go counter/gauge keys while distinguishing historical flag variants.
+  if (row.monotonic !== (row.kind === "sum")) {
+    identity.push(row.monotonic);
+  }
+  return hash(canonical(identity));
 }
 
 export function compareMetrics(a: StoredMetric, b: StoredMetric) {
