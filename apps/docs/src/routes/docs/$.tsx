@@ -85,7 +85,7 @@ function Docs() {
         ...(data.hubURL
           ? [{ text: "Dashboard", url: data.hubURL, external: true }]
           : []),
-        { text: "GitHub", url: "https://github.com/lord007tn/jood-monitor" },
+        { text: "GitHub", url: "https://github.com/joodlab/jood-monitor" },
       ]}
       nav={{ title: "Jood Monitor docs", url: "/docs" }}
       tree={pageTree}

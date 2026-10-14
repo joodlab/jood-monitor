@@ -6,9 +6,9 @@ topology, and review observed scaling events. Agents run on your infrastructure;
 the dashboard, API and storage run on Cloudflare.
 
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Checks](https://github.com/lord007tn/jood-monitor/actions/workflows/ci.yaml/badge.svg)](https://github.com/lord007tn/jood-monitor/actions/workflows/ci.yaml)
+[![Checks](https://github.com/joodlab/jood-monitor/actions/workflows/ci.yaml/badge.svg)](https://github.com/joodlab/jood-monitor/actions/workflows/ci.yaml)
 
-[![Deploy hub to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/lord007tn/jood-monitor)
+[![Deploy hub to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/joodlab/jood-monitor)
 
 The button clones the entire workspace and deploys the full-stack hub with the
 `cf` CLI. Documentation is a separate app, deployed with `pnpm deploy:docs`.
