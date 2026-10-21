@@ -10,8 +10,18 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] },
+    "paths": {
+      "@/*": ["src/*"],
+      "collections/*": ["./.source/*"]
+    },
     "types": ["vite/client", "@cloudflare/workers-types", "node"]
   },
-  "include": ["src", "vite.config.ts", "cloudflare.config.ts", "tests"]
+  "include": [
+    "src",
+    "vite.config.ts",
+    "cloudflare.config.ts",
+    "tests",
+    ".source/**/*.ts",
+    "source.config.ts"
+  ]
 }

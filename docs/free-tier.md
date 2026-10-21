@@ -69,6 +69,22 @@ Class B operations per month. These are shared account allowances. A paid accoun
 can charge overages, while exceeding the Workers Free plan's hard limits fails
 operations. This application does not change the account plan or purchase capacity.
 
+The Paid plan has different monthly allowances: Durable Object requests include
+one million per month, compared with 100,000 per day on Free. A workload can fit
+the Free daily request allowance and still incur Paid request charges. Workers
+Paid also has a subscription fee, and other applications consume the same included
+allowances. Budget notifications report thresholds; they do not stop spending.
+Workers Free additionally limits CPU to 10 ms per invocation. Check expensive
+requests and archival processing before moving an existing deployment to Free.
+The deployment caps each invocation at 1,000 ms of CPU to bound runaway work on
+Paid. This is a per-invocation safety limit, not a monthly spending cap or proof
+that the Free CPU limit is satisfied.
+
+Deploy the hub and Fumadocs documentation together as one Worker. Normal app,
+API, `/docs` and search traffic share that deployment and its existing resources.
+Retire migration/proof Workers after draining and preserving recovery material;
+their scheduled triggers otherwise continue running even without live agents.
+
 Sources: [Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/),
 [D1](https://developers.cloudflare.com/d1/platform/pricing/),
 [R2](https://developers.cloudflare.com/r2/pricing/),

@@ -9,23 +9,17 @@ import { requireOperator } from "./lib/server/auth";
 export { ClusterState } from "./durable-objects/cluster-state";
 export { WorkspaceStream } from "./durable-objects/workspace-stream";
 
-const trailingSlash = /\/$/;
 export default {
   async fetch(request: Request, env: Env) {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/docs") && env.DOCS) {
-        return env.DOCS.fetch(request);
-      }
-      if (
-        (url.pathname === "/docs" || url.pathname.startsWith("/docs/")) &&
-        env.DOCS_URL
-      ) {
-        const target = new URL(env.DOCS_URL);
-        target.pathname =
-          target.pathname.replace(trailingSlash, "") + url.pathname.slice(5);
-        target.search = url.search;
-        return Response.redirect(target.toString(), 302);
+      const publicDocs =
+        url.pathname === "/docs" ||
+        url.pathname.startsWith("/docs/") ||
+        url.pathname === "/api/docs/page" ||
+        url.pathname === "/api/search";
+      if (publicDocs) {
+        return await handler.fetch(request);
       }
       const api = await dispatchApi(request, env);
       if (api) {

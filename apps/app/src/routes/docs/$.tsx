@@ -1,5 +1,5 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
-import { createServerFn } from "@tanstack/react-start";
+import { createIsomorphicFn } from "@tanstack/react-start";
 import browserCollections from "collections/browser";
 import { useFumadocsLoader } from "fumadocs-core/source/client";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
@@ -9,37 +9,30 @@ import {
   DocsPage,
   DocsTitle,
 } from "fumadocs-ui/layouts/docs/page";
+import { RootProvider } from "fumadocs-ui/provider/tanstack";
 import { Suspense } from "react";
-import { z } from "zod";
-import { getMDXComponents } from "@/components/mdx";
-import { source } from "@/docs-source";
-
-const slugsSchema = z.array(z.string().min(1).max(200)).max(20);
+import { getMDXComponents } from "@/components/docs-mdx";
+import { loadDocsPage, type source } from "@/docs-source";
 
 interface DocsData {
   description?: string;
-  hubURL?: string;
   pageTree: Awaited<ReturnType<typeof source.serializePageTree>>;
   path: string;
   title: string;
 }
 
-const loadPage = createServerFn({ method: "GET" })
-  .validator(slugsSchema)
-  .handler(async ({ data: slugs }) => {
-    const page = source.getPage(slugs);
-    if (!page) {
+const loadPage = createIsomorphicFn()
+  .server(loadDocsPage)
+  .client(async (slugs: string[]): Promise<DocsData> => {
+    const query = new URLSearchParams({ path: slugs.join("/") });
+    const response = await fetch(`/api/docs/page?${query}`);
+    if (response.status === 404) {
       throw notFound();
     }
-    const { env } = await import("cloudflare:workers");
-    const hubURL = (env as { HUB_URL?: string }).HUB_URL;
-    return {
-      description: page.data.description,
-      hubURL: hubURL || undefined,
-      pageTree: await source.serializePageTree(source.getPageTree()),
-      path: page.path,
-      title: page.data.title,
-    };
+    if (!response.ok) {
+      throw new Error("Documentation unavailable; retry");
+    }
+    return response.json();
   });
 
 const content = browserCollections.docs.createClientLoader({
@@ -68,9 +61,9 @@ export const Route = createFileRoute("/docs/$")({
     ],
   }),
   loader: async ({ params }) => {
-    const data = (await loadPage({
-      data: params._splat?.split("/").filter(Boolean) ?? [],
-    })) as DocsData;
+    const data = await loadPage(
+      params._splat?.split("/").filter(Boolean) ?? []
+    );
     await content.preload(data.path);
     return data;
   },
@@ -80,17 +73,18 @@ function Docs() {
   const data = Route.useLoaderData() as DocsData;
   const { pageTree, path } = useFumadocsLoader(data);
   return (
-    <DocsLayout
-      links={[
-        ...(data.hubURL
-          ? [{ text: "Dashboard", url: data.hubURL, external: true }]
-          : []),
-        { text: "GitHub", url: "https://github.com/joodlab/jood-monitor" },
-      ]}
-      nav={{ title: "Jood Monitor docs", url: "/docs" }}
-      tree={pageTree}
-    >
-      <Suspense>{content.useContent(path)}</Suspense>
-    </DocsLayout>
+    <RootProvider theme={{ enabled: false }}>
+      <DocsLayout
+        links={[
+          { text: "Dashboard", url: "/", external: true },
+          { text: "GitHub", url: "https://github.com/joodlab/jood-monitor" },
+        ]}
+        nav={{ title: "Jood Monitor docs", url: "/docs" }}
+        themeSwitch={{ enabled: false }}
+        tree={pageTree}
+      >
+        <Suspense>{content.useContent(path)}</Suspense>
+      </DocsLayout>
+    </RootProvider>
   );
 }

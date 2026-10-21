@@ -8,9 +8,9 @@
   },
   "scripts": {
     "dev": "turbo run dev",
-    "build": "turbo run build --filter=@jood-monitor/app --filter=@jood-monitor/docs",
+    "build": "turbo run build --filter=@jood-monitor/app",
     "test": "turbo run test --filter=@jood-monitor/app",
-    "typecheck": "turbo run typecheck --filter=@jood-monitor/app --filter=@jood-monitor/docs --filter=@jood-monitor/api-client",
+    "typecheck": "turbo run typecheck --filter=@jood-monitor/app --filter=@jood-monitor/api-client",
     "lint": "ultracite check",
     "fix": "ultracite fix",
     "knip": "knip",
@@ -23,8 +23,7 @@
     "test:start": "pnpm --filter @jood-monitor/app test:start",
     "release:notes": "changelogithub",
     "deploy": "node scripts/cloudflare/deploy.mjs app",
-    "deploy:app": "node scripts/cloudflare/deploy.mjs app",
-    "deploy:docs": "node scripts/cloudflare/deploy.mjs docs"
+    "deploy:app": "node scripts/cloudflare/deploy.mjs app"
   },
   "devDependencies": {
     "cf": "1.0.0-beta.12",

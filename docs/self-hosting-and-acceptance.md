@@ -1,6 +1,6 @@
 # Hosting and acceptance
 
-Deploy the TanStack app and Fumadocs app to Cloudflare Workers. Provision D1,
+Deploy the TanStack app, including Fumadocs, as one Cloudflare Worker. Provision D1,
 R2, Queues and SQLite Durable Object bindings for the hub. Keep operator secrets
 private, use HTTPS, and enroll Go observers with one-use tokens. The chart
 requires a reviewed immutable agent image digest and observer TLS assets.

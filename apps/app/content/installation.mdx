@@ -4,7 +4,7 @@ description: Deploy the hub and documentation with the Cloudflare cf CLI.
 ---
 
 The hub is a TanStack Start Worker with D1, SQLite Durable Objects, R2 and
-Queues. Documentation is an independent Fumadocs Worker. Go agents run on
+Queues. Fumadocs documentation is included at `/docs` in the same Worker. Go agents run on
 the infrastructure you monitor.
 
 ## Deploy button
@@ -16,7 +16,7 @@ the custom deploy command uses `cf`, applies D1 migrations, and deploys the hub.
 
 `wrangler.json` supplies discovery metadata for the button. Actual configuration
 lives in `apps/app/cloudflare.config.ts`. Build and deploy commands must run from
-the repository root. Deploy documentation separately with `pnpm deploy:docs`.
+the repository root. The deployment includes documentation and search.
 
 ## Manual deployment
 
@@ -38,16 +38,13 @@ require `X-Jood-CSRF: 1`.
 
 ```sh
 pnpm deploy:app --secrets-file /absolute/path/.secrets.production.env
-pnpm deploy:docs
 ```
 
-Set `MONITOR_DOCS_URL` to the docs site's `/docs` URL when deploying the hub.
-Set `MONITOR_HUB_URL` to your hub's HTTPS origin when deploying the docs app.
-Its Dashboard link then opens your hub from the separate documentation site.
-The hub redirects documentation links to that independent Worker. Optional
+The dashboard, machine API, public `/docs` pages and documentation search share
+one Worker and origin. The docs Dashboard link returns to `/`. Optional
 `MONITOR_WORKER_NAME` selects an isolated hub and its resources;
-`MONITOR_DB_ID` must match that database. `MONITOR_DOMAIN` and
-`MONITOR_DOCS_DOMAIN` configure custom domains after DNS ownership is verified.
+`MONITOR_DB_ID` must match that database. `MONITOR_DOMAIN` configures a custom
+domain after DNS ownership is verified.
 
 For an existing hostname, keep its DNS record and enable Cloudflare proxying,
 then set `MONITOR_ROUTE_HOSTNAME` to the bare hostname and
@@ -75,7 +72,6 @@ and Vite share the app's `.cloudflare/state` directory.
 pnpm db:emit
 pnpm --filter @jood-monitor/app db:migrate:local
 pnpm --filter @jood-monitor/app dev
-pnpm --filter @jood-monitor/docs dev
 ```
 
 See [acceptance](/docs/acceptance) before a production cutover.
