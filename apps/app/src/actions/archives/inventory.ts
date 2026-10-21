@@ -2,19 +2,28 @@ import type { Heartbeat, Inventory, Profile } from "../../contracts/types";
 import { findArchive, lastInventory } from "../../data-access/clusters";
 import { getDb } from "../../db";
 import type { Env } from "../../env";
+import { hash } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
-import { timestampNano } from "../../lib/server/time";
+import { bucketStart, timestampNano } from "../../lib/server/time";
 import { normalizeTime } from "../clusters";
-import { archiveId, readArchiveObject } from "./index";
+import {
+  archiveDocument,
+  archiveId,
+  readArchive,
+  readArchiveObject,
+  writeArchive,
+} from "./index";
 
 export const contentEpoch = "1970-01-01T00:00:00.000000000Z";
+const receiptEntity = "live-v1";
 export interface InventoryReceipt {
   contentId: string;
   id: string;
+  metadata?: Omit<Observation, "inventory">;
   sourceDigest: string;
   sourceTime: string;
 }
-interface Observation {
+export interface Observation {
   heartbeat: Heartbeat | null;
   inventory: Inventory;
   profile: Profile | null;
@@ -23,6 +32,128 @@ interface Observation {
     receivedAt: string | null;
     heartbeatAt: string | null;
   };
+}
+
+async function publishInventoryContent(
+  env: Env,
+  clusterId: string,
+  contentId: string,
+  inventory: Inventory,
+  expiresAt: string
+) {
+  const previous = await readArchive<Inventory>(
+    env,
+    archiveId(clusterId, "inventory-content", contentId, contentEpoch)
+  );
+  if (previous && hash(JSON.stringify(previous.data)) !== contentId) {
+    throw new Error("inventory content identity mismatch");
+  }
+  if (previous && previous.expiresAt >= expiresAt) {
+    return;
+  }
+  await writeArchive(
+    env,
+    {
+      ...(previous ?? {
+        version: 1,
+        clusterId,
+        kind: "inventory-content",
+        entityUid: contentId,
+        sourceStart: contentEpoch,
+        sourceEnd: contentEpoch,
+        data: inventory,
+      }),
+      expiresAt,
+    },
+    0
+  );
+}
+
+// Share unchanged topology; each receipt retains the complete observation metadata.
+// The cluster's existing archival writer owns every call and clears its outbox later.
+export async function writeInventoryObservations(
+  env: Env,
+  clusterId: string,
+  observations: Observation[]
+) {
+  const groups = new Map<string, InventoryReceipt[]>();
+  const contents = new Map<
+    string,
+    { inventory: Inventory; expiresAt: string }
+  >();
+  for (const observation of observations) {
+    const sourceTime = normalizeTime(observation.inventory.sourceTime);
+    const inventory = {
+      ...observation.inventory,
+      sourceTime: "0001-01-01T00:00:00Z",
+    };
+    const contentId = hash(JSON.stringify(inventory));
+    // A full UTC day's receipts expire no later than this boundary. Extend at
+    // most daily, rather than rewriting identical content for each observation.
+    const expiresAt = new Date(
+      (Math.floor(Date.parse(sourceTime) / 86_400_000) + 181) * 86_400_000
+    ).toISOString();
+    const saved = contents.get(contentId);
+    if (!saved || saved.expiresAt < expiresAt) {
+      contents.set(contentId, { inventory, expiresAt });
+    }
+    const bucket = bucketStart(String(timestampNano(sourceTime)));
+    const group = groups.get(bucket) ?? [];
+    const { inventory: _inventory, ...metadata } = observation;
+    group.push({
+      id: String(timestampNano(sourceTime)),
+      sourceTime,
+      sourceDigest: hash(JSON.stringify(observation)),
+      contentId,
+      metadata,
+    });
+    groups.set(bucket, group);
+  }
+  // Publish and verify all referenced content before any receipt points at it.
+  for (const [contentId, { inventory, expiresAt }] of contents) {
+    await publishInventoryContent(
+      env,
+      clusterId,
+      contentId,
+      inventory,
+      expiresAt
+    );
+  }
+  for (const [bucket, incoming] of groups) {
+    const previous = await readArchive<InventoryReceipt[]>(
+      env,
+      archiveId(clusterId, "inventory-receipts", receiptEntity, bucket)
+    );
+    const receipts = new Map(
+      (previous?.data ?? []).map((receipt) => [receipt.id, receipt])
+    );
+    for (const receipt of incoming) {
+      const saved = receipts.get(receipt.id);
+      if (saved && saved.sourceDigest !== receipt.sourceDigest) {
+        throw new Error("inventory receipt identity mismatch");
+      }
+      receipts.set(receipt.id, receipt);
+    }
+    if (receipts.size > 5000) {
+      throw new Error("inventory receipt partition quota");
+    }
+    const rows = [...receipts.values()].sort((a, b) =>
+      BigInt(a.id) < BigInt(b.id) ? -1 : 1
+    );
+    await writeArchive(
+      env,
+      archiveDocument(
+        clusterId,
+        "inventory-receipts",
+        receiptEntity,
+        bucket,
+        300,
+        180,
+        rows
+      ),
+      rows.length
+    );
+  }
 }
 
 function laterReceipt(
@@ -113,8 +244,7 @@ export async function historicalInventory(
     content.objectKey,
     content.contentHash
   );
-  return {
-    inventory: { ...document.data, sourceTime: best.sourceTime },
+  const metadata = best.metadata ?? {
     profile: null,
     heartbeat: null,
     times: {
@@ -122,6 +252,10 @@ export async function historicalInventory(
       receivedAt: null,
       heartbeatAt: null,
     },
+  };
+  return {
+    inventory: { ...document.data, sourceTime: best.sourceTime },
+    ...metadata,
   };
 }
 

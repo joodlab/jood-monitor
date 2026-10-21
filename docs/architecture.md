@@ -36,6 +36,12 @@ and content checked. D1 exposes the index after upload succeeds. Outbox samples
 are removed after raw and summary objects and indexes commit. Generation checks
 preserve concurrent late arrivals. Alarms retry independently of queue delivery.
 
+Inventory archives share unchanged topology by content hash. Five-minute receipt
+partitions preserve every observation's exact source time, captured profile,
+heartbeat and receipt times. Referenced content commits first and outlives its
+receipts. Imported observations with explicit identities retain their original
+representation. Older full snapshots and metadata-free receipts remain readable.
+
 Source nanoseconds and int64 values stay strings or BigInt. Semantic series
 identity excludes only the per-sample source window. Original attributes,
 resource and scope remain available in raw history and exports.

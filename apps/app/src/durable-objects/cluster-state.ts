@@ -7,6 +7,10 @@ import {
   readArchiveObject,
   writeArchive,
 } from "../actions/archives";
+import {
+  type Observation,
+  writeInventoryObservations,
+} from "../actions/archives/inventory";
 import { maintainArchives } from "../actions/archives/maintenance";
 import { normalizeTime } from "../actions/clusters";
 import {
@@ -1346,17 +1350,24 @@ export class ClusterState extends DurableObject<Env> {
     this.flushing = true;
     try {
       this.db.transaction(() => this.db.checkpointLatest());
+      const compact: { stamp: string; data: Observation }[] = [];
       for (const pending of this.db.inventoryOutbox()) {
-        const data = this.db.get(`inventory:${pending.stamp}`);
+        const data = this.db.get<Observation & { observationId?: string }>(
+          `inventory:${pending.stamp}`
+        );
         if (!data) {
           throw new Error("inventory outbox unavailable");
+        }
+        if (!data.observationId) {
+          compact.push({ stamp: pending.stamp, data });
+          continue;
         }
         await writeArchive(
           this.env,
           archiveDocument(
             identity.id,
             "inventory",
-            (data as { observationId?: string }).observationId ?? "",
+            data.observationId,
             nanoTimestamp(timestampNano(pending.source)),
             1,
             180,
@@ -1365,6 +1376,14 @@ export class ClusterState extends DurableObject<Env> {
           0
         );
         this.db.completeInventory(pending.stamp);
+      }
+      await writeInventoryObservations(
+        this.env,
+        identity.id,
+        compact.map((item) => item.data)
+      );
+      for (const item of compact) {
+        this.db.completeInventory(item.stamp);
       }
       const drainTime =
         Date.now() + (this.env.MIGRATION_ENABLED === "1" ? 330_000 : 0);

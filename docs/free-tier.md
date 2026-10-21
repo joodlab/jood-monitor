@@ -17,7 +17,16 @@ including legacy duplicates, rollback, restart and the transition after draining
 
 Control changes in one transaction share a compressed state document, and
 unchanged values are skipped. Inventory observations retain separate durable
-outbox documents and drain in batches of twelve. Heartbeats
+outbox documents and drain in batches of twelve. Unchanged inventory content is
+stored once; five-minute receipt archives retain every observation's exact source
+time, receipt times, heartbeat and profile. Content is published before receipts,
+and its retention extends before newer references are published. Content expiry
+updates occur at most daily. An archived receipt clears its outbox only after both
+objects and indexes commit. Existing full inventory archives remain readable;
+explicitly identified imported observations keep their original separate identity.
+Receipt partitions are bounded to 5,000 observations and the existing 32 MiB
+archive quota; an archival failure retains the durable outbox and applies normal
+backpressure. Heartbeats
 persist profile changes only when the applied profile actually changes. Workspace
 notifications are coalesced to thirty seconds. An alarm targets the next closed
 five-minute window, with bounded retries for pending archival. Queues remain
@@ -74,3 +83,6 @@ temporarily exceed the new steady-state write rate. Do not delete accepted data
 to make a usage graph smaller. Once compact rows have been accepted, recovery
 must use this version or a compatible later version; an older binary cannot
 read them.
+Recovery of metadata-bearing inventory receipts also requires this version or a
+compatible later version. Older readers can display topology from those receipts
+but cannot reconstruct their captured profile and heartbeat metadata.

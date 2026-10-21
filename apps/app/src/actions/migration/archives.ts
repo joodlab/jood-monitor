@@ -133,10 +133,15 @@ async function compactInventory(
     .max(5000)
     .parse(input.data)
     .map((r) => ({ ...r, sourceTime: normalizeTime(r.sourceTime) }));
+  const seconds = Number(
+    (timestampNano(end) - timestampNano(start) + 1n) / 1_000_000_000n
+  );
   if (
     input.points !== receipts.length ||
-    start !== bucketStart(timestampNano(start).toString(), 86_400) ||
-    timestampNano(end) !== timestampNano(start) + 86_400_000_000_000n - 1n ||
+    ![300, 86_400].includes(seconds) ||
+    start !== bucketStart(timestampNano(start).toString(), seconds) ||
+    timestampNano(end) !==
+      timestampNano(start) + BigInt(seconds) * 1_000_000_000n - 1n ||
     receipts.some((r) => r.sourceTime < start || r.sourceTime > end) ||
     new Set(receipts.map((r) => r.id)).size !== receipts.length
   ) {
