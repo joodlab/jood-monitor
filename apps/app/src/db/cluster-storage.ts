@@ -6,6 +6,7 @@ import type {
 import { HttpError } from "../lib/server/http";
 import { compareMetrics } from "../lib/server/telemetry";
 import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
+import { compress, decompress, PackedMetrics } from "./packed-metrics";
 
 interface PayloadRow extends Record<string, SqlStorageValue> {
   payload: string;
@@ -20,6 +21,14 @@ export interface DirtyPartition extends Record<string, SqlStorageValue> {
 // Native SQLite is the transactional store inside a cluster Durable Object. D1 uses Prisma.
 export class ClusterStorage {
   private readonly storage: DurableObjectStorage;
+  private readonly packed: PackedMetrics;
+  private readonly documents = new Map<string, string>();
+  private compactBytes = 0;
+  private latestRows: Map<string, StoredMetric> | null = null;
+  private rateWindow = { start: 0, count: 0 };
+  private minuteLease = 0;
+  private dailyLease = { day: "", remaining: 0 };
+  private transactionDepth = 0;
   constructor(storage: DurableObjectStorage) {
     this.storage = storage;
     storage.sql.exec(`
@@ -73,9 +82,41 @@ export class ClusterStorage {
       CREATE TRIGGER IF NOT EXISTS recovery_journal_usage_insert AFTER INSERT ON recovery_batches BEGIN UPDATE recovery_usage SET bytes=bytes+length(CAST(NEW.payload AS BLOB))*2+512 WHERE id=1; END;
       CREATE TRIGGER IF NOT EXISTS recovery_journal_usage_delete AFTER DELETE ON recovery_batches BEGIN UPDATE recovery_usage SET bytes=bytes-length(CAST(OLD.payload AS BLOB))*2-512 WHERE id=1; END;
     `);
+    storage.sql.exec(`CREATE TABLE IF NOT EXISTS compact_documents (
+      name TEXT NOT NULL, part INTEGER NOT NULL, payload BLOB NOT NULL,
+      bytes INTEGER NOT NULL, PRIMARY KEY(name,part)
+    ) WITHOUT ROWID`);
+    this.packed = new PackedMetrics(storage.sql);
+    this.compactBytes = storage.sql
+      .exec<{ bytes: number }>(
+        "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents"
+      )
+      .one().bytes;
   }
 
   get<T>(name: string): T | null {
+    if (this.documents.has(name)) {
+      return JSON.parse(this.documents.get(name) ?? "null") as T;
+    }
+    const compact = this.storage.sql
+      .exec<{ payload: ArrayBuffer }>(
+        "SELECT payload FROM compact_documents WHERE name=? ORDER BY part",
+        name
+      )
+      .toArray();
+    if (compact.length) {
+      const joined = Buffer.concat(
+        compact.map((row) => Buffer.from(row.payload))
+      );
+      const value = decompress<T>(
+        joined.buffer.slice(
+          joined.byteOffset,
+          joined.byteOffset + joined.byteLength
+        )
+      );
+      this.documents.set(name, JSON.stringify(value));
+      return value;
+    }
     const parts = this.storage.sql
       .exec<PayloadRow>(
         "SELECT payload FROM documents WHERE name = ? ORDER BY part",
@@ -89,35 +130,70 @@ export class ClusterStorage {
 
   put(name: string, value: unknown) {
     const json = JSON.stringify(value);
-    this.storage.sql.exec("DELETE FROM documents WHERE name = ?", name);
-    // Each row remains below 256 KiB, including multibyte UTF-8 text.
-    let offset = 0;
-    for (let part = 0; offset < json.length; part++) {
-      let end = Math.min(offset + 65_536, json.length);
-      const last = json.charCodeAt(end - 1);
-      if (end < json.length && last >= 0xd8_00 && last <= 0xdb_ff) {
-        end--;
-      }
+    if (JSON.stringify(this.get(name)) === json) {
+      return;
+    }
+    const previous = this.storage.sql
+      .exec<{ bytes: number }>(
+        "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name=?",
+        name
+      )
+      .one().bytes;
+    const compressed = compress(json);
+    this.storage.sql.exec(
+      "DELETE FROM compact_documents WHERE name=? AND part>=?",
+      name,
+      Math.ceil(compressed.byteLength / 1_000_000)
+    );
+    for (
+      let offset = 0, part = 0;
+      offset < compressed.byteLength;
+      offset += 1_000_000, part++
+    ) {
       this.storage.sql.exec(
-        "INSERT INTO documents(name,part,payload) VALUES(?,?,?)",
+        "INSERT INTO compact_documents(name,part,payload,bytes) VALUES(?,?,?,?) ON CONFLICT(name,part) DO UPDATE SET payload=excluded.payload,bytes=excluded.bytes",
         name,
         part,
-        json.slice(offset, end)
+        compressed.subarray(offset, offset + 1_000_000),
+        part === 0 ? Buffer.byteLength(json) * 2 + 512 : 0
       );
-      offset = end;
     }
+    this.storage.sql.exec("DELETE FROM documents WHERE name = ?", name);
+    this.compactBytes += Buffer.byteLength(json) * 2 + 512 - previous;
+    this.documents.set(name, json);
   }
 
   transaction<T>(fn: () => T): T {
-    return this.storage.transactionSync(fn);
+    this.transactionDepth++;
+    try {
+      return this.storage.transactionSync(fn);
+    } catch (error) {
+      if (this.transactionDepth === 1) {
+        this.documents.clear();
+        this.latestRows = null;
+        this.packed.reload();
+        this.compactBytes = this.storage.sql
+          .exec<{ bytes: number }>(
+            "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents"
+          )
+          .one().bytes;
+      }
+      throw error;
+    } finally {
+      this.transactionDepth--;
+    }
   }
   get size() {
-    return this.storage.sql
-      .exec<{ bytes: number }>("SELECT bytes FROM buffer_usage WHERE id=1")
-      .one().bytes;
+    return (
+      this.storage.sql
+        .exec<{ bytes: number }>("SELECT bytes FROM buffer_usage WHERE id=1")
+        .one().bytes +
+      this.compactBytes +
+      this.packed.bytes
+    );
   }
   get revision() {
-    return this.get<number>("revision") ?? 0;
+    return Math.max(this.get<number>("revision") ?? 0, this.packed.revision);
   }
   changed() {
     this.put("revision", this.revision + 1);
@@ -133,12 +209,15 @@ export class ClusterStorage {
   }
 
   batch(id: string) {
-    return this.storage.sql
-      .exec<{ rejected: number }>(
-        "SELECT rejected FROM batches WHERE id = ?",
-        id
-      )
-      .toArray()[0];
+    return (
+      this.packed.batch(id) ??
+      this.storage.sql
+        .exec<{ rejected: number }>(
+          "SELECT rejected FROM batches WHERE id = ?",
+          id
+        )
+        .toArray()[0]
+    );
   }
 
   accept(
@@ -149,7 +228,10 @@ export class ClusterStorage {
     preserveIds = false,
     recovery = false
   ) {
-    const sequence = this.get<number>("metricSequence") ?? 0;
+    const sequence = Math.max(
+      this.get<number>("metricSequence") ?? 0,
+      this.packed.sequence
+    );
     if (!Number.isSafeInteger(sequence + rows.length)) {
       throw new HttpError(503, "metric sequence capacity reached");
     }
@@ -167,76 +249,40 @@ export class ClusterStorage {
       throw new HttpError(413, "normalized batch byte quota");
     }
     this.checkCapacity(bytes * 4);
+    const latest = this.savedLatest();
+    const legacyKeys = new Set(
+      this.storage.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM raw WHERE id IN (SELECT value FROM json_each(?))",
+          JSON.stringify(rows.map((row) => row.key))
+        )
+        .toArray()
+        .map((row) => row.id)
+    );
+    const accepted = rows.filter(
+      (row) =>
+        latest.get(row.series)?.key !== row.key && !legacyKeys.has(row.key)
+    );
     this.transaction(() => {
-      const dirty = new Set<string>();
-      for (const [index, row] of rows.entries()) {
-        const latestKey = this.storage.sql
-          .exec<{ key: string }>(
-            "SELECT json_extract(payload,'$.key') AS key FROM latest WHERE series=?",
-            row.series
-          )
-          .toArray()[0]?.key;
-        if (latestKey === row.key) {
-          continue;
-        }
-        const bucket = bucketStart(row.timeUnixNano);
-        const diagnostic = row.diagnostic ? 1 : 0;
-        const saved = this.storage.sql.exec(
-          "INSERT OR IGNORE INTO raw(id,series,entity,bucket,diagnostic,source,payload) VALUES(?,?,?,?,?,?,?)",
-          row.key,
-          row.series,
-          row.entityUid,
-          bucket,
-          diagnostic,
-          row.sourceTime,
-          serialized[index]
-        );
-        if (!saved.rowsWritten) {
-          continue;
-        }
-        const stats = this.storage.sql
-          .exec<{ points: number; bytes: number }>(
-            "INSERT INTO partition_stats(entity,bucket,diagnostic,points,bytes) VALUES(?,?,?,1,?) ON CONFLICT(entity,bucket,diagnostic) DO UPDATE SET points=points+1,bytes=bytes+excluded.bytes RETURNING points,bytes",
-            row.entityUid,
-            bucket,
-            diagnostic,
-            Buffer.byteLength(serialized[index])
-          )
-          .one();
-        if (stats.points > 10_000 || stats.bytes > 24 * 1024 * 1024) {
-          throw new HttpError(
-            429,
-            "source partition quota reached; reduce collection scope or cadence"
-          );
-        }
-        this.updateLatest(row, serialized[index]);
-        const partition = JSON.stringify([row.entityUid, bucket, diagnostic]);
-        if (!dirty.has(partition)) {
-          this.storage.sql.exec(
-            "INSERT INTO dirty(entity,bucket,diagnostic,generation) VALUES(?,?,?,1) ON CONFLICT(entity,bucket,diagnostic) DO UPDATE SET generation=generation+1",
-            row.entityUid,
-            bucket,
-            diagnostic
-          );
-          dirty.add(partition);
-        }
-      }
-      this.storage.sql.exec(
-        "INSERT INTO batches(id,rejected,received) VALUES(?,?,?)",
-        id,
-        rejected,
-        now
-      );
       if (recovery) {
         this.recordRecoveryBatch(id, rows, rejected, now, sequence);
       }
-      this.put(
-        "metricSequence",
-        Math.max(sequence + rows.length, ...rows.map((row) => row.id))
+      this.packed.accept(
+        id,
+        accepted,
+        rejected,
+        now,
+        Math.max(sequence + rows.length, ...rows.map((row) => row.id)),
+        this.revision + 1
       );
-      this.changed();
       this.checkCapacity();
     });
+    for (const row of accepted) {
+      const previous = latest.get(row.series);
+      if (!previous || compareMetrics(row, previous) > 0) {
+        latest.set(row.series, row);
+      }
+    }
   }
 
   private recordRecoveryBatch(
@@ -272,63 +318,72 @@ export class ClusterStorage {
     }
   }
 
-  private updateLatest(row: StoredMetric, payload: string) {
-    const previousRaw = this.storage.sql
-      .exec<PayloadRow>(
-        "SELECT payload FROM latest WHERE series = ?",
-        row.series
-      )
-      .toArray()[0];
-    const previous = previousRaw
-      ? (JSON.parse(previousRaw.payload) as StoredMetric)
-      : null;
-    if (!previous || compareMetrics(row, previous) > 0) {
-      this.storage.sql.exec(
-        "INSERT INTO latest(series,source,payload) VALUES(?,?,?) ON CONFLICT(series) DO UPDATE SET source=excluded.source,payload=excluded.payload",
-        row.series,
-        row.sourceTime,
-        payload
-      );
+  private savedLatest() {
+    if (this.latestRows) {
+      return this.latestRows;
     }
+    const checkpoint = this.get<{ sequence: number; rows: StoredMetric[] }>(
+      "latestCheckpoint"
+    );
+    const legacy = this.storage.sql
+      .exec<PayloadRow>("SELECT payload FROM latest")
+      .toArray()
+      .map((row) => JSON.parse(row.payload) as StoredMetric);
+    const latest = new Map<string, StoredMetric>();
+    for (const row of [
+      ...legacy,
+      ...(checkpoint?.rows ?? []),
+      ...this.packed.latestSince(checkpoint?.sequence ?? 0),
+    ]) {
+      const previous = latest.get(row.series);
+      if (!previous || compareMetrics(row, previous) > 0) {
+        latest.set(row.series, row);
+      }
+    }
+    this.latestRows = latest;
+    return latest;
+  }
+
+  checkpointLatest() {
+    this.put("latestCheckpoint", {
+      sequence: Math.max(
+        this.packed.sequence,
+        this.get<number>("metricSequence") ?? 0
+      ),
+      rows: [...this.savedLatest().values()],
+    });
   }
 
   latest(now: number) {
-    return this.storage.sql
-      .exec<PayloadRow>(
-        "SELECT payload FROM latest WHERE source >= ? ORDER BY source DESC LIMIT 6001",
-        nanoTimestamp(BigInt(now - 180_000) * 1_000_000n)
-      )
-      .toArray()
-      .map((r) => JSON.parse(r.payload) as StoredMetric);
+    const cutoff = nanoTimestamp(BigInt(now - 180_000) * 1_000_000n);
+    return [...this.savedLatest().values()]
+      .filter((row) => row.sourceTime >= cutoff)
+      .sort((a, b) => compareMetrics(b, a))
+      .slice(0, 6001);
   }
 
   latestForRecovery() {
-    const rows = this.storage.sql
-      .exec<PayloadRow>("SELECT payload FROM latest ORDER BY series LIMIT 6001")
-      .toArray();
+    const rows = [...this.savedLatest().values()].sort((a, b) =>
+      a.series.localeCompare(b.series)
+    );
     if (rows.length > 6000) {
       throw new HttpError(413, "recovery latest-series quota");
     }
-    return rows.map((row) => JSON.parse(row.payload) as StoredMetric);
+    return rows;
   }
 
   replaceLatest(rows: StoredMetric[]) {
     this.storage.sql.exec("DELETE FROM latest");
-    for (const row of rows) {
-      this.storage.sql.exec(
-        "INSERT INTO latest(series,source,payload) VALUES(?,?,?)",
-        row.series,
-        row.sourceTime,
-        JSON.stringify(row)
-      );
-    }
+    this.latestRows = new Map(rows.map((row) => [row.series, row]));
     this.put(
       "metricSequence",
       Math.max(
         this.get<number>("metricSequence") ?? 0,
+        this.packed.sequence,
         ...rows.map((r) => r.id)
       )
     );
+    this.checkpointLatest();
   }
 
   history(from: string, to: string, entity?: string, name?: string) {
@@ -342,20 +397,35 @@ export class ClusterStorage {
       name ?? null,
       name ?? null
     );
-    return rows.toArray().map((r) => JSON.parse(r.payload) as StoredMetric);
+    return [
+      ...new Map(
+        [
+          ...rows.toArray().map((r) => JSON.parse(r.payload) as StoredMetric),
+          ...this.packed.history(from, to, entity, name),
+        ].map((row) => [row.key, row])
+      ).values(),
+    ]
+      .sort(compareMetrics)
+      .slice(0, 10_001);
   }
 
   dirty(now: number, limit = 12) {
-    return this.storage.sql
+    const legacy = this.storage.sql
       .exec<DirtyPartition>(
         "SELECT entity,bucket,diagnostic,generation FROM dirty WHERE bucket < ? ORDER BY bucket LIMIT ?",
         bucketStart(String(BigInt(now - 30_000) * 1_000_000n)),
         limit
       )
       .toArray();
+    return [...legacy, ...this.packed.dirty(now)]
+      .sort((a, b) => a.bucket.localeCompare(b.bucket))
+      .slice(0, limit);
   }
 
   partition(partition: DirtyPartition) {
+    if (partition.entity === "") {
+      return this.packed.partition(partition);
+    }
     return this.storage.sql
       .exec<PayloadRow>(
         "SELECT payload FROM raw WHERE entity=? AND bucket=? AND diagnostic=? ORDER BY source LIMIT 20001",
@@ -369,6 +439,11 @@ export class ClusterStorage {
 
   completePartition(partition: DirtyPartition, keys: string[]) {
     this.transaction(() => {
+      this.checkpointLatest();
+      if (partition.entity === "") {
+        this.packed.complete(partition, keys);
+        return;
+      }
       // A late arrival may have changed the generation while R2/D1 awaited. Keep its dirty row.
       this.storage.sql.exec(
         "DELETE FROM dirty WHERE entity=? AND bucket=? AND diagnostic=? AND generation=?",
@@ -414,6 +489,16 @@ export class ClusterStorage {
         "DELETE FROM documents WHERE name=?",
         `inventory:${stamp}`
       );
+      const name = `inventory:${stamp}`;
+      const previous = this.storage.sql
+        .exec<{ bytes: number }>(
+          "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name=?",
+          name
+        )
+        .one().bytes;
+      this.storage.sql.exec("DELETE FROM compact_documents WHERE name=?", name);
+      this.compactBytes -= previous;
+      this.documents.delete(name);
     });
   }
 
@@ -491,20 +576,64 @@ export class ClusterStorage {
       .map((r) => JSON.parse(r.payload) as Lifecycle);
   }
 
-  rate(now: number) {
-    const previous = this.get<{ start: number; count: number }>("rate") ?? {
-      start: now,
-      count: 0,
-    };
-    const current =
-      now - previous.start >= 60_000 ? { start: now, count: 0 } : previous;
-    current.count++;
-    this.transaction(() => this.put("rate", current));
-    return current.count <= 240;
+  rate(now: number, units = 2) {
+    const start = Math.floor(now / 60_000) * 60_000;
+    const day = new Date(now).toISOString().slice(0, 10);
+    if (this.rateWindow.start !== start) {
+      const saved = this.get<{ start: number; count: number }>("rate");
+      this.rateWindow = {
+        start,
+        count: saved?.start === start ? saved.count : 0,
+      };
+      this.minuteLease = 0;
+    }
+    if (this.rateWindow.count >= 240) {
+      return false;
+    }
+    if (this.dailyLease.day !== day) {
+      this.dailyLease = { day, remaining: 0 };
+    }
+    if (this.dailyLease.remaining < units) {
+      const saved = this.get<{ day: string; reserved: number }>(
+        "ingressBudget"
+      );
+      const used = saved?.day === day ? saved.reserved : 0;
+      if (used >= 90_000) {
+        return false;
+      }
+      const reserved = Math.min(128, 90_000 - used);
+      this.transaction(() =>
+        this.put("ingressBudget", { day, reserved: used + reserved })
+      );
+      this.dailyLease.remaining += reserved;
+    }
+    if (!this.minuteLease) {
+      const count = Math.min(32, 240 - this.rateWindow.count);
+      this.transaction(() =>
+        this.put("rate", { start, count: this.rateWindow.count + count })
+      );
+      this.minuteLease = count;
+    }
+    this.dailyLease.remaining -= units;
+    this.minuteLease--;
+    this.rateWindow.count++;
+    return true;
   }
 
   maintenance(now: number) {
     this.transaction(() => {
+      this.packed.maintenance(now);
+      const cutoff = nanoTimestamp(BigInt(now - 7 * 86_400_000) * 1_000_000n);
+      let pruned = false;
+      for (const [series, row] of this.savedLatest()) {
+        if (row.sourceTime < cutoff) {
+          this.savedLatest().delete(series);
+          pruned = true;
+        }
+      }
+      if (pruned) {
+        this.checkpointLatest();
+      }
       this.storage.sql.exec(
         "DELETE FROM batches WHERE received < ?",
         now - 7 * 86_400_000
@@ -534,13 +663,16 @@ export class ClusterStorage {
         .exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)
         .one().count;
     return {
-      bufferedPoints: count("raw"),
-      dirtyPartitions: count("dirty"),
+      bufferedPoints: count("raw") + this.packed.bufferedPoints,
+      dirtyPartitions: count("dirty") + this.packed.dirtyPartitions,
       pendingInventories: count("inventory_outbox"),
       bytes: this.size,
       allocatedBytes: this.storage.sql.databaseSize,
       quotaBytes: 448 * 1024 * 1024,
-      metricSequence: this.get<number>("metricSequence") ?? 0,
+      metricSequence: Math.max(
+        this.get<number>("metricSequence") ?? 0,
+        this.packed.sequence
+      ),
       recoveryJournalBytes: this.recoveryBytes,
       revision: this.revision,
       archiveError: this.get("archiveError"),

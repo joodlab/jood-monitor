@@ -146,6 +146,7 @@ export async function listArchives(
     from: string;
     to: string;
     entityUid?: string;
+    includePacked?: boolean;
     limit?: number;
   }
 ) {
@@ -156,7 +157,9 @@ export async function listArchives(
     .where((a) => a.sourceEnd.gte(input.from))
     .where((a) => a.sourceStart.lte(input.to));
   if (input.entityUid !== undefined) {
-    query = query.where({ entityUid: input.entityUid });
+    const entities =
+      input.includePacked === false ? [input.entityUid] : [input.entityUid, ""];
+    query = query.where((a) => a.entityUid.in(entities));
   }
   return await query
     .orderBy([(a) => a.sourceStart.asc(), (a) => a.id.asc()])

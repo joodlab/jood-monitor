@@ -169,7 +169,7 @@ export async function importArchive(
   let metrics: StoredMetric[] | null = null;
   if (metricKinds.has(input.kind)) {
     const rows = historicalMetrics(
-      storedMetricSchema.array().max(10_000).parse(data),
+      storedMetricSchema.array().max(20_000).parse(data),
       clusterId
     );
     if (
@@ -186,7 +186,7 @@ export async function importArchive(
       input.points !== rows.length ||
       rows.some(
         (row) =>
-          row.entityUid !== input.entityUid ||
+          (input.entityUid !== "" && row.entityUid !== input.entityUid) ||
           row.sourceTime < sourceStart ||
           row.sourceTime > sourceEnd ||
           row.diagnostic !== (input.kind === "diagnostic")
@@ -250,5 +250,6 @@ export async function importArchive(
     sourceDigest: input.sourceDigest,
     maximumId,
     metrics,
+    archiveEntity: input.entityUid,
   };
 }

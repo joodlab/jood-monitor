@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -8,7 +9,7 @@ import { build } from "esbuild";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const temporary = join(root, ".tmp", `worker-test-${randomUUID()}`);
+const temporary = join(tmpdir(), `jood-worker-${randomUUID()}`);
 mkdirSync(temporary, { recursive: true });
 const bundle = join(temporary, "worker.mjs");
 await build({
@@ -34,6 +35,7 @@ const options = (
   recovery = "0"
 ) =>
   convertV4MiniflareOptions({
+    rootPath: temporary,
     name: "worker-tests",
     scriptPath: bundle,
     modules: true,
@@ -96,6 +98,32 @@ try {
   assert.equal(
     (await mf.dispatchFetch(`${bindings.APP_ORIGIN}/api/v1/workspaces`)).status,
     401
+  );
+  const cost = await (await ok("/__test/storage-cost")).json();
+  assert.ok(
+    cost.measurements.every((sample) => sample.rowsWritten <= 2),
+    "native billable writes must stay bounded for 1 and 1000 metrics"
+  );
+  assert.equal(cost.bufferedPoints, 1001);
+  assert.equal(cost.restartedCount, 1001);
+  assert.equal(cost.sourceValue, "9007199254740993");
+  assert.equal(cost.sourceNano, cost.expectedNano);
+  assert.equal(cost.entityHistory, 501);
+  assert.equal(cost.historyScoped, true);
+  assert.deepEqual(cost.lateKeys, ["synthetic-late"]);
+  assert.equal(cost.latestAfterDrain, 1002);
+  assert.equal(cost.receiptAfterDrain.rejected, 0);
+  assert.equal(cost.unchangedWrites, 1);
+  assert.equal(cost.rolledBack, true);
+  assert.equal(cost.budgetBlocked, true);
+  assert.equal(cost.restartBlocked, true);
+  assert.equal(cost.nextDayAllowed, true);
+  assert.equal(cost.minuteRestartBlocked, true);
+  assert.equal(cost.legacyReadable, true);
+  assert.equal(cost.legacyLatestRetained, true);
+  console.log(
+    "Native storage write measurement:",
+    JSON.stringify(cost.measurements)
   );
   assert.equal(
     (
@@ -2043,16 +2071,18 @@ try {
   const parallelHours = parallelIndexes.rows.filter(
     (row) => row.kind === "hour"
   );
-  assert.equal(parallelHours.length, 42);
+  assert.equal(
+    parallelHours.length,
+    1,
+    "cluster windows share one hourly archive instead of one per entity"
+  );
   for (const row of parallelHours) {
     const exported = await (
       await ok(
         `/api/v1/export/archive?workspace=parallel&cluster=parallel&id=${row.id}`
       )
     ).json();
-    const series =
-      Number(row.entityUid.replace("parallel-node-", "")) < 6 ? 2 : 1;
-    assert.equal(exported.document.data.length, series);
+    assert.equal(exported.document.data.length, 48);
     for (const summary of exported.document.data) {
       assert.equal(
         summary.count,

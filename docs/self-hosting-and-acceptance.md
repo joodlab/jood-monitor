@@ -18,3 +18,5 @@ recovery. A DNS rollback alone does not reconcile data accepted after cutover.
 
 No paid capacity purchase is required for the included tests. Account plan
 limits and workload-dependent usage still need verification for each deployment.
+See [free-tier operation](free-tier.md) for batching, admission limits and the
+account-level cost checks required before claiming a free deployment.

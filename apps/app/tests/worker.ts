@@ -7,6 +7,7 @@ import { apiError, dispatchApi } from "../src/lib/server/api";
 import { machineApi } from "../src/lib/server/api-machine";
 import { requireOperator } from "../src/lib/server/auth";
 import { nanoTimestamp } from "../src/lib/server/time";
+import { storageCost } from "./storage-cost";
 
 // biome-ignore lint/performance/noBarrelFile: The isolated Worker test entry must export its Durable Object classes.
 export { WorkspaceStream } from "../src/durable-objects/workspace-stream";
@@ -54,6 +55,9 @@ export class TestClusterState extends ClusterState {
       `UPDATE buffer_usage SET bytes=${expression} WHERE id=1`
     );
   }
+  fixtureStorageCost() {
+    return storageCost(this.fixtureStorage);
+  }
   fixtureRetentionBoundary() {
     const store = new ClusterStorage(this.fixtureStorage);
     const now = Date.now();
@@ -88,6 +92,79 @@ export class TestClusterState extends ClusterState {
   }
 }
 
+async function dispatchTest(request: Request, env: Env, url: URL) {
+  requireOperator(request, env);
+  if (url.pathname === "/__test/batch-rollback") {
+    const db = getDb(env.DB);
+    const first = db.raw
+      .sql`INSERT INTO "Workspace"("id","name") VALUES ('fixture-atomic','Atomic fixture')`
+      .affectedCount()
+      .build();
+    const conflict = db.raw
+      .sql`INSERT INTO "Workspace"("id","name") VALUES ('fixture','Duplicate')`
+      .affectedCount()
+      .build();
+    await db.batch((batch) => [batch.execute(first), batch.execute(conflict)]);
+    throw new Error("expected duplicate rejection");
+  }
+  if (url.pathname === "/__test/batch-concurrent") {
+    const db = getDb(env.DB);
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) => {
+        const id = `atomic-${index}`;
+        const one = db.raw
+          .sql`INSERT INTO "Workspace"("id","name") VALUES (${id},'Concurrent fixture')`
+          .affectedCount()
+          .build();
+        const two = db.raw
+          .sql`INSERT INTO "Workspace"("id","name") VALUES (${`${id}-pair`},'Concurrent fixture pair')`
+          .affectedCount()
+          .build();
+        return db.batch((batch) => [batch.execute(one), batch.execute(two)]);
+      })
+    );
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/__test/storage-cost") {
+    const stub = env.CLUSTERS.get(
+      env.CLUSTERS.idFromName("cost-fixture")
+    ) as DurableObjectStub<TestClusterState>;
+    return Response.json(await stub.fixtureStorageCost());
+  }
+  const cluster = await requireCluster(
+    env,
+    url.searchParams.get("cluster") ?? "fixture"
+  );
+  if (url.pathname === "/__test/flush") {
+    return Response.json(await clusterState(env, cluster.id).flush());
+  }
+  if (url.pathname === "/__test/quota" && request.method === "POST") {
+    const stub = env.CLUSTERS.get(
+      env.CLUSTERS.idFromName(cluster.id)
+    ) as DurableObjectStub<TestClusterState>;
+    await stub.fixtureCapacity(
+      ((await request.json()) as { block: boolean }).block
+    );
+    return Response.json({ ok: true });
+  }
+  if (url.pathname === "/__test/retention-boundary") {
+    const stub = env.CLUSTERS.get(
+      env.CLUSTERS.idFromName(cluster.id)
+    ) as DurableObjectStub<TestClusterState>;
+    return Response.json(await stub.fixtureRetentionBoundary());
+  }
+  if (url.pathname === "/__test/recovery-quota") {
+    const stub = env.CLUSTERS.get(
+      env.CLUSTERS.idFromName(cluster.id)
+    ) as DurableObjectStub<TestClusterState>;
+    await stub.fixtureRecoveryCapacity(url.searchParams.get("block") === "1");
+    return Response.json({ ok: true });
+  }
+  return Response.json(
+    await clusterState(env, cluster.id).command(cluster, "status", null)
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env) {
     try {
@@ -118,78 +195,7 @@ export default {
         });
       }
       if (url.pathname.startsWith("/__test/")) {
-        requireOperator(request, env);
-        if (url.pathname === "/__test/batch-rollback") {
-          const db = getDb(env.DB);
-          const first = db.raw
-            .sql`INSERT INTO "Workspace"("id","name") VALUES ('fixture-atomic','Atomic fixture')`
-            .affectedCount()
-            .build();
-          const conflict = db.raw
-            .sql`INSERT INTO "Workspace"("id","name") VALUES ('fixture','Duplicate')`
-            .affectedCount()
-            .build();
-          await db.batch((batch) => [
-            batch.execute(first),
-            batch.execute(conflict),
-          ]);
-          throw new Error("expected duplicate rejection");
-        }
-        if (url.pathname === "/__test/batch-concurrent") {
-          const db = getDb(env.DB);
-          await Promise.all(
-            Array.from({ length: 20 }, (_, index) => {
-              const id = `atomic-${index}`;
-              const one = db.raw
-                .sql`INSERT INTO "Workspace"("id","name") VALUES (${id},'Concurrent fixture')`
-                .affectedCount()
-                .build();
-              const two = db.raw
-                .sql`INSERT INTO "Workspace"("id","name") VALUES (${`${id}-pair`},'Concurrent fixture pair')`
-                .affectedCount()
-                .build();
-              return db.batch((batch) => [
-                batch.execute(one),
-                batch.execute(two),
-              ]);
-            })
-          );
-          return Response.json({ ok: true });
-        }
-        const cluster = await requireCluster(
-          env,
-          url.searchParams.get("cluster") ?? "fixture"
-        );
-        if (url.pathname === "/__test/flush") {
-          return Response.json(await clusterState(env, cluster.id).flush());
-        }
-        if (url.pathname === "/__test/quota" && request.method === "POST") {
-          const stub = env.CLUSTERS.get(
-            env.CLUSTERS.idFromName(cluster.id)
-          ) as DurableObjectStub<TestClusterState>;
-          await stub.fixtureCapacity(
-            ((await request.json()) as { block: boolean }).block
-          );
-          return Response.json({ ok: true });
-        }
-        if (url.pathname === "/__test/retention-boundary") {
-          const stub = env.CLUSTERS.get(
-            env.CLUSTERS.idFromName(cluster.id)
-          ) as DurableObjectStub<TestClusterState>;
-          return Response.json(await stub.fixtureRetentionBoundary());
-        }
-        if (url.pathname === "/__test/recovery-quota") {
-          const stub = env.CLUSTERS.get(
-            env.CLUSTERS.idFromName(cluster.id)
-          ) as DurableObjectStub<TestClusterState>;
-          await stub.fixtureRecoveryCapacity(
-            url.searchParams.get("block") === "1"
-          );
-          return Response.json({ ok: true });
-        }
-        return Response.json(
-          await clusterState(env, cluster.id).command(cluster, "status", null)
-        );
+        return await dispatchTest(request, env, url);
       }
       return (
         (await dispatchApi(request, env)) ??
