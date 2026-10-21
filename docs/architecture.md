@@ -25,7 +25,13 @@ acknowledgments, latest series, deduplication and the archival outbox. Its nativ
 SQLite transaction is the acceptance boundary. OTLP responses are actual
 protobuf acknowledgments, including partial rejection counts.
 
-Closed five-minute partitions are archived per entity. Objects are immutable
+Accepted telemetry is stored in compressed five-minute cluster windows, with
+batch receipts in the same SQLite row. Latest series are reconstructed from a
+durable checkpoint and pending windows; no per-sample latest/index/counter writes
+are needed. Existing per-entity rows remain readable and drain through the same
+archival writer. Compressed control documents skip unchanged values.
+
+Closed five-minute partitions are archived per cluster. Objects are immutable
 and content checked. D1 exposes the index after upload succeeds. Outbox samples
 are removed after raw and summary objects and indexes commit. Generation checks
 preserve concurrent late arrivals. Alarms retry independently of queue delivery.
@@ -36,6 +42,8 @@ resource and scope remain available in raw history and exports.
 
 Workspace notification objects use WebSocket hibernation. Reconnecting clients
 resynchronize saved scoped state; periodic queries cover missed notifications.
+Notifications are coalesced to one per thirty seconds. Durable alarms target
+closed windows; ingestion does not enqueue a separate archive job for every batch.
 The hub needs no provisioned application server, Redis or PostgreSQL.
 
 Go handles Kubernetes identity checks, TokenReview, the dedicated token audience,

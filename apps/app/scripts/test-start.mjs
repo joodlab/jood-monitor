@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultSerovalDeserializerPlugins } from "@tanstack/react-start";
@@ -10,7 +11,7 @@ import { fromCrossJSON, toJSONAsync } from "seroval";
 // Exercise deployment bundles, including Start's built-in entry, on local workerd.
 // All writes and credentials belong to disposable synthetic fixtures.
 const root = fileURLToPath(new URL("../", import.meta.url));
-const temporary = join(root, ".tmp", `start-test-${randomUUID()}`);
+const temporary = join(tmpdir(), `jood-start-${randomUUID()}`);
 mkdirSync(temporary, { recursive: true });
 const hubPort = Number(process.env.START_TEST_PORT ?? 46_800);
 assert.ok(

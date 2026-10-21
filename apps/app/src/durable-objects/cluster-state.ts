@@ -85,10 +85,17 @@ function metricForRecovery({
   return metric;
 }
 
+const ingressUnits: Record<string, number> = {
+  inventory: 6,
+  heartbeat: 3,
+  lifecycle: 8,
+};
+
 export class ClusterState extends DurableObject<Env> {
   private readonly db: ClusterStorage;
   private flushing = false;
   private restoring = false;
+  private lastNotification = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -138,21 +145,25 @@ export class ClusterState extends DurableObject<Env> {
 
   private async schedule() {
     const alarm = await this.ctx.storage.getAlarm();
-    if (!alarm || alarm > Date.now() + 5000) {
-      await this.ctx.storage.setAlarm(Date.now() + 5000);
+    const next = Math.floor(Date.now() / 300_000) * 300_000 + 330_000;
+    if (!alarm || alarm > next) {
+      await this.ctx.storage.setAlarm(next);
     }
   }
 
   private notify(cluster: ClusterRow) {
+    if (Date.now() - this.lastNotification < 30_000) {
+      return;
+    }
+    this.lastNotification = Date.now();
     this.ctx.waitUntil(
-      Promise.all([
-        ...["global", cluster.workspaceId].map((scope) =>
+      Promise.all(
+        ["global", cluster.workspaceId].map((scope) =>
           this.env.STREAMS.get(this.env.STREAMS.idFromName(scope)).publish(
             cluster.id
           )
-        ),
-        this.env.HISTORY.send({ clusterId: cluster.id }),
-      ]).catch(() => undefined)
+        )
+      ).catch(() => undefined)
     );
   }
 
@@ -198,7 +209,7 @@ export class ClusterState extends DurableObject<Env> {
           kind
         ) &&
         kind !== "profile" &&
-        !this.db.rate(Date.now())
+        !this.db.rate(Date.now(), ingressUnits[kind] ?? 8)
       ) {
         throw new HttpError(429, "cluster request quota");
       }
@@ -300,7 +311,7 @@ export class ClusterState extends DurableObject<Env> {
       if (saved) {
         return { ok: true, value: { rejected: saved.rejected } };
       }
-      if (!this.db.rate(Date.now())) {
+      if (!this.db.rate(Date.now(), 2)) {
         throw new HttpError(429, "cluster request quota");
       }
       const inventory = this.db.get<Inventory>("inventory") ?? emptyInventory();
@@ -465,7 +476,10 @@ export class ClusterState extends DurableObject<Env> {
       // All immutable objects exist before their indexes and garbage outboxes publish atomically.
       await saveArchives(getDb(this.env.DB), pendingIndexes);
       await this.restoreSummaries(cluster.id, results);
-      return results.map(({ metrics: _metrics, ...receipt }) => receipt);
+      return results.map(
+        ({ metrics: _metrics, archiveEntity: _archiveEntity, ...receipt }) =>
+          receipt
+      );
     } finally {
       this.flushing = false;
       this.restoring = false;
@@ -480,12 +494,12 @@ export class ClusterState extends DurableObject<Env> {
       string,
       { partition: DirtyPartition; rows: StoredMetric[] }
     >();
-    for (const { metrics } of results) {
+    for (const { metrics, archiveEntity } of results) {
       if (!metrics?.length) {
         continue;
       }
       const partition = {
-        entity: metrics[0].entityUid,
+        entity: archiveEntity,
         bucket: bucketStart(metrics[0].timeUnixNano),
         diagnostic: 0,
         generation: 0,
@@ -590,7 +604,11 @@ export class ClusterState extends DurableObject<Env> {
         if (result.status !== "fulfilled") {
           continue;
         }
-        const { metrics: _metrics, ...receipt } = result.value;
+        const {
+          metrics: _metrics,
+          archiveEntity: _archiveEntity,
+          ...receipt
+        } = result.value;
         this.db.transaction(() =>
           this.db.put(
             "metricSequence",
@@ -1077,8 +1095,10 @@ export class ClusterState extends DurableObject<Env> {
     profile.appliedRevision = heartbeat.appliedRevision;
     this.db.transaction(() => {
       this.db.put("heartbeat", heartbeat);
-      this.db.put("profile", profile);
-      this.db.put("profileDirty", true);
+      if (JSON.stringify(this.db.get("profile")) !== JSON.stringify(profile)) {
+        this.db.put("profile", profile);
+        this.db.put("profileDirty", true);
+      }
       this.db.put("times", {
         ...(this.db.get<Record<string, string | null>>("times") ?? {}),
         heartbeatAt: new Date().toISOString(),
@@ -1244,6 +1264,7 @@ export class ClusterState extends DurableObject<Env> {
       clusterId,
       kind: "5m",
       entityUid: partition.entity,
+      includePacked: false,
       from: hour,
       to: nanoTimestamp(timestampNano(hour) + 3_600_000_000_000n - 1n),
       limit: 13,
@@ -1324,6 +1345,7 @@ export class ClusterState extends DurableObject<Env> {
     }
     this.flushing = true;
     try {
+      this.db.transaction(() => this.db.checkpointLatest());
       for (const pending of this.db.inventoryOutbox()) {
         const data = this.db.get(`inventory:${pending.stamp}`);
         if (!data) {
@@ -1386,7 +1408,14 @@ export class ClusterState extends DurableObject<Env> {
         status.pendingInventories ||
         this.db.get<boolean>("profileDirty")
       ) {
-        await this.ctx.storage.setAlarm(Date.now() + 15_000);
+        const closed = this.db.dirty(Date.now()).length > 0;
+        const next =
+          closed ||
+          status.pendingInventories ||
+          this.db.get<boolean>("profileDirty")
+            ? Date.now() + 30_000
+            : Math.floor(Date.now() / 300_000) * 300_000 + 330_000;
+        await this.ctx.storage.setAlarm(next);
       }
     }
     return this.db.status();

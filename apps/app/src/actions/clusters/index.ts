@@ -309,11 +309,15 @@ function mergeHistory(
   rows: Map<string, StoredMetric>,
   from: string,
   to: string,
-  name?: string
+  name?: string,
+  entity?: string
 ) {
   for (const document of documents) {
     for (const row of document.data) {
-      if (historyContains(row, from, to, name)) {
+      if (
+        historyContains(row, from, to, name) &&
+        (!entity || row.entityUid === entity)
+      ) {
         rows.set(row.key, row);
       }
     }
@@ -370,7 +374,7 @@ export async function getHistory(
             )
           )
       );
-      mergeHistory(documents, rows, from, to, input.name);
+      mergeHistory(documents, rows, from, to, input.name, input.entity);
       if (rows.size > 10_000) {
         throw new HttpError(
           413,

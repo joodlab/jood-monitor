@@ -1,6 +1,6 @@
 module github.com/lord007tn/jood-monitor
 
-go 1.27.2
+go 1.27.3
 
 require (
 	go.opentelemetry.io/proto/otlp v1.11.0
