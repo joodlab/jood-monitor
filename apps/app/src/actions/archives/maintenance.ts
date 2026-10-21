@@ -56,6 +56,9 @@ export async function maintainArchives(
   storage: ClusterStorage,
   now = Date.now()
 ) {
+  if ((storage.get<number>("gcNextAt") ?? 0) > now) {
+    return;
+  }
   const db = getDb(env.DB);
   for (const row of await expiredArchives(
     db,
@@ -75,9 +78,6 @@ export async function maintainArchives(
     }
     await env.ARCHIVES.delete(row.data);
     await removeOperation(db, row.id);
-  }
-  if ((storage.get<number>("gcNextAt") ?? 0) > now) {
-    return;
   }
   // A failed R2 upload/index boundary may leave an object without a garbage outbox row.
   const listed = await env.ARCHIVES.list({

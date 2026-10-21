@@ -19,6 +19,10 @@ Expiry checks explicitly use the existing expiry index; bounded metric-history
 queries constrain both ends of the source window. Cleanup must not scan all
 unexpired archives on every wakeup. The native D1 regression verifies the empty
 expiry lookup against populated archive data.
+Expiry and orphan cleanup share the hourly maintenance gate, limiting each pass
+to 200 expired indexes and 100 obsolete object receipts. An existing backlog can
+therefore take several passes to drain. Raw archival and retry acknowledgments
+continue independently of this cleanup cadence.
 
 ## Admission and capacity
 
