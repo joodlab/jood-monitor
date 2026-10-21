@@ -10,6 +10,11 @@ The native storage regression checks both one and one thousand samples against
 Cloudflare's `SqlStorageCursor.rowsWritten`. It also checks restart, exact int64
 and nanosecond preservation, late arrivals, scoped history and rollback.
 
+After legacy raw rows drain, ingestion skips per-point SQL probes against the
+empty legacy table. Control keys migrate once in the same atomic transaction
+that saves their combined document. Native read counters cover both paths,
+including legacy duplicates, rollback, restart and the transition after draining.
+
 Control changes in one transaction share a compressed state document, and
 unchanged values are skipped. Inventory observations retain separate durable
 outbox documents and drain in batches of twelve. Heartbeats
@@ -25,6 +30,11 @@ Expiry and orphan cleanup share the hourly maintenance gate, limiting each pass
 to 200 expired indexes and 100 obsolete object receipts. An existing backlog can
 therefore take several passes to drain. Raw archival and retry acknowledgments
 continue independently of this cleanup cadence.
+
+Visible dashboards use stream notifications coalesced to thirty seconds, with a
+two-minute polling safety net while connected and thirty-second polling during
+reconnection. Hidden tabs defer stream refreshes until visible. Historical views
+remain frozen. This bounds browser-driven requests without dropping observations.
 
 ## Admission and capacity
 

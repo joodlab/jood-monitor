@@ -104,6 +104,10 @@ try {
     cost.measurements.every((sample) => sample.rowsWritten <= 2),
     "native billable writes must stay bounded for 1 and 1000 metrics"
   );
+  assert.ok(
+    cost.measurements.every((sample) => sample.rowsRead <= 6),
+    "ingestion reads must stay bounded after the legacy outbox drains"
+  );
   assert.equal(cost.bufferedPoints, 1001);
   assert.equal(cost.restartedCount, 1001);
   assert.equal(cost.sourceValue, "9007199254740993");
@@ -120,15 +124,23 @@ try {
     "one heartbeat transaction must use one row for heartbeat, timestamps and revision"
   );
   assert.equal(cost.controlRestarted, true);
+  assert.ok(
+    cost.controlReads <= 4,
+    "heartbeats must not repeat control migration queries"
+  );
+  assert.equal(cost.controlMigrated, true);
+  assert.equal(cost.controlRolledBack, true);
   assert.equal(cost.rolledBack, true);
   assert.equal(cost.budgetBlocked, true);
   assert.equal(cost.restartBlocked, true);
   assert.equal(cost.nextDayAllowed, true);
   assert.equal(cost.minuteRestartBlocked, true);
   assert.equal(cost.legacyReadable, true);
+  assert.equal(cost.legacyDeduplicated, true);
+  assert.ok(cost.afterLegacyReads <= 6);
   assert.equal(cost.legacyLatestRetained, true);
   console.log(
-    "Native storage write measurement:",
+    "Native storage read/write measurement:",
     JSON.stringify(cost.measurements)
   );
   const expiryCost = await (await ok("/__test/archive-cost")).json();

@@ -25,20 +25,17 @@ export function fetchEvents(search: SearchState) {
   });
 }
 
-export function useMonitoringStream(search: SearchState, cursor?: string) {
+export function useMonitoringStream(search: SearchState) {
   const client = useQueryClient();
   const [connection, setConnection] = useState("connecting");
   const scope = search.workspace,
-    frozen = !!search.at,
-    hasSnapshot = cursor !== undefined;
+    frozen = !!search.at;
   useEffect(() => {
     if (frozen) {
       setConnection("frozen");
       return;
     }
-    if (!hasSnapshot) {
-      return;
-    }
+    setConnection("connecting");
     let stopped = false,
       socket: WebSocket | undefined,
       reconnect: ReturnType<typeof setTimeout> | undefined;
@@ -54,15 +51,17 @@ export function useMonitoringStream(search: SearchState, cursor?: string) {
       }
     };
     const update = () => {
-      if (refresh) {
+      if (refresh || document.visibilityState !== "visible") {
         return;
       }
       refresh = setTimeout(
         () => {
           refresh = undefined;
-          invalidate();
+          if (document.visibilityState === "visible") {
+            invalidate();
+          }
         },
-        Math.max(0, 2000 - (Date.now() - lastRefresh))
+        Math.max(0, 30_000 - (Date.now() - lastRefresh))
       );
     };
     const connect = () => {
@@ -75,7 +74,6 @@ export function useMonitoringStream(search: SearchState, cursor?: string) {
       socket = new WebSocket(url);
       socket.onopen = () => {
         setConnection("connected");
-        update();
       };
       socket.onmessage = (event) => {
         if (event.data === "pong") {
@@ -99,6 +97,7 @@ export function useMonitoringStream(search: SearchState, cursor?: string) {
       };
     };
     connect();
+    document.addEventListener("visibilitychange", update);
     const ping = setInterval(() => {
       if (socket?.readyState === WebSocket.OPEN) {
         socket.send("ping");
@@ -110,7 +109,8 @@ export function useMonitoringStream(search: SearchState, cursor?: string) {
       clearInterval(ping);
       clearTimeout(reconnect);
       clearTimeout(refresh);
+      document.removeEventListener("visibilitychange", update);
     };
-  }, [scope, frozen, hasSnapshot, client]);
+  }, [scope, frozen, client]);
   return connection;
 }
