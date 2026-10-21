@@ -10,7 +10,9 @@ The native storage regression checks both one and one thousand samples against
 Cloudflare's `SqlStorageCursor.rowsWritten`. It also checks restart, exact int64
 and nanosecond preservation, late arrivals, scoped history and rollback.
 
-Control documents are compressed and unchanged values are skipped. Heartbeats
+Control changes in one transaction share a compressed state document, and
+unchanged values are skipped. Inventory observations retain separate durable
+outbox documents and drain in batches of twelve. Heartbeats
 persist profile changes only when the applied profile actually changes. Workspace
 notifications are coalesced to thirty seconds. An alarm targets the next closed
 five-minute window, with bounded retries for pending archival. Queues remain
@@ -27,8 +29,8 @@ continue independently of this cleanup cadence.
 ## Admission and capacity
 
 Each cluster admits at most 240 machine mutations per minute and 90,000 weighted
-ingress units per UTC day: a metric batch uses two units, a heartbeat three,
-inventory six and lifecycle receipts eight. Both limits use durable reservations;
+ingress units per UTC day: a metric batch uses two units, a heartbeat one,
+inventory four and lifecycle receipts eight. Both limits use durable reservations;
 restarts cannot reset them. Unused reservations can reduce the available budget
 after a restart. Profile changes and archive recovery remain available when
 ingress is limited. Requests exceeding admission receive HTTP 429 and are not

@@ -114,6 +114,12 @@ try {
   assert.equal(cost.latestAfterDrain, 1002);
   assert.equal(cost.receiptAfterDrain.rejected, 0);
   assert.equal(cost.unchangedWrites, 1);
+  assert.equal(
+    cost.controlWrites,
+    1,
+    "one heartbeat transaction must use one row for heartbeat, timestamps and revision"
+  );
+  assert.equal(cost.controlRestarted, true);
   assert.equal(cost.rolledBack, true);
   assert.equal(cost.budgetBlocked, true);
   assert.equal(cost.restartBlocked, true);
