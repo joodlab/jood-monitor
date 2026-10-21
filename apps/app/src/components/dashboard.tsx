@@ -108,12 +108,13 @@ export function Dashboard() {
   const [now, setNow] = useState(0);
   const [theme, setTheme] = useState("dark");
   const scope = search.workspace;
+  const connection = useMonitoringStream(search);
+  const refreshInterval = connection === "connected" ? 120_000 : 30_000;
   const snapshot = useQuery({
     queryKey: ["snapshot", scope, search.at ?? "live"],
     queryFn: () => fetchSnapshot(scope, search.at),
-    refetchInterval: search.at ? false : 30_000,
+    refetchInterval: search.at ? false : refreshInterval,
   });
-  const connection = useMonitoringStream(search, snapshot.data?.cursor);
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
@@ -127,7 +128,7 @@ export function Dashboard() {
       search.cluster,
     ],
     queryFn: () => fetchEvents(search),
-    refetchInterval: search.at ? false : 30_000,
+    refetchInterval: search.at ? false : refreshInterval,
   });
   const allViews = snapshot.data?.clusters ?? [];
   const views = allViews.filter(

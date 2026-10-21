@@ -1,15 +1,18 @@
 import type { StoredMetric } from "../src/contracts/types";
 import { ClusterStorage } from "../src/db/cluster-storage";
+import { compress } from "../src/db/packed-metrics";
 import { bucketStart, nanoTimestamp } from "../src/lib/server/time";
 
 export function storageCost(storage: DurableObjectStorage) {
   let rowsWritten = 0;
+  let cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
   const sql = new Proxy(storage.sql, {
     get(target, property) {
       if (property === "exec") {
         return (query: string, ...bindings: SqlStorageValue[]) => {
           const cursor = target.exec(query, ...bindings);
           rowsWritten += cursor.rowsWritten;
+          cursors.push(cursor);
           return cursor;
         };
       }
@@ -50,9 +53,14 @@ export function storageCost(storage: DurableObjectStorage) {
     scope: "{}",
     attributes: "{}",
   };
-  const measurements: { points: number; rowsWritten: number }[] = [];
+  const measurements: {
+    points: number;
+    rowsWritten: number;
+    rowsRead: number;
+  }[] = [];
   for (const points of [1, 1000]) {
     rowsWritten = 0;
+    cursors = [];
     db.accept(
       `synthetic-batch-${points}`,
       Array.from({ length: points }, (_, index) => ({
@@ -64,7 +72,11 @@ export function storageCost(storage: DurableObjectStorage) {
       0,
       now
     );
-    measurements.push({ points, rowsWritten });
+    measurements.push({
+      points,
+      rowsWritten,
+      rowsRead: cursors.reduce((sum, cursor) => sum + cursor.rowsRead, 0),
+    });
   }
   const accepted = db.status();
   db = new ClusterStorage(measured);
@@ -95,23 +107,58 @@ export function storageCost(storage: DurableObjectStorage) {
     db.put("unchanged-profile", { revision: 1 });
   });
   const unchangedWrites = rowsWritten;
+  storage.sql.exec(
+    "INSERT INTO documents(name,part,payload) VALUES('heartbeat',0,?)",
+    JSON.stringify({ version: "legacy", queueBytes: 99 })
+  );
+  storage.sql.exec(
+    "INSERT INTO compact_documents(name,part,payload,bytes) VALUES('profile',0,?,512)",
+    compress(JSON.stringify({ revision: 5 }))
+  );
+  db = new ClusterStorage(measured);
+  let controlRolledBack = false;
+  try {
+    db.transaction(() => {
+      db.put("heartbeat", { version: "synthetic", queueBytes: 0 });
+      db.put("profile", { revision: 6 });
+      throw new Error("synthetic control rollback");
+    });
+  } catch {
+    controlRolledBack =
+      db.get<{ queueBytes: number }>("heartbeat")?.queueBytes === 99 &&
+      db.get<{ revision: number }>("profile")?.revision === 5;
+  }
   db.transaction(() => {
     db.put("heartbeat", { version: "synthetic", queueBytes: 0 });
+    db.put("profile", { revision: 6 });
     db.put("times", { heartbeatAt: "2026-01-01T00:00:00Z" });
     db.changed();
   });
   rowsWritten = 0;
+  cursors = [];
   db.transaction(() => {
     db.put("heartbeat", { version: "synthetic", queueBytes: 1 });
     db.put("times", { heartbeatAt: "2026-01-01T00:00:15Z" });
     db.changed();
   });
   const controlWrites = rowsWritten;
+  const controlReads = cursors.reduce(
+    (sum, cursor) => sum + cursor.rowsRead,
+    0
+  );
+  const controlMigrated =
+    storage.sql
+      .exec("SELECT name FROM documents WHERE name='heartbeat'")
+      .toArray().length === 0 &&
+    storage.sql
+      .exec("SELECT name FROM compact_documents WHERE name='profile'")
+      .toArray().length === 0;
   db = new ClusterStorage(measured);
   const controlRestarted =
     db.get<{ queueBytes: number }>("heartbeat")?.queueBytes === 1 &&
     db.get<{ heartbeatAt: string }>("times")?.heartbeatAt ===
-      "2026-01-01T00:00:15Z";
+      "2026-01-01T00:00:15Z" &&
+    db.get<{ revision: number }>("profile")?.revision === 6;
   let rolledBack = false;
   try {
     db.transaction(() => {
@@ -176,7 +223,24 @@ export function storageCost(storage: DurableObjectStorage) {
     legacy.entityUid,
     bucketStart(legacy.timeUnixNano)
   );
+  const legacyOnly = {
+    ...legacy,
+    key: "legacy-buffer-only",
+    series: "legacy-buffer-only",
+  };
+  storage.sql.exec(
+    "INSERT INTO raw(id,series,entity,bucket,diagnostic,source,payload) VALUES(?,?,?,?,0,?,?)",
+    legacyOnly.key,
+    legacyOnly.series,
+    legacyOnly.entityUid,
+    bucketStart(legacyOnly.timeUnixNano),
+    legacyOnly.sourceTime,
+    JSON.stringify(legacyOnly)
+  );
   db = new ClusterStorage(measured);
+  const beforeDuplicate = db.status().bufferedPoints;
+  db.accept("legacy-retry", [legacyOnly], 0, now);
+  const legacyDeduplicated = db.status().bufferedPoints === beforeDuplicate;
   const legacyReadable =
     db.history(legacy.sourceTime, legacy.sourceTime, legacy.entityUid)[0]
       ?.value === legacy.value &&
@@ -187,7 +251,18 @@ export function storageCost(storage: DurableObjectStorage) {
   if (!legacyPartition) {
     throw new Error("legacy outbox must remain discoverable");
   }
-  db.completePartition(legacyPartition, [legacy.key]);
+  db.completePartition(legacyPartition, [legacy.key, legacyOnly.key]);
+  cursors = [];
+  db.accept(
+    "after-legacy-drain",
+    [{ ...point, key: "after-legacy-drain" }],
+    0,
+    now
+  );
+  const afterLegacyReads = cursors.reduce(
+    (sum, cursor) => sum + cursor.rowsRead,
+    0
+  );
   db = new ClusterStorage(measured);
   const legacyLatestRetained = db
     .latest(now)
@@ -206,6 +281,9 @@ export function storageCost(storage: DurableObjectStorage) {
     receiptAfterDrain: db.batch("synthetic-batch-1000"),
     unchangedWrites,
     controlWrites,
+    controlReads,
+    controlMigrated,
+    controlRolledBack,
     controlRestarted,
     rolledBack,
     budgetBlocked,
@@ -213,6 +291,8 @@ export function storageCost(storage: DurableObjectStorage) {
     nextDayAllowed,
     minuteRestartBlocked,
     legacyReadable,
+    legacyDeduplicated,
+    afterLegacyReads,
     legacyLatestRetained,
   };
 }

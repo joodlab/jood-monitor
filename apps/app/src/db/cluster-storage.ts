@@ -41,6 +41,7 @@ export class ClusterStorage {
   private transactionDepth = 0;
   private controlLoaded = false;
   private pendingControl: Record<string, unknown> | null = null;
+  private hasLegacyRaw: boolean | undefined;
   constructor(storage: DurableObjectStorage) {
     this.storage = storage;
     storage.sql.exec(`
@@ -200,24 +201,31 @@ export class ClusterStorage {
         if (this.transactionDepth === 1 && this.pendingControl) {
           const control = this.pendingControl;
           this.pendingControl = null;
+          const previousControl =
+            this.get<Record<string, unknown>>("control") ?? {};
+          const migrating = Object.keys(control).filter(
+            (key) => !Object.hasOwn(previousControl, key)
+          );
           this.put("control", control);
-          // Migrate only keys already committed in the combined document.
-          const keys = JSON.stringify(Object.keys(control));
-          const previous = this.storage.sql
-            .exec<{ bytes: number }>(
-              "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
+          // A key already in control had its old rows removed in the same commit.
+          if (migrating.length) {
+            const keys = JSON.stringify(migrating);
+            const previous = this.storage.sql
+              .exec<{ bytes: number }>(
+                "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
+                keys
+              )
+              .one().bytes;
+            this.storage.sql.exec(
+              "DELETE FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
               keys
-            )
-            .one().bytes;
-          this.storage.sql.exec(
-            "DELETE FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
-            keys
-          );
-          this.storage.sql.exec(
-            "DELETE FROM documents WHERE name IN (SELECT value FROM json_each(?))",
-            keys
-          );
-          this.compactBytes -= previous;
+            );
+            this.storage.sql.exec(
+              "DELETE FROM documents WHERE name IN (SELECT value FROM json_each(?))",
+              keys
+            );
+            this.compactBytes -= previous;
+          }
           this.checkCapacity();
         }
         return result;
@@ -228,6 +236,7 @@ export class ClusterStorage {
         this.controlLoaded = false;
         this.pendingControl = null;
         this.latestRows = null;
+        this.hasLegacyRaw = undefined;
         this.packed.reload();
         this.compactBytes = this.storage.sql
           .exec<{ bytes: number }>(
@@ -307,14 +316,20 @@ export class ClusterStorage {
     }
     this.checkCapacity(bytes * 4);
     const latest = this.savedLatest();
+    // Only the old writer inserted raw rows. Once drained, probing every incoming
+    // key still bills two SQLite reads per point even against an empty table.
+    this.hasLegacyRaw ??=
+      this.storage.sql.exec("SELECT 1 FROM raw LIMIT 1").toArray().length > 0;
     const legacyKeys = new Set(
-      this.storage.sql
-        .exec<{ id: string }>(
-          "SELECT id FROM raw WHERE id IN (SELECT value FROM json_each(?))",
-          JSON.stringify(rows.map((row) => row.key))
-        )
-        .toArray()
-        .map((row) => row.id)
+      this.hasLegacyRaw
+        ? this.storage.sql
+            .exec<{ id: string }>(
+              "SELECT id FROM raw WHERE id IN (SELECT value FROM json_each(?))",
+              JSON.stringify(rows.map((row) => row.key))
+            )
+            .toArray()
+            .map((row) => row.id)
+        : []
     );
     const accepted = rows.filter(
       (row) =>
@@ -516,6 +531,7 @@ export class ClusterStorage {
           JSON.stringify(keys.slice(offset, offset + 100))
         );
       }
+      this.hasLegacyRaw = undefined;
     });
   }
 
