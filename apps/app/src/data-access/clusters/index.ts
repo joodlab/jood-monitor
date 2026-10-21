@@ -1,5 +1,6 @@
 import type { Db } from "../../db";
 import type { FieldOutputTypes } from "../../db/contract.d";
+import { bucketStart, timestampNano } from "../../lib/server/time";
 
 export type ClusterRow = FieldOutputTypes["__unbound__"]["Cluster"];
 export type ArchiveRow = FieldOutputTypes["__unbound__"]["Archive"];
@@ -161,18 +162,33 @@ export async function listArchives(
       input.includePacked === false ? [input.entityUid] : [input.entityUid, ""];
     query = query.where((a) => a.entityUid.in(entities));
   }
+  if (["raw", "diagnostic", "5m", "hour"].includes(input.kind)) {
+    const from = bucketStart(
+      timestampNano(input.from).toString(),
+      input.kind === "hour" ? 3600 : 300
+    );
+    query = query.where((a) => a.sourceStart.gte(from));
+  }
   return await query
     .orderBy([(a) => a.sourceStart.asc(), (a) => a.id.asc()])
     .limit(input.limit ?? 2001)
     .all();
 }
 
-export function expiredArchives(db: Db, before: string, clusterId: string) {
-  return db.orm.Archive.where({ clusterId })
-    .where((a) => a.expiresAt.lt(before))
-    .orderBy((a) => a.expiresAt.asc())
-    .limit(200)
-    .all();
+export async function expiredArchives(
+  db: Db,
+  before: string,
+  clusterId: string
+) {
+  // The cluster-first index scans the entire cluster even when nothing expired.
+  // Keep the expiry-led index from the generated D1 migration explicit here.
+  const found = await db.d1
+    .prepare(
+      'SELECT * FROM "Archive" INDEXED BY "Archive_expiresAt_idx_6b6b8c10" WHERE "expiresAt"<? AND "clusterId"=? ORDER BY "expiresAt" ASC LIMIT 200'
+    )
+    .bind(before, clusterId)
+    .all<ArchiveRow>();
+  return found.results ?? [];
 }
 
 export function obsoleteObjects(db: Db, clusterId: string, before: string) {

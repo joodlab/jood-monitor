@@ -125,6 +125,13 @@ try {
     "Native storage write measurement:",
     JSON.stringify(cost.measurements)
   );
+  const expiryCost = await (await ok("/__test/archive-cost")).json();
+  assert.equal(expiryCost.rows, 0);
+  assert.ok(
+    expiryCost.rowsRead <= 2,
+    "empty expiry checks must not scan unexpired archives"
+  );
+  console.log("Native D1 expiry reads:", expiryCost.rowsRead);
   assert.equal(
     (
       await call("/api/v1/workspaces", {

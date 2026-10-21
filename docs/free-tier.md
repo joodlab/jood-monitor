@@ -15,6 +15,10 @@ persist profile changes only when the applied profile actually changes. Workspac
 notifications are coalesced to thirty seconds. An alarm targets the next closed
 five-minute window, with bounded retries for pending archival. Queues remain
 available to drain older messages, but normal ingestion sends no queue messages.
+Expiry checks explicitly use the existing expiry index; bounded metric-history
+queries constrain both ends of the source window. Cleanup must not scan all
+unexpired archives on every wakeup. The native D1 regression verifies the empty
+expiry lookup against populated archive data.
 
 ## Admission and capacity
 

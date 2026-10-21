@@ -7,6 +7,7 @@ import { apiError, dispatchApi } from "../src/lib/server/api";
 import { machineApi } from "../src/lib/server/api-machine";
 import { requireOperator } from "../src/lib/server/auth";
 import { nanoTimestamp } from "../src/lib/server/time";
+import { archiveCost } from "./archive-cost";
 import { storageCost } from "./storage-cost";
 
 // biome-ignore lint/performance/noBarrelFile: The isolated Worker test entry must export its Durable Object classes.
@@ -94,6 +95,9 @@ export class TestClusterState extends ClusterState {
 
 async function dispatchTest(request: Request, env: Env, url: URL) {
   requireOperator(request, env);
+  if (url.pathname === "/__test/archive-cost") {
+    return Response.json(await archiveCost(env.DB));
+  }
   if (url.pathname === "/__test/batch-rollback") {
     const db = getDb(env.DB);
     const first = db.raw
