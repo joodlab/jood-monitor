@@ -11,12 +11,10 @@ the dashboard, API and storage run on Cloudflare.
 [![Deploy hub to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/joodlab/jood-monitor)
 
 The button clones the entire workspace and deploys the full-stack hub with the
-`cf` CLI. Documentation is a separate app, deployed with `pnpm deploy:docs`.
-Set `MONITOR_DOCS_URL` to its `/docs` URL when building the hub.
-Set `MONITOR_HUB_URL` to the hub's HTTPS origin when deploying docs so the
-Dashboard link opens your app.
+`cf` CLI. Documentation is included at `/docs` in the same Worker. One deployment serves
+the dashboard, API, documentation and documentation search.
 `wrangler.json` is discovery metadata for Cloudflare's button; actual builds
-and deployments use the native `cloudflare.config.ts` files and `cf`.
+and deployments use the native `apps/app/cloudflare.config.ts` configuration and `cf`.
 
 ## Stack
 
@@ -28,7 +26,7 @@ and deployments use the native `cloudflare.config.ts` files and `cf`.
   Cloudflare Queues, durable alarms and scheduled retention.
 - **Agents:** Go, scoped Kubernetes observer and node collectors, bounded local
   buffering, TLS and OTLP/HTTP protobuf.
-- **Docs:** Fumadocs in an independent TanStack Start Cloudflare Worker.
+- **Docs:** Fumadocs served by the same TanStack Start Cloudflare Worker.
 
 **Prisma 8 is a release candidate and its SQLite target is experimental.** The
 D1 driver is maintained here and is not an official Prisma D1 adapter. Versions
@@ -38,7 +36,7 @@ are pinned and native runtime tests cover database writes and recovery. Read
 ## Run locally
 
 Use Node.js 24.11 or later in the 24.x line, pnpm 10.30.3 and the Go version in
-`go.mod`. Both web apps pin TanStack Start 1.169.1 and Vite 8.2.1. Start requires
+`go.mod`. The web app pins TanStack Start 1.169.1 and Vite 8.2.1. Start requires
 Node.js 22.12 and the pinned Prisma CLI requires 22.18; release tooling sets the
 workspace's supported Node ranges to `^22.19.0 || ^24.11.0 || >=26.0.0`.
 
@@ -52,10 +50,10 @@ pnpm --filter @jood-monitor/app dev
 
 Set your operator username, a random password of at least 16 characters and your
 app origin in `.dev.vars`. Operator mutations require Origin and CSRF checks.
-Keep all credentials out of Git. Run docs separately with
-`pnpm --filter @jood-monitor/docs dev`.
+Keep all credentials out of Git. Documentation is available at `/docs` on the
+same local server.
 
-See [installation](apps/docs/content/installation.mdx) for provisioning,
+See [installation](apps/app/content/installation.mdx) for provisioning,
 deployment and enrollment.
 
 ## Project conventions
@@ -70,7 +68,7 @@ apps/app/src/
   data-access/     scoped Prisma queries and atomic write plans
   db/              contracts, D1 driver and native DO SQLite storage
   schemas/         input validation
-apps/docs/         separate Fumadocs app
+apps/app/content/  Fumadocs documentation
 apps/agent/        Go observer and node collector
 packages/          shared UI and generated OpenAPI contracts
 ```

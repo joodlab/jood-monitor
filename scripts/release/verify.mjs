@@ -6,11 +6,7 @@ const semver = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 if (!(tag && semver.test(tag))) {
   throw new Error("A semantic version tag is required");
 }
-for (const file of [
-  "package.json",
-  "apps/app/package.json",
-  "apps/docs/package.json",
-]) {
+for (const file of ["package.json", "apps/app/package.json"]) {
   const value = JSON.parse(readFileSync(file, "utf8"));
   if (`v${value.version}` !== tag) {
     throw new Error(`Version differs in ${file}`);

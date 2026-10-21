@@ -7,8 +7,6 @@ export interface Env {
   ARCHIVES: R2Bucket;
   CLUSTERS: DurableObjectNamespace<ClusterState>;
   DB: D1Database;
-  DOCS?: Fetcher;
-  DOCS_URL?: string;
   HISTORY: Queue<ArchiveMessage>;
   MIGRATION_ENABLED?: string;
   OPERATOR_PASSWORD: string;

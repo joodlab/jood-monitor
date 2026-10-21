@@ -35,6 +35,7 @@ export default defineConfig(({ mode }) => ({
     entrypoint: "./src/server.ts",
     compatibilityDate: "2026-10-01",
     compatibilityFlags: ["nodejs_compat"],
+    limits: { cpuMs: 1000 },
     workersDev: true,
     domains: process.env.MONITOR_DOMAIN ? [process.env.MONITOR_DOMAIN] : [],
     exports: {
@@ -87,9 +88,6 @@ export default defineConfig(({ mode }) => ({
         : {}),
       ...(process.env.MONITOR_RECOVERY === "1"
         ? { RECOVERY_ENABLED: bindings.text("1") }
-        : {}),
-      ...(process.env.MONITOR_DOCS_URL
-        ? { DOCS_URL: bindings.text(process.env.MONITOR_DOCS_URL) }
         : {}),
       VERSION: bindings.text("0.1.1"),
       RELEASE: bindings.versionMetadata(),

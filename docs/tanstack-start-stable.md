@@ -1,6 +1,6 @@
 # TanStack Start stable migration
 
-Both the monitoring hub (`apps/app`) and Fumadocs Worker (`apps/docs`) pin
+The monitoring hub and embedded Fumadocs (`apps/app`) pin
 `@tanstack/react-start` 1.169.1 and `@tanstack/react-router` 1.170.44. The Router
 version matches Start's published dependency; TanStack packages do not share
 one version number. Query, Form, Table, Charts and devtools keep their existing
@@ -12,7 +12,7 @@ replacing that migration or the later domain-routing and archival changes.
 
 Start requires Node.js 22.12 or newer and Vite 8. The full workspace has the
 stricter Node ranges `^22.19.0 || ^24.11.0 || >=26.0.0` required by its tooling.
-Contributors and CI continue to use Node.js 24 and pnpm 10.30.3. Both apps pin Vite 8.2.1 and
+Contributors and CI continue to use Node.js 24 and pnpm 10.30.3. The app pins Vite 8.2.1 and
 `@vitejs/plugin-react` 6.0.5. The existing Cloudflare Vite adapter accepts Vite
 8, and Fumadocs MDX 15.0.10 accepts Vite 8. No Vite downgrade or hosting adapter
 change is needed. Keep using the Cloudflare build output and `cf` deployment
@@ -30,9 +30,9 @@ these two resolution bases distinct so the hub's Worker wrapper is retained.
 | --- | --- |
 | `.inputValidator()` | Absent. All eight validated hub/docs server functions already use `.validator()`. |
 | Start `useSession` | Absent. The hub uses operator Basic Auth, plus Origin and CSRF checks for writes. No cookie rename, sign-in transition or session library replacement applies. |
-| `@tanstack/nitro-v2-vite-plugin` | Absent. Both apps use the existing Cloudflare adapter. |
+| `@tanstack/nitro-v2-vite-plugin` | Absent. The app uses the existing Cloudflare adapter. |
 | Obsolete Start umbrella imports | Absent. The React-specific Start package and server entry remain. |
-| `createStartHandler`, `createServerEntry`, `handleStartError` | No direct application calls to these APIs. The hub's custom Worker delegates UI/RPC requests to the built-in server entry; docs use that entry directly. Start handles its own uncaught errors and thrown Responses. |
+| `createStartHandler`, `createServerEntry`, `handleStartError` | No direct application calls to these APIs. The hub's custom Worker delegates UI/RPC requests to the built-in server entry; docs use that same entry. Start handles its own uncaught errors and thrown Responses. |
 | Endpoint-specific error responses | The hub dispatches its machine/operator REST API before Start. Its own `apiError` returns explicit JSON Responses with authentication challenges and retry headers. Preserve this separate protocol. |
 | Thrown Responses and falsy errors in server functions | Hub functions return data and throw typed errors; docs throw Router `notFound()` and `redirect()`. No function expects a thrown Response or a falsy throw to resolve successfully. |
 | Response-helper precedence and valid status range | No application calls to `setResponseStatus` or `setResponseHeader`. Existing API Responses set their own status and headers. |
@@ -42,7 +42,7 @@ these two resolution bases distinct so the hub's Worker wrapper is retained.
 | Malformed percent encoding | Start now rejects malformed UI/docs paths with 400. Keep the existing REST dispatcher and authentication boundary; test the rejection on authenticated hub requests and public docs requests. |
 | Undefined `sendContext` | No application reads `sendContext`. The function middleware explicitly passes `{ env }` through server `context`. |
 
-Router type registration remains in each app's `src/router.tsx`; generated
+Router type registration remains in `apps/app/src/router.tsx`; generated
 route trees and Start's SSR integration must still pass generation, type checks,
 builds and runtime verification.
 
@@ -53,14 +53,13 @@ Native D1/Durable Object tests cover the storage and machine API separately from
 Start's production SSR, server functions and docs navigation. Browser evidence
 must use local, clearly labeled synthetic data and exclude credentials.
 
-After building both apps, run `pnpm test:start` for regression coverage against
-the actual Cloudflare Worker bundles. It creates isolated synthetic storage and
-fresh local credentials, exercises both server-function transports with Start's
-serialization plugins, checks SSR, and disposes each Worker before starting the
-next. CI runs it after the production builds. Set `START_TEST_PORT=48000` to use
-loopback ports 48000 and 48001 on a shared machine. For interactive verification,
-run `pnpm test:start --serve`; it keeps both Workers running. Fixture credentials
-stay in ignored `apps/app/.tmp` files. Browser checks also verify referenced assets.
+After building the app, run `pnpm test:start` against its actual Cloudflare
+Worker bundle. The isolated synthetic runtime covers Basic Auth, operator RPC
+and CSRF, public MDX SSR, client-navigation data, documentation search and missing
+pages. Operator server functions retain their authentication gate and middleware.
+Set `START_TEST_PORT=48000` for another loopback port. For browser verification,
+`pnpm test:start --serve` keeps the same runtime running. Fixture credentials stay
+in ignored `apps/app/.tmp` files. Check referenced assets and client navigation.
 
 A local Worker build or passing CI does not establish deployment, live agent
 acceptance, source-value correctness on a real fleet, or provider approval. This

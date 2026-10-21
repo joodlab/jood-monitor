@@ -1,6 +1,10 @@
 @import "tailwindcss" source(none);
 @import "tw-animate-css";
 @import "@xyflow/react/dist/style.css";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@source "../content";
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
 @source ".";
 @source "../../../packages/ui/src";
 @theme inline {

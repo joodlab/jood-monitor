@@ -3,7 +3,9 @@
 The hub is one full-stack TanStack Start Cloudflare Worker. UI operations pass
 through validated server functions, middleware, actions and scoped data access.
 Machine endpoints preserve the Go agent's HTTP and OTLP protobuf protocol.
-Fumadocs runs in a separate Worker.
+Fumadocs pages and search run in the same Worker at `/docs` and `/api/search`.
+Documentation is public; dashboard pages, operator APIs and server functions
+retain Basic Auth and mutation origin/CSRF checks.
 
 ```mermaid
 flowchart LR

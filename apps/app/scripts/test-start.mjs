@@ -15,12 +15,10 @@ const temporary = join(tmpdir(), `jood-start-${randomUUID()}`);
 mkdirSync(temporary, { recursive: true });
 const hubPort = Number(process.env.START_TEST_PORT ?? 46_800);
 assert.ok(
-  Number.isInteger(hubPort) && hubPort >= 1024 && hubPort < 65_535,
-  "START_TEST_PORT must leave two valid unprivileged ports"
+  Number.isInteger(hubPort) && hubPort >= 1024 && hubPort <= 65_535,
+  "START_TEST_PORT must be a valid unprivileged port"
 );
-const docsPort = hubPort + 1;
 const origin = `http://127.0.0.1:${hubPort}`;
-const docsOrigin = `http://127.0.0.1:${docsPort}`;
 const username = "synthetic-operator";
 const password = randomUUID();
 const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -93,7 +91,7 @@ async function rpc(worker, base, name, data, method = "GET", auth = headers) {
   const id = worker.functions.get(name);
   assert.ok(id, `compiled server function ${name} must exist`);
   const payload = JSON.stringify(await toJSONAsync({ data }));
-  const path = `${base === origin ? "/_serverFn/" : "/docs-serverFn/"}${id}`;
+  const path = `/_serverFn/${id}`;
   const response = await call(
     worker.runtime,
     base,
@@ -121,7 +119,6 @@ try {
       OPERATOR_PASSWORD: password,
       APP_ORIGIN: origin,
       VERSION: "synthetic-start-test",
-      DOCS_URL: `${docsOrigin}/docs`,
     },
     {
       d1Databases: { DB: "synthetic-start-db" },
@@ -234,16 +231,6 @@ try {
   assert.equal(html.headers.get("Cache-Control"), "private, no-store");
   assert.equal(html.headers.get("X-Frame-Options"), "DENY");
   assert.equal(html.headers.get("Vary"), "Authorization");
-  const docsRedirect = await call(
-    hub.runtime,
-    origin,
-    "/docs/installation?from=fixture"
-  );
-  assert.equal(docsRedirect.status, 302);
-  assert.equal(
-    docsRedirect.headers.get("Location"),
-    `${docsOrigin}/docs/installation?from=fixture`
-  );
   assert.equal(
     (await call(hub.runtime, origin, "/%E0%A4%A", { headers })).status,
     400
@@ -254,46 +241,32 @@ try {
     404
   );
   console.log(
-    "Hub production Worker: Basic Auth, CSRF, validated RPC/D1 writes, SSR headers, malformed paths and docs redirect passed."
+    "Hub production Worker: Basic Auth, CSRF, validated RPC/D1 writes, SSR headers and malformed paths passed."
   );
-  if (!process.argv.includes("--serve")) {
-    await hub.runtime.dispose();
-  }
-
-  const docs = productionWorker(join(root, "../docs"), docsPort, {
-    HUB_URL: origin,
-  });
-  const redirect = await call(docs.runtime, docsOrigin, "/");
-  assert.equal(redirect.status, 307);
-  assert.equal(redirect.headers.get("Location"), "/docs");
-  const page = await call(docs.runtime, docsOrigin, "/docs/installation");
+  const page = await call(hub.runtime, origin, "/docs/installation");
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Installation/);
-  const loaded = await rpc(
-    docs,
-    docsOrigin,
-    "loadPage",
-    ["installation"],
-    "GET",
-    { Origin: docsOrigin }
+  const loaded = await call(
+    hub.runtime,
+    origin,
+    "/api/docs/page?path=installation"
   );
   assert.equal(loaded.status, 200);
-  assert.equal((await deserialize(loaded)).result.title, "Installation");
+  assert.equal((await loaded.json()).title, "Installation");
   assert.equal(
-    (
-      await rpc(docs, docsOrigin, "loadPage", ["installation"], "GET", {
-        Origin: "https://untrusted.example.com",
-      })
-    ).status,
-    403
-  );
-  assert.equal(
-    (await call(docs.runtime, docsOrigin, "/docs/missing-fixture-page")).status,
+    (await call(hub.runtime, origin, "/api/docs/page?path=missing-fixture"))
+      .status,
     404
   );
-  assert.equal((await call(docs.runtime, docsOrigin, "/%E0%A4%A")).status, 400);
+  const search = await call(hub.runtime, origin, "/api/search?query=agent");
+  assert.equal(search.status, 200);
+  assert.ok((await search.json()).length > 0);
+  assert.equal(
+    (await call(hub.runtime, origin, "/docs/missing-fixture-page")).status,
+    404
+  );
   console.log(
-    "Docs production Worker: redirect, MDX SSR, validated RPC, missing page and malformed path passed."
+    "Same Worker: public MDX SSR, docs data, search and missing page passed."
   );
 
   if (process.argv.includes("--serve")) {
@@ -304,7 +277,7 @@ try {
       `OPERATOR_USER=${username}\nOPERATOR_PASSWORD=${password}\nAPP_ORIGIN=${origin}\n`,
       { mode: 0o600 }
     );
-    console.log(`Synthetic production fixtures: ${origin} and ${docsOrigin}`);
+    console.log(`Synthetic production fixture: ${origin}`);
     await new Promise((resolve) => {
       process.once("SIGINT", resolve);
       process.once("SIGTERM", resolve);
