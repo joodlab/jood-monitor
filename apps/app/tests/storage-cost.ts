@@ -95,6 +95,23 @@ export function storageCost(storage: DurableObjectStorage) {
     db.put("unchanged-profile", { revision: 1 });
   });
   const unchangedWrites = rowsWritten;
+  db.transaction(() => {
+    db.put("heartbeat", { version: "synthetic", queueBytes: 0 });
+    db.put("times", { heartbeatAt: "2026-01-01T00:00:00Z" });
+    db.changed();
+  });
+  rowsWritten = 0;
+  db.transaction(() => {
+    db.put("heartbeat", { version: "synthetic", queueBytes: 1 });
+    db.put("times", { heartbeatAt: "2026-01-01T00:00:15Z" });
+    db.changed();
+  });
+  const controlWrites = rowsWritten;
+  db = new ClusterStorage(measured);
+  const controlRestarted =
+    db.get<{ queueBytes: number }>("heartbeat")?.queueBytes === 1 &&
+    db.get<{ heartbeatAt: string }>("times")?.heartbeatAt ===
+      "2026-01-01T00:00:15Z";
   let rolledBack = false;
   try {
     db.transaction(() => {
@@ -188,6 +205,8 @@ export function storageCost(storage: DurableObjectStorage) {
     latestAfterDrain: afterDrain.length,
     receiptAfterDrain: db.batch("synthetic-batch-1000"),
     unchangedWrites,
+    controlWrites,
+    controlRestarted,
     rolledBack,
     budgetBlocked,
     restartBlocked,

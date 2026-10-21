@@ -86,8 +86,8 @@ function metricForRecovery({
 }
 
 const ingressUnits: Record<string, number> = {
-  inventory: 6,
-  heartbeat: 3,
+  inventory: 4,
+  heartbeat: 1,
   lifecycle: 8,
 };
 

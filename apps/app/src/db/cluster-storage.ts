@@ -11,6 +11,16 @@ import { compress, decompress, PackedMetrics } from "./packed-metrics";
 interface PayloadRow extends Record<string, SqlStorageValue> {
   payload: string;
 }
+const controlNames = new Set([
+  "identity",
+  "inventory",
+  "heartbeat",
+  "profile",
+  "times",
+  "profileDirty",
+  "revision",
+  "metricSequence",
+]);
 export interface DirtyPartition extends Record<string, SqlStorageValue> {
   bucket: string;
   diagnostic: number;
@@ -29,6 +39,8 @@ export class ClusterStorage {
   private minuteLease = 0;
   private dailyLease = { day: "", remaining: 0 };
   private transactionDepth = 0;
+  private controlLoaded = false;
+  private pendingControl: Record<string, unknown> | null = null;
   constructor(storage: DurableObjectStorage) {
     this.storage = storage;
     storage.sql.exec(`
@@ -95,6 +107,13 @@ export class ClusterStorage {
   }
 
   get<T>(name: string): T | null {
+    if (controlNames.has(name) && !this.controlLoaded) {
+      this.controlLoaded = true;
+      const control = this.get<Record<string, unknown>>("control") ?? {};
+      for (const [key, value] of Object.entries(control)) {
+        this.documents.set(key, JSON.stringify(value));
+      }
+    }
     if (this.documents.has(name)) {
       return JSON.parse(this.documents.get(name) ?? "null") as T;
     }
@@ -133,6 +152,16 @@ export class ClusterStorage {
     if (JSON.stringify(this.get(name)) === json) {
       return;
     }
+    if (controlNames.has(name)) {
+      this.pendingControl ??=
+        this.get<Record<string, unknown>>("control") ?? {};
+      this.pendingControl[name] = JSON.parse(json);
+      this.documents.set(name, json);
+      if (!this.transactionDepth) {
+        this.transaction(() => undefined);
+      }
+      return;
+    }
     const previous = this.storage.sql
       .exec<{ bytes: number }>(
         "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name=?",
@@ -166,10 +195,38 @@ export class ClusterStorage {
   transaction<T>(fn: () => T): T {
     this.transactionDepth++;
     try {
-      return this.storage.transactionSync(fn);
+      return this.storage.transactionSync(() => {
+        const result = fn();
+        if (this.transactionDepth === 1 && this.pendingControl) {
+          const control = this.pendingControl;
+          this.pendingControl = null;
+          this.put("control", control);
+          // Migrate only keys already committed in the combined document.
+          const keys = JSON.stringify(Object.keys(control));
+          const previous = this.storage.sql
+            .exec<{ bytes: number }>(
+              "SELECT coalesce(sum(bytes),0) AS bytes FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
+              keys
+            )
+            .one().bytes;
+          this.storage.sql.exec(
+            "DELETE FROM compact_documents WHERE name IN (SELECT value FROM json_each(?))",
+            keys
+          );
+          this.storage.sql.exec(
+            "DELETE FROM documents WHERE name IN (SELECT value FROM json_each(?))",
+            keys
+          );
+          this.compactBytes -= previous;
+          this.checkCapacity();
+        }
+        return result;
+      });
     } catch (error) {
       if (this.transactionDepth === 1) {
         this.documents.clear();
+        this.controlLoaded = false;
+        this.pendingControl = null;
         this.latestRows = null;
         this.packed.reload();
         this.compactBytes = this.storage.sql
@@ -475,7 +532,7 @@ export class ClusterStorage {
   inventoryOutbox() {
     return this.storage.sql
       .exec<{ stamp: string; source: string }>(
-        "SELECT stamp,source FROM inventory_outbox ORDER BY source LIMIT 2"
+        "SELECT stamp,source FROM inventory_outbox ORDER BY source LIMIT 12"
       )
       .toArray();
   }
