@@ -8,6 +8,7 @@ import { machineApi } from "../src/lib/server/api-machine";
 import { requireOperator } from "../src/lib/server/auth";
 import { nanoTimestamp } from "../src/lib/server/time";
 import { archiveCost } from "./archive-cost";
+import { inventoryCost } from "./inventory-cost";
 import { storageCost } from "./storage-cost";
 
 // biome-ignore lint/performance/noBarrelFile: The isolated Worker test entry must export its Durable Object classes.
@@ -134,6 +135,9 @@ async function dispatchTest(request: Request, env: Env, url: URL) {
       env.CLUSTERS.idFromName("cost-fixture")
     ) as DurableObjectStub<TestClusterState>;
     return Response.json(await stub.fixtureStorageCost());
+  }
+  if (url.pathname === "/__test/inventory-cost") {
+    return Response.json(await inventoryCost(env));
   }
   const cluster = await requireCluster(
     env,

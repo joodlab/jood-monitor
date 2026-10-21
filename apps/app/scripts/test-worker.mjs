@@ -638,7 +638,7 @@ try {
     .all();
   assert.deepEqual(
     manifests.results.map((r) => r.kind),
-    ["5m", "hour", "inventory", "raw"]
+    ["5m", "hour", "inventory-content", "inventory-receipts", "raw"]
   );
   const runtimeStatus = await (
     await ok("/api/v1/clusters/fixture/status")
@@ -933,8 +933,18 @@ try {
       )
       .bind("migrated", "inventory")
       .first("count"),
-    3,
+    2,
     "same-time historical observations must retain distinct identities"
+  );
+  assert.equal(
+    await (await mf.getD1Database("DB"))
+      .prepare(
+        'SELECT sum(points) AS count FROM "Archive" WHERE clusterId=? AND kind=?'
+      )
+      .bind("migrated", "inventory-receipts")
+      .first("count"),
+    1,
+    "the current observation is also retained as a compact receipt"
   );
   const migratedEvents = await (
     await ok(
@@ -2161,6 +2171,33 @@ try {
     403,
     "live Durable Object must reject a delayed migration import RPC"
   );
+  const inventoryCost = await (await ok("/__test/inventory-cost")).json();
+  assert.equal(
+    inventoryCost.initialPuts,
+    3,
+    "twenty observations share one topology and two receipt publications"
+  );
+  assert.equal(inventoryCost.indexes, 2);
+  assert.equal(inventoryCost.receiptCount, inventoryCost.observations);
+  assert.ok(
+    inventoryCost.compactBytes < inventoryCost.baselineBytes / 5,
+    "unchanged topology must reduce stored bytes by at least eighty percent"
+  );
+  for (const key of [
+    "exact",
+    "beforeFirst",
+    "restored",
+    "conflictRejected",
+    "afterChange",
+    "oldStillExact",
+    "retentionCovered",
+    "retentionExtended",
+    "publicationFailed",
+    "publicationRecovered",
+  ]) {
+    assert.equal(inventoryCost[key], true, `inventory preservation: ${key}`);
+  }
+  console.log("Native inventory compaction:", JSON.stringify(inventoryCost));
   process.stdout.write(
     "PASS: native D1 migrations/Prisma atomic rollback, scoped auth and WebSocket origins, one-use enrollment, gzip OTLP/int64/nanos, retry/restart, archival failure/backpressure recovery, concurrent dedupe/profile guards, exact source variants and durable garbage collection.\n"
   );

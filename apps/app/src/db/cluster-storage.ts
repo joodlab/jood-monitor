@@ -735,8 +735,10 @@ export class ClusterStorage {
       this.storage.sql
         .exec<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)
         .one().count;
+    const legacyBufferedPoints = count("raw");
     return {
-      bufferedPoints: count("raw") + this.packed.bufferedPoints,
+      bufferedPoints: legacyBufferedPoints + this.packed.bufferedPoints,
+      legacyBufferedPoints,
       dirtyPartitions: count("dirty") + this.packed.dirtyPartitions,
       pendingInventories: count("inventory_outbox"),
       bytes: this.size,

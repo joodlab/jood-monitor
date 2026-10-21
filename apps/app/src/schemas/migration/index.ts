@@ -42,6 +42,9 @@ export const inventoryReceiptSchema = z.strictObject({
   sourceTime: z.string(),
   contentId: z.string().regex(/^[a-f0-9]{64}$/),
   sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  metadata: historicalObservationSchema
+    .pick({ profile: true, heartbeat: true, times: true })
+    .optional(),
 });
 
 const exactInteger = z.string().regex(/^-?\d{1,20}$/);
