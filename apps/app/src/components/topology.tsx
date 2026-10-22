@@ -17,6 +17,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -25,7 +26,12 @@ import {
   useState,
 } from "react";
 import { useDisplay } from "../hooks/display";
-import { drawsResource, selectInspected } from "../lib/canvas-selection";
+import { measuredChanges } from "../lib/canvas-node-changes";
+import {
+  drawsResource,
+  type InspectedResource,
+  selectInspected,
+} from "../lib/canvas-selection";
 import {
   type CanvasViewport,
   canvasViews,
@@ -362,12 +368,6 @@ function nextNodes(old: CardNode[], items: GraphItem[], inputs: CardInputs) {
   return same ? old : next;
 }
 
-function keepSelectAndSize(changes: NodeChange<CardNode>[]) {
-  return changes.filter(
-    (item) => item.type === "select" || item.type === "dimensions"
-  );
-}
-
 export interface TopologyOverlays {
   // Top-right actions, such as Connect cluster.
   actions?: ReactNode;
@@ -454,21 +454,26 @@ function useCardGraph(props: TopologyProps, expanded: string[]) {
   return { graph, filterKey: filterKeyOf(props) };
 }
 
-// The resource open in the service panel. Opening or switching it from
-// anywhere selects its card (or none), so the dimming always matches the
-// panel and clears when it closes; the card is then brought clear of the
-// docked panel. On a new mount the selection is set here, but the reveal
-// waits for the initial fit, which would otherwise overwrite it.
+// The resource open in the service panel is the only source of the canvas
+// selection. Opening or switching it from anywhere selects its card (or
+// none), so the dimming always matches the panel and clears when it closes;
+// the card is then brought clear of the docked panel. `latest` keeps the
+// resource for cards the graph rebuilds later. On a new mount the selection
+// is set here, but the reveal waits for the initial fit, which would
+// otherwise overwrite it.
 function useInspectedCard(
+  latest: RefObject<InspectedResource>,
   uid: string | undefined,
   cluster: string | undefined,
   setNodes: Dispatch<SetStateAction<CardNode[]>>,
   reveal: () => void
 ) {
   useEffect(() => {
-    setNodes((old) => selectInspected(old, { uid, cluster }));
+    const resource = { uid, cluster };
+    latest.current = resource;
+    setNodes((old) => selectInspected(old, resource));
     reveal();
-  }, [uid, cluster, setNodes, reveal]);
+  }, [latest, uid, cluster, setNodes, reveal]);
 }
 
 export function Topology(props: TopologyProps) {
@@ -511,6 +516,10 @@ export function Topology(props: TopologyProps) {
   // new Graph mount, false once the filter changes under it.
   const restoring = useRef(true);
   const focusRequest = useRef<FocusRequest>(undefined);
+  const inspected = useRef<InspectedResource>({
+    uid: props.inspectedUid,
+    cluster: props.inspectedCluster,
+  });
   const section = useRef<HTMLElement>(null);
   // The toolbar has a different parent in each layout, so a switch remounts
   // it; focus follows to the pressed layout button instead of the page body.
@@ -564,14 +573,21 @@ export function Topology(props: TopologyProps) {
       canvasViews.remember(viewKey, { filter: filterKey, positions });
     }
     // Live ticks redraw cards that summarise usage freshness; a frozen view,
-    // a refresh with no changes or a parent re-render keeps every node.
+    // a refresh with no changes or a parent re-render keeps every node. A
+    // card new to the canvas (a changed filter, an expanded pod group,
+    // inventory that arrived after the panel opened) is selected when the
+    // panel shows its resource.
+    const resource = inspected.current;
     setNodes((old) =>
-      nextNodes(old, graph.items, {
-        expanded,
-        handlers,
-        now: referenceTime,
-        positions,
-      })
+      selectInspected(
+        nextNodes(old, graph.items, {
+          expanded,
+          handlers,
+          now: referenceTime,
+          positions,
+        }),
+        resource
+      )
     );
   }, [graph, filterKey, referenceTime, expanded, handlers, viewKey]);
   useEffect(() => {
@@ -638,6 +654,7 @@ export function Topology(props: TopologyProps) {
     [viewKey, filterKey]
   );
   useInspectedCard(
+    inspected,
     props.inspectedUid,
     props.inspectedCluster,
     setNodes,
@@ -679,8 +696,11 @@ export function Topology(props: TopologyProps) {
     },
     [inspect, drill]
   );
+  // React Flow selects nothing itself (elementsSelectable is off), and only
+  // card measurements are taken from it; clicks and Enter or Space still
+  // open cards, and the panel then selects them.
   const change = useCallback((changes: NodeChange<CardNode>[]) => {
-    const kept = keepSelectAndSize(changes);
+    const kept = measuredChanges(changes);
     if (kept.length) {
       setNodes((old) => applyNodeChanges(kept, old));
     }
@@ -693,8 +713,8 @@ export function Topology(props: TopologyProps) {
     setChoice(next);
     onLayout?.(next);
   }
-  // Enter or Space on a focused card matches a click: React Flow selects it
-  // first, then this opens it. Space would otherwise scroll the page.
+  // Enter or Space on a focused card matches a click: this opens it, and the
+  // panel opening on it selects it. Space would otherwise scroll the page.
   function keyOpen(event: KeyboardEvent<HTMLDivElement>) {
     const target = event.target instanceof HTMLElement ? event.target : null;
     const id = activatedCard(event.key, target);
@@ -826,6 +846,7 @@ export function Topology(props: TopologyProps) {
             edges={edges}
             edgesFocusable={false}
             edgesReconnectable={false}
+            elementsSelectable={false}
             maxZoom={1.5}
             minZoom={0.08}
             nodes={rendered}
