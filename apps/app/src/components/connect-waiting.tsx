@@ -11,7 +11,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { fetchSnapshot } from "../hooks/api/clusters";
 import {
   credentialFile,
@@ -67,6 +67,8 @@ export function useFirstDelivery(enrollment?: Enrollment): FirstDelivery {
 interface DeliveryChecks {
   checking: boolean;
   checkNow: () => void;
+  // The first heartbeat seen while waiting; the snapshot only holds the latest.
+  firstHeartbeatAt?: string;
   interval: number | false;
 }
 
@@ -80,11 +82,19 @@ function useDeliveryChecks(
   now: number
 ): DeliveryChecks {
   const workspace = enrollment.cluster.workspaceId;
+  // The inventory patience window runs from the FIRST heartbeat seen; the
+  // latest heartbeat keeps moving and would never let checks stop.
+  const [firstHeartbeatAt, setFirstHeartbeatAt] = useState<string>();
+  useEffect(() => {
+    if (delivery.state !== "waiting" && delivery.heartbeatAt) {
+      setFirstHeartbeatAt((first) => first ?? delivery.heartbeatAt);
+    }
+  }, [delivery.state, delivery.heartbeatAt]);
   const interval = deliveryCheckInterval({
     state: delivery.state,
     startedAt,
     expiresAt: enrollment.expiresAt,
-    heartbeatAt: delivery.heartbeatAt,
+    heartbeatAt: firstHeartbeatAt ?? delivery.heartbeatAt,
     now,
   });
   const query = useQuery({
@@ -97,6 +107,7 @@ function useDeliveryChecks(
   return {
     interval,
     checking: query.isFetching,
+    firstHeartbeatAt,
     // Joins a check already in flight instead of restarting it.
     checkNow: () => {
       query.refetch({ cancelRefetch: false });
@@ -265,7 +276,7 @@ function Connected({
           First heartbeat received{" "}
           <TimeText
             label="Heartbeat received by the hub"
-            value={delivery.heartbeatAt}
+            value={checks.firstHeartbeatAt ?? delivery.heartbeatAt}
           />
           {delivery.version ? ` from observer ${delivery.version}` : ""}.
           {inventory

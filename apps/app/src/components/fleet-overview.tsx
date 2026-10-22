@@ -115,11 +115,15 @@ function severityCounts(summary: ReturnType<typeof attentionSummary>) {
 
 type Coverage = ReturnType<typeof observationCoverage>;
 
+// Problems are reported before coverage: a heartbeat without inventory is
+// still an observation that needs attention.
 function panelHeading(coverage: Coverage, problems: number) {
-  if (!coverage.observed) {
-    return "No observations in scope";
+  if (problems) {
+    return "Needs attention";
   }
-  return problems ? "Needs attention" : "No problems observed";
+  return coverage.observed
+    ? "No problems observed"
+    : "No observations in scope";
 }
 
 // Green only when every cluster in scope has observed inventory.
@@ -174,10 +178,7 @@ function AttentionPanel({
           className="flex items-center gap-2 font-medium text-sm"
           id="attention-heading"
         >
-          <SeverityIcon
-            covered={!coverage.missing}
-            severity={coverage.observed ? summary.worst : undefined}
-          />
+          <SeverityIcon covered={!coverage.missing} severity={summary.worst} />
           {panelHeading(coverage, live.length)}
           <span className="font-normal text-muted-foreground">
             {severityCounts(summary)}
