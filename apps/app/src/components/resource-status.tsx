@@ -42,8 +42,8 @@ function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
     entity.kind === "Pod" &&
     entity.ready === 0 &&
     !isFinished(entity);
-  // A finished pod is history, as on the canvas, unless the caller marks a
-  // retained failure as a problem, as resource tables do.
+  // A finished pod is history everywhere, failed or not; a caller can still
+  // mark one a problem explicitly.
   const history = entity.kind === "Pod" && isFinished(entity) && !problem;
   if (
     starting ||

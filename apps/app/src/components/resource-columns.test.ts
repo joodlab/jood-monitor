@@ -97,6 +97,40 @@ describe("Nodes table usage", () => {
   it("says no sample when the hub knows no reason", () => {
     expect(nodeCell(view({ name: "basic" }), "cpu")).toContain(">No sample<");
   });
+  it("keeps finished failed pods as history, outside Problems only", () => {
+    const pod = (name: string, status: string, ready: number): Entity => ({
+      uid: name,
+      name,
+      kind: "Pod",
+      namespace: "batch",
+      status,
+      ready,
+      desired: 1,
+      nodeUid: node.uid,
+    });
+    const cluster = view({});
+    cluster.inventory.entities = [
+      node,
+      pod("nightly-import", "Failed / OOM observed", 0),
+      pod("smoke-check", "Failed", 0),
+      pod("worker", "CrashLoopBackOff", 0),
+    ];
+    const rows = (problems: boolean) =>
+      resourceRows(
+        [cluster],
+        { namespace: "all", problems, q: "", system: true },
+        now,
+        ["Pod"]
+      );
+    expect(
+      rows(false).map(({ entity, problem }) => [entity.name, problem])
+    ).toEqual([
+      ["worker", true],
+      ["nightly-import", false],
+      ["smoke-check", false],
+    ]);
+    expect(rows(true).map(({ entity }) => entity.name)).toEqual(["worker"]);
+  });
   it("shows a measured value, never the reason", () => {
     const markup = renderToStaticMarkup(
       createElement(MetricBar, { value: 42, gap: "paused" })

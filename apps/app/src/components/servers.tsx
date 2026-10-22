@@ -16,7 +16,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useMemo } from "react";
-import { podProblem } from "../lib/attention";
+import { livePodProblem } from "../lib/attention";
 import { nodeUsageGap, podUsageText } from "../lib/collection-state";
 import {
   compactCpu,
@@ -485,7 +485,7 @@ function PodTile({
   onInspect: () => void;
 }) {
   const state = tileState(pod);
-  const problem = podProblem(pod, referenceTime);
+  const problem = livePodProblem(pod, referenceTime);
   return (
     <Tooltip>
       <TooltipTrigger

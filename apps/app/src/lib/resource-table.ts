@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { livePodProblem } from "./attention";
 import {
   gapLabel,
   gapReason,
@@ -149,7 +149,9 @@ export function includesSystem(
 
 function rowProblem(entity: Entity, summary: ResourceSummary, now: number) {
   if (entity.kind === "Pod") {
-    return podProblem(entity, now);
+    // Retained failures are history: the status still reads Failed, but they
+    // are neither a live problem nor in Problems only, as on the canvas.
+    return livePodProblem(entity, now);
   }
   if (entity.kind === "Service") {
     // Endpoints exist but not all are ready. No endpoints at all is reported
