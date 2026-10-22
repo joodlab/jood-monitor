@@ -4,6 +4,13 @@
 export const timeZoneOptions = ["local", "UTC", "Asia/Riyadh"] as const;
 export type TimeZonePreference = (typeof timeZoneOptions)[number];
 
+// What the hub keeps, measured on its own clock: saved inventory and events,
+// and raw CPU/memory samples.
+export const INVENTORY_RETENTION_DAYS = 180;
+export const RAW_RETENTION_DAYS = 7;
+export const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+
 export function resolveTimeZone(preference: TimeZonePreference) {
   if (preference !== "local") {
     return preference;
@@ -179,4 +186,94 @@ export function fromZonedInput(value: string, timeZone: string) {
   let time = wall - zoneOffset(wall, timeZone);
   time = wall - zoneOffset(time, timeZone);
   return time;
+}
+
+const rangeSpans: Record<string, string> = {
+  "1": "hour",
+  "6": "6 hours",
+  "24": "day",
+};
+
+// The events and history window in words. Live it ends now; frozen it ends
+// at the saved observation, so the words name that time and its zone.
+export function rangeSpan(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  const span = rangeSpans[range] ?? `${range} hours`;
+  if (!at) {
+    return `last ${span}`;
+  }
+  const time = knownTime(at);
+  if (time == null) {
+    return `${span} before the selected time`;
+  }
+  return `${span} before ${formatDateTime(time, timeZone)} ${timeZoneLabel(timeZone, time)}`;
+}
+
+// "the last hour", "the hour before Oct 22, 12:00:00 UTC".
+export function rangeText(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  return `the ${rangeSpan(range, at, timeZone)}`;
+}
+
+// "Last hour", "Hour before Oct 22, 12:00:00 UTC".
+export function rangeLabel(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  const span = rangeSpan(range, at, timeZone);
+  return span.charAt(0).toUpperCase() + span.slice(1);
+}
+
+// The hub's time in a response and the browser time it arrived.
+export interface HubClock {
+  receivedAt: number;
+  serverTime: string;
+}
+
+// The hub's clock now: its last response's time advanced by the browser
+// time elapsed since, so browser clock skew never moves a hub boundary.
+export function hubNow(clock: HubClock | undefined, now: number) {
+  const server = knownTime(clock?.serverTime);
+  if (!clock || server == null) {
+    return;
+  }
+  return server + Math.max(0, now - clock.receivedAt);
+}
+
+// Requests travel and the hub clock keeps moving after the estimate; the
+// raw-window boundary keeps this slack so the hub does not refuse a request.
+const RAW_BOUNDARY_MARGIN_MS = 60_000;
+
+export type RawWindow =
+  | { outside: true }
+  | { outside: false; from: number; to: number; clamped: boolean };
+
+// The raw-sample window a history chart requests: `hours` ending at `to`,
+// clamped to the hub's 7-day raw retention. A window ending before that
+// boundary is outside it. Without the hub's time the window is left as
+// asked and the hub decides.
+export function rawWindow(
+  to: number,
+  hours: number,
+  hubTime: number | undefined
+): RawWindow {
+  const from = to - hours * HOUR_MS;
+  if (hubTime == null) {
+    return { outside: false, from, to, clamped: false };
+  }
+  const boundary =
+    hubTime - RAW_RETENTION_DAYS * DAY_MS + RAW_BOUNDARY_MARGIN_MS;
+  if (to <= boundary) {
+    return { outside: true };
+  }
+  return from < boundary
+    ? { outside: false, from: boundary, to, clamped: true }
+    : { outside: false, from, to, clamped: false };
 }

@@ -32,6 +32,7 @@ import {
   summarize,
 } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
+import type { HubClock } from "../lib/time";
 import { InspectorHeader, useInspectionTrail } from "./inspector-header";
 import {
   activeTab,
@@ -69,6 +70,7 @@ export function ResourceInspector({
   onRange,
   at,
   connection,
+  hubClock,
   scope,
   onCollection,
 }: {
@@ -84,6 +86,8 @@ export function ResourceInspector({
   // The dashboard's monitoring stream state; slows history polling while
   // stream notifications are arriving.
   connection?: string;
+  // The snapshot's hub time, which bounds the raw history window.
+  hubClock?: HubClock;
   // The dashboard scope (a workspace id or "global"), so stream
   // notifications for that scope refresh the history; defaults to the
   // resource's own workspace.
@@ -91,7 +95,7 @@ export function ResourceInspector({
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
   const trail = useInspectionTrail(inspected);
-  const live = { at, connection, scope, range, referenceTime };
+  const live = { at, connection, hubClock, scope, range, referenceTime };
   const cpu = useHistory(inspected, "cpu", live);
   const memory = useHistory(inspected, "memory", live);
   return (

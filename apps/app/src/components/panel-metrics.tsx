@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChartLine, History } from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
 import { getHistoryFn } from "../functions/clusters";
+import { useDisplay } from "../hooks/display";
 import { podProblem } from "../lib/attention";
 import {
   GAP_MS,
@@ -13,7 +14,18 @@ import {
   type UsageField,
 } from "../lib/chart-scale";
 import type { ResourceSummary } from "../lib/infrastructure";
+import { historyError, rawRetentionMessage } from "../lib/install-errors";
 import { usageName } from "../lib/metrics";
+import {
+  formatDateTime,
+  type HubClock,
+  hubNow,
+  knownTime,
+  RAW_RETENTION_DAYS,
+  rangeLabel,
+  rawWindow,
+  timeZoneLabel,
+} from "../lib/time";
 import {
   type Coverage,
   historyRefetchInterval,
@@ -49,17 +61,20 @@ type Inspected = { view: ClusterView; entity: Entity } | null;
 interface HistoryWindow {
   at?: string;
   connection?: string;
+  // The snapshot's hub time; the 7-day raw boundary is measured from it.
+  hubClock?: HubClock;
   range: string;
   referenceTime: number;
   scope?: string;
 }
 
 // Raw history is kept per Pod and Node. The chart's time axis is exactly
-// the queried window, ending at the saved observation when frozen.
+// the queried window, ending at the saved observation when frozen and
+// starting no earlier than the hub's raw retention.
 export function useHistory(
   inspected: Inspected,
   field: UsageField,
-  { at, connection, scope, range, referenceTime }: HistoryWindow
+  { at, connection, hubClock, scope, range, referenceTime }: HistoryWindow
 ) {
   const workspace = inspected?.view.cluster.workspaceId;
   return useQuery({
@@ -81,30 +96,37 @@ export function useHistory(
       ["Node", "Pod"].includes(inspected.entity.kind) &&
       referenceTime > 0,
     refetchInterval: historyRefetchInterval(at, connection),
+    retry: (failures, error) => failures < 1 && historyError(error).retryable,
     queryFn: async () => {
-      const to = at ? Date.parse(at) : Date.now();
-      const from = to - Number(range) * 3_600_000;
+      const to = at ? knownTime(at) : Date.now();
+      if (to == null) {
+        throw new Error("invalid timestamp");
+      }
+      const bounds = rawWindow(to, Number(range), hubNow(hubClock, Date.now()));
+      // A request the hub would refuse is not sent; it fails the same way.
+      if (bounds.outside) {
+        throw new Error(rawRetentionMessage);
+      }
       const samples = await getHistoryFn({
         data: {
           workspace: workspace ?? "",
           cluster: inspected?.view.cluster.id ?? "",
           entity: inspected?.entity.uid,
           name: usageName(inspected?.entity, field),
-          from: new Date(from).toISOString(),
+          from: new Date(bounds.from).toISOString(),
           to: at,
         },
       });
-      return { samples, from, to };
+      return { samples, ...bounds };
     },
   });
 }
 export type HistoryQuery = ReturnType<typeof useHistory>;
 
-const rangeLabels: Record<string, string> = {
-  "1": "Last hour",
-  "6": "Last 6 hours",
-  "24": "Last day",
-};
+// The window start when the 7-day raw boundary cut it short.
+function clampedFrom(...queries: HistoryQuery[]) {
+  return queries.find((query) => query.data?.clamped)?.data?.from;
+}
 
 export function MetricsTab({
   view,
@@ -139,7 +161,9 @@ export function MetricsTab({
   onShowPods: () => void;
   onPodHistory: (pod: Entity) => void;
 }) {
+  const { at, timeZone } = useDisplay();
   if (entity.kind === "Pod" || entity.kind === "Node") {
+    const clamped = clampedFrom(cpu, memory);
     return (
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -152,10 +176,17 @@ export function MetricsTab({
           ) : (
             <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
               <History aria-hidden className="size-3.5" />
-              {rangeLabels[range] ?? `Last ${range} h`}
+              {rangeLabel(range, at, timeZone)}
             </span>
           )}
         </div>
+        {clamped != null && (
+          <p className="text-muted-foreground text-xs" role="note">
+            History before {formatDateTime(clamped, timeZone)}{" "}
+            {timeZoneLabel(timeZone, clamped)} is outside the{" "}
+            {RAW_RETENTION_DAYS}-day raw window.
+          </p>
+        )}
         {charts.map((chart) => (
           <div
             className="rounded-lg border bg-background/40 p-4"
@@ -336,14 +367,17 @@ function HistoryPlot({
     return <ChartSkeleton title={title} />;
   }
   if (query.isError) {
+    const problem = historyError(query.error);
     return (
       <div className="space-y-2">
         <h3 className="font-medium text-sm">{title}</h3>
         <p className="rounded-md border p-3 text-sm" role="alert">
-          History unavailable.{" "}
-          <Button onClick={() => query.refetch()} size="sm" variant="link">
-            Retry
-          </Button>
+          {problem.title}.{problem.detail && ` ${problem.detail}`}{" "}
+          {problem.retryable && (
+            <Button onClick={() => query.refetch()} size="sm" variant="link">
+              Retry
+            </Button>
+          )}
         </p>
       </div>
     );

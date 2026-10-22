@@ -6,14 +6,13 @@ import {
   SelectValue,
 } from "@jood-monitor/ui/select";
 import { History } from "lucide-react";
+import { useDisplay } from "../hooks/display";
+import { rangeLabel } from "../lib/time";
 
-const rangeLabels: Record<string, string> = {
-  "1": "Last hour",
-  "6": "Last 6 hours",
-  "24": "Last day",
-};
+const ranges = ["1", "6", "24"];
 
-// History window for events and charts, shown on the pages it affects.
+// History window for events and charts, shown on the pages it affects. A
+// frozen view's window ends at the saved observation, and the labels say so.
 export function RangeSelect({
   range,
   onRange,
@@ -21,6 +20,7 @@ export function RangeSelect({
   range: string;
   onRange: (range: string) => void;
 }) {
+  const { at, timeZone } = useDisplay();
   return (
     <Select onValueChange={(value) => onRange(value ?? "1")} value={range}>
       <SelectTrigger
@@ -28,12 +28,12 @@ export function RangeSelect({
         className="h-8 w-auto gap-1.5 text-sm"
       >
         <History className="size-3.5 text-muted-foreground" />
-        <SelectValue>{rangeLabels[range]}</SelectValue>
+        <SelectValue>{rangeLabel(range, at, timeZone)}</SelectValue>
       </SelectTrigger>
       <SelectContent>
-        {Object.entries(rangeLabels).map(([value, label]) => (
+        {ranges.map((value) => (
           <SelectItem key={value} value={value}>
-            {label}
+            {rangeLabel(value, at, timeZone)}
           </SelectItem>
         ))}
       </SelectContent>

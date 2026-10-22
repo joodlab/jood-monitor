@@ -365,8 +365,14 @@ function WorkspacePanel({
   );
 }
 
+// A Settings link's cluster wins over the top bar's cluster filter.
+function requestedCluster(search: SearchState) {
+  return search.settingsCluster ?? search.cluster;
+}
+
 function initialSection(search: SearchState, sections: string[]) {
-  const requested = search.cluster && clusterSection(search.cluster);
+  const cluster = requestedCluster(search);
+  const requested = cluster && clusterSection(cluster);
   if (requested && sections.includes(requested)) {
     return requested;
   }
@@ -423,11 +429,12 @@ export function CollectionSettings({
     initialSection(search, sections)
   );
   // Links that name a cluster (attention items, the inspector) open it.
+  const requested = requestedCluster(search);
   useEffect(() => {
-    if (search.cluster) {
-      setSelected(clusterSection(search.cluster));
+    if (requested) {
+      setSelected(clusterSection(requested));
     }
-  }, [search.cluster]);
+  }, [requested]);
   if (search.at) {
     return <FrozenSettings onResumeLive={onResumeLive} />;
   }
@@ -475,7 +482,7 @@ export function CollectionSettings({
             <ClusterSettings
               clusters={clusters}
               initialNodeUid={
-                search.cluster === view.cluster.id
+                requested === view.cluster.id
                   ? search.diagnosticNode
                   : undefined
               }

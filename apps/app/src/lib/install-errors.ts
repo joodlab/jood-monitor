@@ -1,6 +1,8 @@
 // Turns hub errors from operator requests into text that says what happened
 // and what to do next. Unknown errors keep the hub's own message.
 
+import { INVENTORY_RETENTION_DAYS, RAW_RETENTION_DAYS } from "./time";
+
 type RequestErrorKind =
   | "duplicate-cluster"
   | "duplicate-workspace"
@@ -149,4 +151,125 @@ export function requestError(error: unknown): RequestError {
     kind: "other",
     message: message ? `The request failed: ${message}` : "The request failed.",
   };
+}
+
+export interface ReadError {
+  detail: string;
+  // Repeating the same request can succeed; otherwise Retry is hidden.
+  retryable: boolean;
+  title: string;
+}
+
+// Server-function errors keep the hub's message but not always its status,
+// so reads are recognised by the message text. The more specific needle
+// comes first.
+const readErrors: [string, ReadError][] = [
+  [
+    "snapshot outside retention",
+    {
+      title: `This time is outside the ${INVENTORY_RETENTION_DAYS}-day retention`,
+      detail: `Saved inventory and events cover the last ${INVENTORY_RETENTION_DAYS} days. Choose a time within them, or use Return to live above.`,
+      retryable: false,
+    },
+  ],
+  [
+    "invalid timestamp",
+    {
+      title: "This link's time could not be read",
+      detail:
+        "Choose a saved observation time instead, or use Return to live above.",
+      retryable: false,
+    },
+  ],
+  [
+    "precision boundary too broad",
+    {
+      title: "The saved inventory at this time could not be resolved",
+      detail: "Choose a nearby time, or use Return to live above.",
+      retryable: false,
+    },
+  ],
+  [
+    "too broad",
+    {
+      title: "This scope is too large to load; narrow it to a cluster",
+      detail: "The hub limits how much one request can load.",
+      retryable: false,
+    },
+  ],
+  [
+    "archive restore in progress",
+    {
+      title: "Archive restore in progress; retry shortly",
+      detail: "The hub is restoring archived observations.",
+      retryable: true,
+    },
+  ],
+  [
+    "authentication required",
+    {
+      title: "Reload and sign in again",
+      detail: "Your operator session is no longer valid.",
+      retryable: false,
+    },
+  ],
+];
+
+// Browsers word a failed fetch differently: Chromium, Firefox, Safari.
+const networkFailure = /Failed to fetch|NetworkError|Load failed/i;
+
+function readError(error: unknown, fallback: string): ReadError {
+  const message = errorText(error);
+  const match = readErrors.find(([needle]) => message.includes(needle));
+  if (match) {
+    return match[1];
+  }
+  const validation = validationMessage(message);
+  if (validation) {
+    return {
+      title: "The hub rejected this request",
+      detail: `${validation}.`,
+      retryable: false,
+    };
+  }
+  if (networkFailure.test(message)) {
+    return {
+      title: "The hub could not be reached",
+      detail: "Check your connection and retry.",
+      retryable: true,
+    };
+  }
+  return { title: fallback, detail: message, retryable: true };
+}
+
+// Why the dashboard's observations could not load. Only a failed fetch
+// claims the hub is unreachable.
+export function snapshotError(error: unknown) {
+  return readError(error, "The hub could not load observations");
+}
+
+const rawRetention: ReadError = {
+  title: `Raw samples are kept for ${RAW_RETENTION_DAYS} days; this saved observation is older`,
+  detail: "",
+  retryable: false,
+};
+
+// The hub's refusal text for raw history outside its window; the dashboard
+// raises the same error before asking, so both read alike.
+export const rawRetentionMessage = `history range must be within ${RAW_RETENTION_DAYS} days`;
+
+export function historyError(error: unknown): ReadError {
+  const message = errorText(error);
+  if (message.includes(rawRetentionMessage)) {
+    return rawRetention;
+  }
+  // History is already one entity and metric; only a shorter window helps.
+  if (message.includes("query too broad")) {
+    return {
+      title: "This window holds too many samples to load",
+      detail: "Choose a shorter range.",
+      retryable: false,
+    };
+  }
+  return readError(error, "History unavailable");
 }

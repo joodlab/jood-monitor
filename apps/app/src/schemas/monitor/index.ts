@@ -20,6 +20,9 @@ export interface SearchState {
   range: string;
   resource?: string;
   resourceCluster?: string;
+  // The cluster section a Settings link opens. Separate from `cluster` so a
+  // link never narrows the dashboard's cluster filter.
+  settingsCluster?: string;
   system: boolean;
   tab: string;
   view: string;
@@ -133,15 +136,45 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+const zonedTimestamp =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+// The saved-observation time. A valid RFC3339 time becomes canonical UTC,
+// except that digits finer than milliseconds stay as written so the hub
+// keeps them. Anything else (no zone, 30 February) is kept as written, so
+// the page explains that the link's time could not be read instead of
+// silently showing live data.
+function observationTime(value: unknown) {
+  if (typeof value === "number") {
+    return observationTime(String(value));
+  }
+  if (typeof value !== "string" || !value) {
+    return;
+  }
+  const match = zonedTimestamp.exec(value);
+  const time = Date.parse(value);
+  if (!(match && Number.isFinite(time))) {
+    return value;
+  }
+  const sign = match[3] === "-" ? -1 : 1;
+  const offset = match[3]
+    ? sign * (Number(match[4]) * 60 + Number(match[5])) * 60_000
+    : 0;
+  // Date.parse rolls 30 February over to March; the written fields must
+  // survive the round trip.
+  const wall = new Date(time + offset).toISOString().slice(0, 19);
+  if (wall !== match[1]) {
+    return value;
+  }
+  return (match[2]?.length ?? 0) > 3 ? value : new Date(time).toISOString();
+}
+
 export function validateMonitorSearch(
   raw: Record<string, unknown>
 ): SearchState {
   const view = viewFor(raw);
   const tab = resourceTab(raw);
-  const at =
-    typeof raw.at === "string" && Number.isFinite(Date.parse(raw.at))
-      ? raw.at
-      : undefined;
+  const at = observationTime(raw.at);
   return {
     workspace: typeof raw.workspace === "string" ? raw.workspace : "global",
     view,
@@ -161,6 +194,7 @@ export function validateMonitorSearch(
     cluster: optionalString(raw.cluster),
     resource: optionalString(raw.resource),
     resourceCluster: optionalString(raw.resourceCluster),
+    settingsCluster: optionalString(raw.settingsCluster),
     diagnosticNode: optionalString(raw.diagnosticNode),
   };
 }

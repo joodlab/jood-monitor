@@ -16,6 +16,7 @@ import {
   Server,
 } from "lucide-react";
 import { type ReactNode, useId, useMemo } from "react";
+import { useDisplay } from "../hooks/display";
 import {
   type Attention,
   attentionSummary,
@@ -33,6 +34,7 @@ import {
   subjectName,
 } from "../lib/canvas-activity";
 import type { EventCategory } from "../lib/events";
+import { rangeSpan } from "../lib/time";
 import type { AttentionActions } from "./attention-list";
 import { SeverityIcon, severityLabels } from "./severity";
 import { TimeText } from "./time";
@@ -42,12 +44,8 @@ import { TimeText } from "./time";
 // observed inventory diffs or reported receipts; logs are not collected.
 
 const attentionLimit = 5;
+const noteLimit = 3;
 const changeLimit = 8;
-const rangeNames: Record<string, string> = {
-  "1": "last hour",
-  "6": "last 6 hours",
-  "24": "last day",
-};
 const categoryIcons: Record<EventCategory, LucideIcon> = {
   node: Server,
   scaling: Scaling,
@@ -143,13 +141,21 @@ function NeedsAttention({
   referenceTime,
   onNavigate,
 }: PanelProps) {
+  // The count matches the tab badge: problems that need action. Info rows
+  // are notes, listed apart and never counted.
+  const summary = attentionSummary(attention);
   const live = liveAttention(attention);
+  const problems = live.filter((item) => item.severity !== "info");
+  const notes = live.filter((item) => item.severity === "info");
+  const more =
+    Math.max(0, problems.length - attentionLimit) +
+    Math.max(0, notes.length - noteLimit);
   const covered =
     views.length > 0 && observationCoverage(views, referenceTime).missing === 0;
   return (
     <section>
-      <SectionTitle count={live.length}>Needs attention</SectionTitle>
-      {live.length === 0 && (
+      <SectionTitle count={summary.actionable}>Needs attention</SectionTitle>
+      {problems.length === 0 && (
         <p className="flex items-center gap-2 px-3.5 py-2 text-muted-foreground text-sm">
           {covered ? (
             <CircleCheck
@@ -165,18 +171,28 @@ function NeedsAttention({
         </p>
       )}
       <ul>
-        {live.slice(0, attentionLimit).map((item) => (
+        {problems.slice(0, attentionLimit).map((item) => (
           <AttentionRow actions={actions} item={item} key={item.id} />
         ))}
       </ul>
-      {live.length > attentionLimit && (
+      {notes.length > 0 && (
+        <>
+          <SectionTitle>Notes</SectionTitle>
+          <ul>
+            {notes.slice(0, noteLimit).map((item) => (
+              <AttentionRow actions={actions} item={item} key={item.id} />
+            ))}
+          </ul>
+        </>
+      )}
+      {more > 0 && (
         <Button
           className="mx-2 mb-1 h-8 text-xs focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => onNavigate("observability")}
           size="sm"
           variant="ghost"
         >
-          {live.length - attentionLimit} more in Observability
+          {more} more in Observability
           <ArrowRight aria-hidden="true" className="size-3.5" />
         </Button>
       )}
@@ -239,10 +255,19 @@ function RecentChanges({
       steps: hiddenRolloutSteps(data),
     };
   }, [events.data, views]);
+  const { at, timeZone } = useDisplay();
   const multiple = views.length > 1;
+  // The previous range's changes stay while the new range loads; an empty
+  // previous range says nothing about the new one.
+  const updating = events.isPlaceholderData;
   return (
     <section>
-      <SectionTitle>Recent changes</SectionTitle>
+      <SectionTitle>
+        Recent changes
+        <span className="font-normal" role="status">
+          {updating ? "Updating…" : ""}
+        </span>
+      </SectionTitle>
       {events.isPending && (
         <p className="px-3.5 py-2 text-muted-foreground text-sm" role="status">
           Loading changes…
@@ -264,9 +289,9 @@ function RecentChanges({
           </Button>
         </div>
       )}
-      {events.isSuccess && rows.length === 0 && (
+      {events.isSuccess && !updating && rows.length === 0 && (
         <p className="px-3.5 py-2 text-muted-foreground text-sm">
-          {quietChangesText(steps, rangeNames[range] ?? "selected range")}
+          {quietChangesText(steps, rangeSpan(range, at, timeZone))}
         </p>
       )}
       <ul>
