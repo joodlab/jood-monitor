@@ -87,7 +87,9 @@ export function DisplayProvider({
         save("monitor-theme", next);
       },
       timeZonePreference,
-      timeZone: resolveTimeZone(timeZonePreference),
+      // The server renders in its own zone; resolving the browser zone only
+      // after hydration (once the clock starts) keeps SSR markup identical.
+      timeZone: now ? resolveTimeZone(timeZonePreference) : "UTC",
       setTimeZonePreference: (next) => {
         setPreference(next);
         save("monitor-time-zone", next);
