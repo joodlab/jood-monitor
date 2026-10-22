@@ -762,9 +762,39 @@ describe("resource URL state", () => {
     ).toMatchObject({ kind: undefined, pageSize: undefined });
     expect(validateMonitorSearch({ pageSize: "25" }).pageSize).toBeUndefined();
     expect(validateMonitorSearch({ view: "resources" })).toMatchObject({
-      view: "infrastructure",
+      view: "resources",
+      tab: "all",
       mode: "list",
     });
+  });
+  it("lands on the architecture canvas and maps previous links to project tabs", () => {
+    expect(validateMonitorSearch({}).view).toBe("architecture");
+    expect(validateMonitorSearch({ view: "nonsense" }).view).toBe(
+      "architecture"
+    );
+    const cases: [Record<string, unknown>, Record<string, string>][] = [
+      [{ view: "overview" }, { view: "observability" }],
+      [{ view: "attention" }, { view: "observability" }],
+      [{ view: "events" }, { view: "activity" }],
+      [{ view: "agents" }, { view: "settings" }],
+      [{ view: "topology" }, { view: "architecture" }],
+      [{ view: "infrastructure" }, { view: "architecture" }],
+      [
+        { view: "infrastructure", mode: "servers" },
+        { view: "resources", tab: "servers", mode: "servers" },
+      ],
+      [
+        { view: "infrastructure", mode: "list" },
+        { view: "resources", tab: "all", mode: "list" },
+      ],
+      [
+        { view: "workloads", tab: "pods" },
+        { view: "resources", tab: "pods", mode: "workloads" },
+      ],
+    ];
+    for (const [raw, expected] of cases) {
+      expect(validateMonitorSearch(raw)).toMatchObject(expected);
+    }
   });
   it("keeps a valid topology layout choice and drops anything else", () => {
     expect(validateMonitorSearch({ layout: "list" }).layout).toBe("list");
