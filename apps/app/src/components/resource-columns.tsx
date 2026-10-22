@@ -134,7 +134,12 @@ function usageColumn(field: "cpu" | "memory"): Column {
     sortUndefined: "last",
     cell: ({ row }) => (
       <UsageValue
-        display={usageDisplay(row.original.entity, row.original.summary, field)}
+        display={usageDisplay(
+          row.original.entity,
+          row.original.summary,
+          field,
+          row.original.gap
+        )}
       />
     ),
   };
@@ -494,7 +499,7 @@ export interface CardFact {
 export function cardFacts(row: ResourceRow, preset: TablePreset): CardFact[] {
   const { entity, summary } = row;
   const usage = (field: "cpu" | "memory") => (
-    <UsageValue display={usageDisplay(entity, summary, field)} />
+    <UsageValue display={usageDisplay(entity, summary, field, row.gap)} />
   );
   switch (preset) {
     case "pods":

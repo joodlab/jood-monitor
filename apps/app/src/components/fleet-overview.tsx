@@ -8,6 +8,7 @@ import {
   attentionSummary,
   clusterStatus,
 } from "../lib/attention";
+import { collectionState } from "../lib/collection-state";
 import { percent } from "../lib/infrastructure";
 import { nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
@@ -201,6 +202,7 @@ function ClusterRow({
   const totals = nodeTotals([view], referenceTime);
   const status = clusterStatus(view, summary, referenceTime, frozen);
   const current = clusterCurrent(view, referenceTime, frozen);
+  const collection = collectionState(view, referenceTime);
   return (
     <li className="grid gap-4 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] lg:items-center">
       <div className="flex min-w-0 gap-3">
@@ -232,7 +234,8 @@ function ClusterRow({
           </p>
           <p className="mt-0.5 truncate text-muted-foreground text-xs">
             {workspaceName} · {view.cluster.environment}
-            {!frozen && ` · ${view.profile.name} collection`}
+            {!frozen &&
+              ` · ${collection.label} collection${collection.paused ? " · paused" : ""}`}
           </p>
           <Freshness current={current} view={view} />
         </div>

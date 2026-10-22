@@ -1,6 +1,12 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { podProblem } from "./attention";
 import {
+  gapLabel,
+  gapReason,
+  type UsageGap,
+  usageGap,
+} from "./collection-state";
+import {
   compactCpu,
   compactMemory,
   findEntity,
@@ -87,6 +93,9 @@ export interface ResourceFilter {
 
 export interface ResourceRow {
   entity: Entity;
+  // Why the hub expects no usage sample, when it knows; shown only in place
+  // of a missing value.
+  gap?: UsageGap;
   id: string;
   // The node a pod is scheduled on, when it is in the same inventory.
   node?: Entity;
@@ -184,6 +193,8 @@ function candidates(
   return result;
 }
 
+// Saved observations are recognised by the capture record they carry, so the
+// gap needs no frozen flag here; one without a record lists no inventory.
 function toRow({ view, entity }: Candidate, now: number): ResourceRow {
   const summary = summarize(view, entity, now);
   return {
@@ -191,6 +202,7 @@ function toRow({ view, entity }: Candidate, now: number): ResourceRow {
     view,
     entity,
     summary,
+    gap: usageGap(view, entity, summary.pods, now),
     problem: rowProblem(entity, summary, now),
     stale: inventoryStale(view, now),
     node: entity.kind === "Pod" ? findEntity(view, entity.nodeUid) : undefined,
@@ -381,23 +393,26 @@ function format(field: "cpu" | "memory", value?: number) {
 }
 
 // Total usage when complete; a labelled lower bound when partial; an explicit
-// gap otherwise. Nodes report their own sample rather than a pod sum.
+// gap otherwise, named by its reason when the hub knows one. Nodes report
+// their own sample rather than a pod sum.
 export function usageDisplay(
   entity: Entity,
   summary: ResourceSummary,
-  field: "cpu" | "memory"
+  field: "cpu" | "memory",
+  gap?: UsageGap
 ): UsageDisplay {
   const total = summary[field];
   if (total != null) {
     return { text: format(field, total), partial: false, missing: false };
   }
   const name = fieldNames[field];
+  const reason = gap ? ` ${gapReason(gap)}` : "";
   if (entity.kind === "Node") {
     return {
-      text: "No sample",
+      text: gap ? gapLabel(gap) : "No sample",
       partial: false,
       missing: true,
-      title: `No fresh ${name} sample from this node.`,
+      title: `No fresh ${name} sample from this node.${reason}`,
     };
   }
   if (!summary.active) {
@@ -414,10 +429,10 @@ export function usageDisplay(
   const { measured, observed } = summary.usage[field];
   if (!measured || observed == null) {
     return {
-      text: "No sample",
+      text: gap ? gapLabel(gap, entity.kind !== "Pod") : "No sample",
       partial: false,
       missing: true,
-      title: `None of the ${summary.active} active pod${summary.active === 1 ? "" : "s"} has a fresh ${name} sample.`,
+      title: `None of the ${summary.active} active pod${summary.active === 1 ? "" : "s"} has a fresh ${name} sample.${reason}`,
     };
   }
   return {

@@ -1,3 +1,4 @@
+import type { ClusterView } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import {
   DropdownMenu,
@@ -10,8 +11,22 @@ import {
   DropdownMenuTrigger,
 } from "@jood-monitor/ui/dropdown-menu";
 import { Input } from "@jood-monitor/ui/input";
-import { ChevronDown, ChevronLeft, FolderTree, Search, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  CirclePause,
+  FolderTree,
+  Search,
+  Timer,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useDisplay } from "../hooks/display";
+import {
+  collectionNotice,
+  collectionState,
+  profileKnown,
+} from "../lib/collection-state";
 import { isSystemNamespace } from "../lib/infrastructure";
 
 // The canvas scope, top left: a namespace pill (Railway's group switcher)
@@ -170,18 +185,64 @@ function CanvasSearch({
   );
 }
 
+// Collection that is not running as configured: paused, or a Diagnostic
+// with its countdown. Named per cluster when the canvas shows several. The
+// display clock is zero until hydration, so the chip waits for it.
+function CollectionChips({ views }: { views: ClusterView[] }) {
+  const { referenceTime, frozen } = useDisplay();
+  if (!referenceTime) {
+    return null;
+  }
+  const notices = views.flatMap((view) => {
+    if (!profileKnown(view, frozen)) {
+      return [];
+    }
+    const state = collectionState(view, referenceTime);
+    const text = collectionNotice(state, referenceTime);
+    return text
+      ? [
+          {
+            id: view.cluster.id,
+            paused: state.paused,
+            text: views.length > 1 ? `${view.cluster.name}: ${text}` : text,
+          },
+        ]
+      : [];
+  });
+  return notices.map((notice) => {
+    const Icon = notice.paused ? CirclePause : Timer;
+    return (
+      <span
+        className={`flex h-9 min-w-0 max-w-80 items-center gap-1.5 px-2.5 text-xs ${floating}`}
+        key={notice.id}
+      >
+        <Icon
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+        <span className="truncate" title={notice.text}>
+          {notice.text}
+        </span>
+      </span>
+    );
+  });
+}
+
 export function CanvasScope({
   namespace,
   namespaces,
   onNamespace,
   q,
   onSearch,
+  views = [],
 }: {
   namespace: string;
   namespaces: string[];
   onNamespace: (namespace: string) => void;
   q: string;
   onSearch: (q: string) => void;
+  // The clusters drawn, for their collection state.
+  views?: ClusterView[];
 }) {
   return (
     <>
@@ -191,6 +252,7 @@ export function CanvasScope({
         onNamespace={onNamespace}
       />
       <CanvasSearch onSearch={onSearch} value={q} />
+      <CollectionChips views={views} />
     </>
   );
 }

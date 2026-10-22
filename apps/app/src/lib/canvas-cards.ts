@@ -1,5 +1,6 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { livePodProblem, nodeProblem, podProblem } from "./attention";
+import { gapLabel, gapReason, type UsageGap } from "./collection-state";
 import {
   compactCpu,
   compactMemory,
@@ -276,11 +277,13 @@ export interface UsageValue {
 }
 
 // Usage totals need a fresh sample from every running pod; anything less is
-// labelled partial, and nothing measured stays a dash, never a zero.
+// labelled partial, and nothing measured stays missing, never a zero: a dash,
+// or the reason when the collection settings or the observer explain it.
 export function usageValue(
   entity: Entity,
   summary: ResourceSummary,
-  field: "cpu" | "memory"
+  field: "cpu" | "memory",
+  gap?: UsageGap
 ): UsageValue {
   const value = summary[field];
   const name = field === "cpu" ? "CPU" : "memory";
@@ -296,6 +299,12 @@ export function usageValue(
       value: "partial",
       partial: true,
       title: `Fresh ${name} for ${Math.min(summary.measured, active)} of ${active} running pods; a total needs every pod`,
+    };
+  }
+  if (gap) {
+    return {
+      value: gapLabel(gap, entity.kind !== "Pod" && entity.kind !== "Node"),
+      title: `No fresh ${name} measurement. ${gapReason(gap)}`,
     };
   }
   return { value: "—", title: `No fresh ${name} measurement` };

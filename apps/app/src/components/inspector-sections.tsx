@@ -16,6 +16,7 @@ import { type ReactNode, useState } from "react";
 import {
   type Coverage,
   conditionGroups,
+  coverageText,
   type Exposure,
   type NodePlacement,
   type Relationship,
@@ -213,36 +214,27 @@ export function ConditionList({
   );
 }
 
-// Explains partial totals with counts. Finished pods never count against it.
+// Explains missing or partial totals with counts and the reason the hub
+// knows. Finished pods never count against coverage.
 export function CoverageNote({
   coverage,
   profile,
 }: {
   coverage: Coverage;
-  // Active collection profile; omitted for saved observations.
+  // Label of the collection profile in effect, when known.
   profile?: string;
 }) {
-  const { active, measured, finished } = coverage;
-  if (!active || measured >= active) {
-    return finished ? (
-      <p className="text-muted-foreground text-xs">
-        {finished} finished pod{finished === 1 ? " is" : "s are"} excluded;
-        finished pods are not expected to report usage.
-      </p>
-    ) : null;
+  const note = coverageText(coverage, profile);
+  if (!note) {
+    return null;
   }
-  const missing = active - measured;
+  if (!note.partial) {
+    return <p className="text-muted-foreground text-xs">{note.text}</p>;
+  }
   return (
     <p className="flex items-start gap-1.5 rounded-md border border-info/30 bg-info/5 p-2 text-xs">
       <Info aria-hidden className="mt-px size-3.5 shrink-0 text-info-text" />
-      <span>
-        Partial coverage: {measured} of {active} active pods have a fresh CPU
-        and memory sample; {missing} {missing === 1 ? "has" : "have"} none, so
-        totals are not summed.
-        {finished > 0 &&
-          ` ${finished} finished pod${finished === 1 ? " is" : "s are"} excluded.`}
-        {profile && ` Collection profile: ${profile}.`}
-      </span>
+      <span>{note.text}</span>
     </p>
   );
 }

@@ -339,6 +339,7 @@ export function Architecture(props: ArchitectureProps) {
                 onNamespace={canvasFocus.change}
                 onSearch={callbacks.onSearch}
                 q={search.q}
+                views={views}
               />
             ),
             below: <StagedChangesBar className="max-w-80 shadow-lg" />,

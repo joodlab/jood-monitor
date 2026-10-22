@@ -1,9 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import { ChevronRight, CircleDashed } from "lucide-react";
+import { useState } from "react";
 import { podProblem } from "../lib/attention";
 import { formatUsage } from "../lib/chart-scale";
+import { gapLabel, gapReason, podUsageGap } from "../lib/collection-state";
 import {
+  findEntity,
   isFinished,
   owningWorkload,
   type ResourceSummary,
@@ -17,6 +21,10 @@ import { TimeText } from "./time";
 
 type Inspect = (view: ClusterView, entity: Entity) => void;
 
+// Long Running and Finished groups show this many rows until expanded; pods
+// needing attention are always listed in full.
+const ROW_LIMIT = 50;
+
 // Member pods in the role of Railway's Deployments list: one row per pod
 // with its status pill, where it runs, restarts, age and current usage.
 // Problems lead, then running pods, then finished history.
@@ -27,6 +35,7 @@ export function PodsTab({
   coverage,
   now,
   stale,
+  frozen = false,
   profile,
   onInspect,
 }: {
@@ -36,7 +45,9 @@ export function PodsTab({
   coverage: Coverage;
   now: number;
   stale: boolean;
-  // Active collection profile; omitted for saved observations.
+  // A saved observation, whose collection settings may not be retained.
+  frozen?: boolean;
+  // Label of the collection profile in effect, when known.
   profile?: string;
   onInspect: Inspect;
 }) {
@@ -52,9 +63,14 @@ export function PodsTab({
   }
   const groups = podGroups(pods, now);
   const sections = [
-    { id: "attention", title: "Needs attention", pods: groups.attention },
-    { id: "active", title: "Running", pods: groups.active },
-    { id: "finished", title: "Finished", pods: groups.finished },
+    {
+      id: "attention",
+      title: "Needs attention",
+      pods: groups.attention,
+      capped: false,
+    },
+    { id: "active", title: "Running", pods: groups.active, capped: true },
+    { id: "finished", title: "Finished", pods: groups.finished, capped: true },
   ];
   return (
     <div className="space-y-6">
@@ -79,34 +95,84 @@ export function PodsTab({
       {sections.map(
         (section) =>
           section.pods.length > 0 && (
-            <section
-              aria-labelledby={`pods-${section.id}`}
-              className="space-y-2"
-              key={section.id}
-            >
-              <h3
-                className="font-medium text-muted-foreground text-xs uppercase tracking-wide"
-                id={`pods-${section.id}`}
-              >
-                {section.title} · {section.pods.length}
-              </h3>
-              <ul className="space-y-2">
-                {section.pods.map((pod) => (
-                  <PodRow
-                    key={pod.uid}
-                    now={now}
-                    onInspect={onInspect}
-                    pod={pod}
-                    stale={stale}
-                    subject={entity}
-                    view={view}
-                  />
-                ))}
-              </ul>
-            </section>
+            <PodSection
+              capped={section.capped}
+              frozen={frozen}
+              id={section.id}
+              // A new resource starts with its long groups collapsed.
+              key={`${entity.uid}:${section.id}`}
+              now={now}
+              onInspect={onInspect}
+              pods={section.pods}
+              stale={stale}
+              subject={entity}
+              title={section.title}
+              view={view}
+            />
           )
       )}
     </div>
+  );
+}
+
+function PodSection({
+  id,
+  title,
+  pods,
+  capped,
+  view,
+  subject,
+  now,
+  stale,
+  frozen,
+  onInspect,
+}: {
+  id: string;
+  title: string;
+  pods: readonly Entity[];
+  capped: boolean;
+  view: ClusterView;
+  subject: Entity;
+  now: number;
+  stale: boolean;
+  frozen: boolean;
+  onInspect: Inspect;
+}) {
+  const [all, setAll] = useState(false);
+  const shown = capped && !all ? pods.slice(0, ROW_LIMIT) : pods;
+  return (
+    <section aria-labelledby={`pods-${id}`} className="space-y-2">
+      <h3
+        className="font-medium text-muted-foreground text-xs uppercase tracking-wide"
+        id={`pods-${id}`}
+      >
+        {title} · {pods.length}
+      </h3>
+      <ul className="space-y-2">
+        {shown.map((pod) => (
+          <PodRow
+            frozen={frozen}
+            key={pod.uid}
+            now={now}
+            onInspect={onInspect}
+            pod={pod}
+            stale={stale}
+            subject={subject}
+            view={view}
+          />
+        ))}
+      </ul>
+      {shown.length < pods.length && (
+        <Button
+          className="focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => setAll(true)}
+          size="sm"
+          variant="outline"
+        >
+          Show all {pods.length}
+        </Button>
+      )}
+    </section>
   );
 }
 
@@ -119,14 +185,26 @@ function readySummary(summary: ResourceSummary) {
     : `${summary.ready} of ${summary.desired} ready`;
 }
 
-function podUsage(view: ClusterView, pod: Entity, now: number) {
+// A pod with neither sample names the reason when the hub knows it.
+function podUsage(
+  view: ClusterView,
+  pod: Entity,
+  now: number,
+  frozen: boolean
+) {
   if (isFinished(pod)) {
     return { cpu: undefined, memory: undefined, finished: true };
   }
+  const cpu = observedUsage(view, pod, "cpu", now);
+  const memory = observedUsage(view, pod, "memory", now);
   return {
-    cpu: observedUsage(view, pod, "cpu", now),
-    memory: observedUsage(view, pod, "memory", now),
+    cpu,
+    memory,
     finished: false,
+    gap:
+      cpu == null && memory == null
+        ? podUsageGap(view, pod, now, frozen)
+        : undefined,
   };
 }
 
@@ -137,7 +215,7 @@ function placementText(view: ClusterView, pod: Entity, subject: Entity) {
     const namespace = pod.namespace || "cluster scope";
     return owner ? `${namespace} · ${owner.kind} ${owner.name}` : namespace;
   }
-  const node = view.inventory.entities.find((item) => item.uid === pod.nodeUid);
+  const node = findEntity(view, pod.nodeUid);
   if (node) {
     return `on ${node.name}`;
   }
@@ -150,6 +228,7 @@ function PodRow({
   subject,
   now,
   stale,
+  frozen,
   onInspect,
 }: {
   view: ClusterView;
@@ -157,9 +236,10 @@ function PodRow({
   subject: Entity;
   now: number;
   stale: boolean;
+  frozen: boolean;
   onInspect: Inspect;
 }) {
-  const usage = podUsage(view, pod, now);
+  const usage = podUsage(view, pod, now, frozen);
   const restarts = pod.restarts ?? 0;
   return (
     <li>
@@ -195,12 +275,22 @@ function PodRow({
             </span>
           </span>
         </span>
-        {usage.finished ? (
+        {usage.finished && (
           <span className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
             <CircleDashed aria-hidden className="size-3.5" />
             Finished · not reporting
           </span>
-        ) : (
+        )}
+        {usage.gap && (
+          <span
+            className="max-w-40 shrink-0 text-right text-muted-foreground text-xs"
+            title={gapReason(usage.gap)}
+          >
+            <span className="block">CPU · Memory</span>
+            <span className="block">{gapLabel(usage.gap)}</span>
+          </span>
+        )}
+        {!(usage.finished || usage.gap) && (
           <span className="grid shrink-0 grid-cols-[auto_auto] gap-x-4 text-right text-xs tabular-nums">
             <UsageCell field="cpu" label="CPU" value={usage.cpu} />
             <UsageCell field="memory" label="Memory" value={usage.memory} />

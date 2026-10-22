@@ -1,4 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import { Button } from "@jood-monitor/ui/button";
 import {
   Tabs,
   TabsContent,
@@ -6,9 +7,30 @@ import {
   TabsTrigger,
 } from "@jood-monitor/ui/tabs";
 import { cn } from "@jood-monitor/ui/utils";
-import { Cpu, Database, Server, TriangleAlert } from "lucide-react";
+import {
+  Cpu,
+  Database,
+  Info,
+  Server,
+  SlidersHorizontal,
+  Timer,
+  TriangleAlert,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { type ResourceSummary, summarize } from "../lib/infrastructure";
+import {
+  collectionState,
+  diagnosticText,
+  gapReason,
+  profileKnown,
+  settingGap,
+  type UsageGap,
+  usageGap,
+} from "../lib/collection-state";
+import {
+  findEntity,
+  type ResourceSummary,
+  summarize,
+} from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import { InspectorHeader, useInspectionTrail } from "./inspector-header";
 import {
@@ -142,11 +164,14 @@ function InspectorBody({
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
   const summary = summarize(view, entity, referenceTime);
-  const coverage = podCoverage(summary);
+  const gap = usageGap(view, entity, summary.pods, referenceTime, frozen);
+  const coverage = podCoverage(summary, gap);
   const links = panelLinks(view, entity);
   const stale =
     inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
-  const profile = frozen ? undefined : view.profile.name;
+  const profile = profileKnown(view, frozen)
+    ? collectionState(view, referenceTime).label
+    : undefined;
   // The operator's tab choice; each kind shows it when it has that tab.
   const [chosen, setChosen] = useState<string>();
   const tabs = inspectorTabs(entity.kind, links.length > 0);
@@ -191,6 +216,14 @@ function InspectorBody({
           isCohort(entity.kind)) && (
           <UsageStrip coverage={coverage} entity={entity} summary={summary} />
         )}
+        <CollectionNotice
+          entity={entity}
+          frozen={frozen}
+          gap={summary.cpu == null || summary.memory == null ? gap : undefined}
+          now={referenceTime}
+          onCollection={onCollection}
+          view={view}
+        />
         <AbnormalConditions
           conditions={entity.conditions}
           onShow={() => select("details")}
@@ -219,6 +252,7 @@ function InspectorBody({
               <PodsTab
                 coverage={coverage}
                 entity={entity}
+                frozen={frozen}
                 now={referenceTime}
                 onInspect={onInspect}
                 profile={profile}
@@ -294,6 +328,75 @@ function TabBadges({ count, warnings }: { count?: number; warnings?: number }) {
         </>
       ) : null}
     </>
+  );
+}
+
+// Why usage is missing when the hub knows, with a way to the collection
+// settings when they cause it, and a Diagnostic running on this Node. The
+// display clock is zero until hydration, so the countdown waits for it.
+function CollectionNotice({
+  view,
+  entity,
+  gap,
+  frozen,
+  now,
+  onCollection,
+}: {
+  view: ClusterView;
+  entity: Entity;
+  gap?: UsageGap;
+  frozen: boolean;
+  now: number;
+  onCollection: (view: ClusterView, node?: Entity) => void;
+}) {
+  const running =
+    !frozen && now > 0 && entity.kind === "Node"
+      ? collectionState(view, now).diagnostic
+      : undefined;
+  const diagnostic = running?.nodeUids.includes(entity.uid)
+    ? running
+    : undefined;
+  if (!(gap || diagnostic)) {
+    return null;
+  }
+  const node =
+    entity.kind === "Node" ? entity : findEntity(view, entity.nodeUid);
+  return (
+    <div className="px-4 sm:px-6">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs">
+        <ul className="min-w-0 flex-1 space-y-1">
+          {gap && (
+            <li className="flex items-start gap-2">
+              <Info
+                aria-hidden
+                className="mt-px size-3.5 shrink-0 text-info-text"
+              />
+              {gapReason(gap)}
+            </li>
+          )}
+          {diagnostic && (
+            <li className="flex items-start gap-2">
+              <Timer
+                aria-hidden
+                className="mt-px size-3.5 shrink-0 text-info-text"
+              />
+              {diagnosticText(diagnostic, now)}.
+            </li>
+          )}
+        </ul>
+        {gap && settingGap(gap) && !frozen && (
+          <Button
+            className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => onCollection(view, node)}
+            size="sm"
+            variant="outline"
+          >
+            <SlidersHorizontal aria-hidden />
+            Change collection
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 

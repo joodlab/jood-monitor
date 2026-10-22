@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { formatUsage, type UsageField } from "../lib/chart-scale";
+import { collectionState } from "../lib/collection-state";
 import {
   owningWorkload,
   type ResourceSummary,
@@ -386,9 +387,11 @@ function collectionLabel(
   if (frozen) {
     return "Not retained historically";
   }
-  return entity.kind === "Node"
-    ? nodeProfileOutcome(view, entity.uid, now)
-    : `${view.profile.name} profile`;
+  if (entity.kind === "Node") {
+    return nodeProfileOutcome(view, entity.uid, now);
+  }
+  const state = collectionState(view, now);
+  return `${state.label} profile${state.paused ? " · paused" : ""}`;
 }
 
 function ContainerResources({ entity }: { entity: Entity }) {
