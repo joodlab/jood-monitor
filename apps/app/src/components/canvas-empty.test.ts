@@ -31,6 +31,23 @@ function cluster(
     },
     inventory: { entities: [], edges: [], sourceTime, capabilities: [] },
     metrics: [],
+    profile: {
+      name: "basic",
+      revision: 1,
+      appliedRevision: 1,
+      paused: false,
+      nodeUids: [],
+      namespaces: [],
+    },
+    heartbeat: {
+      version: "test",
+      appliedRevision: 1,
+      queueBytes: 0,
+      dropped: 0,
+      rejectedPoints: 0,
+      capabilities: [],
+      outcome: "",
+    },
   } as unknown as ClusterView;
 }
 
@@ -87,7 +104,7 @@ describe("inventory coverage", () => {
       );
     // Fresh inventory (150 s, inside 240 s) from a stale observer (90 s).
     const one = render([cluster("synthetic-a", ago(150), ago(150))]);
-    expect(one).toContain("No problems in the last inventory");
+    expect(one).toContain("No live problems in the last inventory");
     expect(one).toContain(
       "The observer heartbeat is not current, so the current state is unknown."
     );
