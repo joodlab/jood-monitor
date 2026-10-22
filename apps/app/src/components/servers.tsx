@@ -20,7 +20,6 @@ import { podProblem } from "../lib/attention";
 import {
   compactCpu,
   compactMemory,
-  isFinished,
   podReady,
   readinessLabel,
 } from "../lib/infrastructure";
@@ -31,12 +30,13 @@ import {
   groupByOwner,
   nodeRequests,
   placementHint,
+  podFinished,
   podTileLabel,
   type ServerCard,
   type ServerFilter,
   type ServerPlacement,
   serverPlacement,
-  type UsageShare,
+  usageLabel,
   usageShare,
 } from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
@@ -157,7 +157,8 @@ function PlacementSummary({ placement }: { placement: ServerPlacement }) {
     );
   }
   const pods = placement.servers.reduce(
-    (sum, server) => sum + server.pods.filter((pod) => !isFinished(pod)).length,
+    (sum, server) =>
+      sum + server.pods.filter((pod) => !podFinished(pod)).length,
     0
   );
   return (
@@ -240,10 +241,6 @@ function ServerTile({
   referenceTime: number;
 }) {
   const { view, node } = server;
-  const cpu = observedUsage(view, node, "cpu", referenceTime);
-  const memory = observedUsage(view, node, "memory", referenceTime);
-  const cpuShare = usageShare(node, "cpu", cpu);
-  const memoryShare = usageShare(node, "memory", memory);
   const stale = inventoryStale(view, referenceTime);
   const addresses = node.addresses?.join(", ");
   return (
@@ -272,18 +269,7 @@ function ServerTile({
           className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <MetricBar
-          detail={usageDetail(compactCpu, cpu, cpuShare)}
-          label="CPU"
-          value={cpuShare.percent}
-        />
-        <MetricBar
-          detail={usageDetail(compactMemory, memory, memoryShare)}
-          label="Memory"
-          value={memoryShare.percent}
-        />
-      </div>
+      <Usage node={node} referenceTime={referenceTime} view={view} />
       <Requests node={node} stale={stale} view={view} />
       <div className="relative z-10 flex-1">
         <Placement
@@ -306,13 +292,46 @@ function ServerTile({
   );
 }
 
-// Names the denominator: capacity appears only when allocatable is missing.
-function usageDetail(
-  format: (value?: number) => string,
-  used: number | undefined,
-  share: UsageShare
-) {
-  return `${format(used)} / ${format(share.total)} ${share.basis}`;
+// Fresh node samples against allocatable. The caption and labels name the
+// basis, where truncation cannot cut it; a bar names capacity only when it
+// stands in for unreported allocatable.
+function Usage({
+  view,
+  node,
+  referenceTime,
+}: {
+  view: ClusterView;
+  node: Entity;
+  referenceTime: number;
+}) {
+  const cpu = observedUsage(view, node, "cpu", referenceTime);
+  const memory = observedUsage(view, node, "memory", referenceTime);
+  const cpuShare = usageShare(node, "cpu", cpu);
+  const memoryShare = usageShare(node, "memory", memory);
+  const basis =
+    cpuShare.basis === memoryShare.basis
+      ? cpuShare.basis
+      : "allocatable or capacity";
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
+        <span>Used / {basis}</span>
+        <span>measured</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <MetricBar
+          detail={`${compactCpu(cpu)} / ${compactCpu(cpuShare.total)}`}
+          label={usageLabel("CPU", cpuShare)}
+          value={cpuShare.percent}
+        />
+        <MetricBar
+          detail={`${compactMemory(memory)} / ${compactMemory(memoryShare.total)}`}
+          label={usageLabel("Memory", memoryShare)}
+          value={memoryShare.percent}
+        />
+      </div>
+    </div>
+  );
 }
 
 // Requests come from the inventory, every namespace included, so a stale
@@ -331,17 +350,24 @@ function Requests({
     <div>
       <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
         <span>
-          Requested / allocatable · {plural(requests.pods, "pod")}
+          Requested / allocatable · {plural(requests.pods, "pod")}, all
+          namespaces
           {stale && " · last reported"}
         </span>
         <span>configured, not usage</span>
       </div>
-      <div className={cn("grid grid-cols-2 gap-4", stale && "grayscale")}>
-        <RequestBar format={compactCpu} label="CPU" share={requests.cpu} />
+      <div className="grid grid-cols-2 gap-4">
+        <RequestBar
+          format={compactCpu}
+          label="CPU"
+          share={requests.cpu}
+          stale={stale}
+        />
         <RequestBar
           format={compactMemory}
           label="Memory"
           share={requests.memory}
+          stale={stale}
         />
       </div>
     </div>
@@ -369,7 +395,7 @@ function Placement({
   referenceTime: number;
   stale: boolean;
 }) {
-  const active = server.pods.filter((pod) => !isFinished(pod));
+  const active = server.pods.filter((pod) => !podFinished(pod));
   const groups = groupByOwner(server.view, active);
   const note = placementNote(server, server.pods.length - active.length);
   let remaining = TILE_LIMIT;

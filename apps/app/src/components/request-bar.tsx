@@ -1,15 +1,27 @@
 import { cn } from "@jood-monitor/ui/utils";
-import { percentage } from "../lib/infrastructure";
-import type { RequestShare } from "../lib/resource-servers";
+import {
+  type RequestShare,
+  type RequestTone,
+  requestReading,
+} from "../lib/resource-servers";
+
+// Neutral below 90% so requests do not read as measured load.
+const tones: Record<RequestTone, string> = {
+  normal: "bg-muted-foreground/60",
+  full: "bg-warning",
+  overcommitted: "bg-destructive",
+  unknown: "",
+};
 
 // Configured requests against allocatable: what the scheduler reserved, not
-// what is used. Overcommit shows its true percentage; an unknown share shows
-// a dash and the reason, never 0%.
+// what is used. Overcommit is named; an unknown share shows a dash and the
+// reason, never 0%.
 export function RequestBar({
   label,
   share,
   format,
   compact = false,
+  stale = false,
 }: {
   label: string;
   share: RequestShare;
@@ -17,36 +29,41 @@ export function RequestBar({
   format: (value?: number) => string;
   // Compact rows carry the amounts or reason as hover and screen-reader text.
   compact?: boolean;
+  // Requests come from the inventory; a stale one is drawn grey.
+  stale?: boolean;
 }) {
-  const value = share.percent;
-  const text = requestText(share, format);
-  const note = `Configured requests, not usage: ${text}`;
+  const reading = requestReading(share, format);
+  const unknown = reading.tone === "unknown";
+  const note = `Configured requests, not usage${stale ? ", last reported" : ""}: ${reading.text}`;
   return (
-    <div className="min-w-0 space-y-1.5" title={compact ? note : undefined}>
+    <div
+      className={cn("min-w-0 space-y-1.5", stale && "grayscale")}
+      title={compact ? note : undefined}
+    >
       <div className="flex items-center justify-between gap-3 text-xs">
         <span className="text-muted-foreground">{label}</span>
         <span
           className={cn(
             "tabular-nums",
-            value == null ? "text-muted-foreground" : "font-medium"
+            unknown ? "text-muted-foreground" : "font-medium"
           )}
         >
-          {value == null ? "—" : percentage(value)}
+          {reading.value}
         </span>
       </div>
       <div
         aria-hidden="true"
         className={cn(
           "h-1.5 overflow-hidden rounded-full",
-          value == null
+          unknown
             ? "border border-muted-foreground/40 border-dashed"
             : "bg-muted"
         )}
       >
-        {value != null && (
+        {share.percent != null && (
           <div
-            className={cn("h-full rounded-full", requestTone(value))}
-            style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+            className={cn("h-full rounded-full", tones[reading.tone])}
+            style={{ width: `${Math.min(100, Math.max(0, share.percent))}%` }}
           />
         )}
       </div>
@@ -57,28 +74,13 @@ export function RequestBar({
           className={cn(
             "text-muted-foreground text-xs tabular-nums",
             // Reasons and overcommit wrap rather than lose their message.
-            value != null && value <= 100 && "truncate"
+            !(unknown || reading.tone === "overcommitted") && "truncate"
           )}
+          title={reading.text}
         >
-          {text}
+          {reading.text}
         </p>
       )}
     </div>
   );
-}
-
-function requestText(share: RequestShare, format: (value?: number) => string) {
-  if (share.percent == null) {
-    return share.unknown ?? "Unknown";
-  }
-  const amounts = `${format(share.requested)} / ${format(share.allocatable)}`;
-  return share.percent > 100 ? `Overcommitted · ${amounts}` : amounts;
-}
-
-// Neutral below 90% so requests do not read as measured load.
-function requestTone(value: number) {
-  if (value > 100) {
-    return "bg-destructive";
-  }
-  return value >= 90 ? "bg-warning" : "bg-muted-foreground/60";
 }

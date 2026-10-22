@@ -6,6 +6,7 @@ import {
   type CapacityField,
   nodeRequests,
   type RequestShare,
+  usageLabel,
   usageShare,
 } from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
@@ -19,6 +20,9 @@ import { Widget, WidgetLink } from "./widget-card";
 // sample says so. Request bars are configured requests, not usage.
 
 const PREVIEW = 6;
+// Shown with any number of servers, so no bar reads as something it is not.
+const LEGEND =
+  "Usage is against allocatable unless marked capacity. Requested bars are configured requests, not usage.";
 
 interface ServerRow {
   node: Entity;
@@ -66,11 +70,14 @@ function Resource({
   );
   return (
     <span className="grid min-w-0 gap-2">
-      <MetricBar
-        label={usage.basis === "capacity" ? `${label} (capacity)` : label}
-        value={usage.percent}
+      <MetricBar label={usageLabel(label, usage)} value={usage.percent} />
+      <RequestBar
+        compact
+        format={format}
+        label="Requested"
+        share={requests}
+        stale={row.stale}
       />
-      <RequestBar compact format={format} label="Requested" share={requests} />
     </span>
   );
 }
@@ -149,8 +156,8 @@ export function ServersWidget({
       className={className}
       description={
         rows.length > PREVIEW
-          ? `Problems first · ${PREVIEW} of ${rows.length} servers`
-          : "Ready condition, fresh usage and configured requests, each against allocatable."
+          ? `Problems first · ${PREVIEW} of ${rows.length} servers. ${LEGEND}`
+          : `Ready condition and fresh node samples. ${LEGEND}`
       }
       title={
         <>

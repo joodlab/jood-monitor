@@ -8,10 +8,10 @@ import {
   compactCpu,
   compactMemory,
   isFinished,
-  percent,
   podReady,
   resourceStatus,
 } from "../lib/infrastructure";
+import { usageShare } from "../lib/resource-servers";
 import {
   type ResourceRow,
   type TablePreset,
@@ -416,22 +416,28 @@ const nodePodsColumn: Column = {
   cell: ({ row }) => <PodCount row={row.original} />,
 };
 
+// The same basis as the server tiles: allocatable, or capacity named where it
+// stands in, so one node shows one percentage everywhere.
 function nodeUsageColumn(field: "cpu" | "memory"): Column {
   const format = field === "cpu" ? compactCpu : compactMemory;
-  const capacity = (entity: Entity) =>
-    (field === "cpu" ? entity.capacityCpu : entity.capacityMemory) ?? undefined;
+  const share = (row: ResourceRow) =>
+    usageShare(row.entity, field, row.summary[field]);
   return {
     id: field,
     header: field === "cpu" ? "CPU" : "Memory",
-    accessorFn: (row) => percent(row.summary[field], capacity(row.entity)),
+    accessorFn: (row) => share(row).percent,
     sortUndefined: "last",
-    cell: ({ row: { original } }) => (
-      <MetricBar
-        className="w-36"
-        detail={`${format(original.summary[field])} / ${format(capacity(original.entity))}`}
-        value={percent(original.summary[field], capacity(original.entity))}
-      />
-    ),
+    cell: ({ row: { original } }) => {
+      const usage = share(original);
+      return (
+        <MetricBar
+          className="w-36"
+          detail={`${format(original.summary[field])} / ${format(usage.total)}`}
+          label={usage.basis}
+          value={usage.percent}
+        />
+      );
+    },
   };
 }
 
