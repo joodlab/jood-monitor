@@ -64,6 +64,18 @@ export function restoredCanvasView(
   };
 }
 
+// How a Graph mount opens. It restores the remembered viewport instead of
+// fitting while it may (a new mount, before a filter change draws another
+// graph under it) and one was saved under the current filter; otherwise
+// there is nothing to restore and the canvas fits.
+export function openingViewport(
+  restoring: boolean,
+  saved: CanvasView | undefined,
+  filter: string
+) {
+  return restoring ? restoredCanvasView(saved, filter).viewport : undefined;
+}
+
 // Keeps the most recently used views up to the limit. A Map iterates in
 // insertion order, so re-inserting a key marks it newest and the first key
 // is the one to drop.

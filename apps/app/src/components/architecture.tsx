@@ -57,10 +57,17 @@ function subscribeResize(onChange: () => void) {
   return () => window.removeEventListener("resize", onChange);
 }
 
-function useViewportWidth() {
+function ignoreResize() {
+  return () => undefined;
+}
+
+// The docked service panel's width, or 0 while it is not docked open. Only
+// then does a resize reach the canvas, and only in whole pixels between the
+// panel's width clamps, so resizing does not redraw the canvas every frame.
+function useDockedPanelWidth(open: boolean) {
   return useSyncExternalStore(
-    subscribeResize,
-    () => window.innerWidth,
+    open ? subscribeResize : ignoreResize,
+    () => (open ? Math.round(dockedInspectorWidth(window.innerWidth)) : 0),
     () => 0
   );
 }
@@ -70,11 +77,9 @@ function useViewportWidth() {
 // The Resources view keeps its panel as an overlay.
 function useInsetRight(activityOpen: boolean, inspecting: boolean) {
   const docked = useMediaQuery(dockedQuery);
-  const width = useViewportWidth();
+  const inspector = useDockedPanelWidth(inspecting && docked);
   const activity = activityOpen ? panelWidth : 16;
-  return inspecting && docked
-    ? Math.max(activity, dockedInspectorWidth(width) + 16)
-    : activity;
+  return inspector ? Math.max(activity, inspector + 16) : activity;
 }
 const dotted =
   "bg-[radial-gradient(color-mix(in_oklab,var(--muted-foreground)_45%,transparent)_1.2px,transparent_1.2px)] bg-size-[22px_22px]";
@@ -358,6 +363,7 @@ export function Architecture(props: ArchitectureProps) {
         <Topology
           className="absolute inset-0"
           insetRight={insetRight}
+          inspectedCluster={search.resourceCluster}
           inspectedUid={search.resource}
           key={viewKey}
           layout={search.layout}

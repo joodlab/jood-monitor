@@ -4,6 +4,7 @@ import {
   centredViewport,
   createCanvasViewMemory,
   nextCanvasView,
+  openingViewport,
   restoredCanvasView,
 } from "./canvas-view-memory";
 
@@ -59,6 +60,27 @@ describe("canvas view memory", () => {
     const other = restoredCanvasView(memory.recall(key), "all:web:false:false");
     expect(other.viewport).toBe(undefined);
     expect(other.positions).toEqual({});
+  });
+
+  it("opens a new mount on the saved viewport instead of fitting", () => {
+    // A loading remount, Back to the namespace or a List to Graph switch.
+    const memory = createCanvasViewMemory();
+    memory.remember(key, { filter, positions });
+    memory.remember(key, { filter, viewport });
+    expect(openingViewport(true, memory.recall(key), filter)).toEqual(viewport);
+  });
+
+  it("fits a first visit, a changed filter and a refit after the opening", () => {
+    const memory = createCanvasViewMemory();
+    expect(openingViewport(true, memory.recall(key), filter)).toBe(undefined);
+    memory.remember(key, { filter, viewport });
+    // Saved under another filter: that drawing is gone.
+    expect(
+      openingViewport(true, memory.recall(key), "all:web:false:false")
+    ).toBe(undefined);
+    // The filter changed under the mount: the new graph fits even if a
+    // viewport for it was saved meanwhile.
+    expect(openingViewport(false, memory.recall(key), filter)).toBe(undefined);
   });
 
   it("drops the drawing, not the expanded cards, when the filter changes", () => {

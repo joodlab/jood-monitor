@@ -25,10 +25,12 @@ import {
   useState,
 } from "react";
 import { useDisplay } from "../hooks/display";
+import { drawsResource, selectInspected } from "../lib/canvas-selection";
 import {
   type CanvasViewport,
   canvasViews,
   centredViewport,
+  openingViewport,
   restoredCanvasView,
 } from "../lib/canvas-view-memory";
 import { inventoryFreshness } from "../lib/metrics";
@@ -197,30 +199,28 @@ function initialFocus(items: GraphItem[], positions: Record<string, Point>) {
     .map(({ id }) => ({ id }));
 }
 
-function fitInitial(
+// Settles once the opening viewport is in place.
+async function fitInitial(
   instance: ReactFlowInstance<CardNode>,
   graph: ServiceGraph,
   positions: Record<string, Point>,
   padding: Padding
 ) {
   if (graph.items.length <= fullFitLimit) {
-    instance.fitView({ padding, minZoom: 0.15, maxZoom: 1 });
+    await instance.fitView({ padding, minZoom: 0.15, maxZoom: 1 });
     return;
   }
   const focus = initialFocus(graph.items, positions);
-  instance
-    .fitView({ nodes: focus, padding, minZoom: 0.7, maxZoom: 1 })
-    .then(() => {
-      // Open on the top-left chains even when they overflow the canvas.
-      const viewport = instance.getViewport();
-      const left = Math.min(...focus.map(({ id }) => positions[id]?.x ?? 0));
-      const top = Math.min(...focus.map(({ id }) => positions[id]?.y ?? 0));
-      instance.setViewport({
-        ...viewport,
-        x: overlayInset.left - left * viewport.zoom,
-        y: overlayInset.top - top * viewport.zoom,
-      });
-    });
+  await instance.fitView({ nodes: focus, padding, minZoom: 0.7, maxZoom: 1 });
+  // Open on the top-left chains even when they overflow the canvas.
+  const viewport = instance.getViewport();
+  const left = Math.min(...focus.map(({ id }) => positions[id]?.x ?? 0));
+  const top = Math.min(...focus.map(({ id }) => positions[id]?.y ?? 0));
+  await instance.setViewport({
+    ...viewport,
+    x: overlayInset.left - left * viewport.zoom,
+    y: overlayInset.top - top * viewport.zoom,
+  });
 }
 
 interface FocusRequest {
@@ -368,12 +368,6 @@ function keepSelectAndSize(changes: NodeChange<CardNode>[]) {
   );
 }
 
-function withoutSelection(nodes: CardNode[]) {
-  return nodes.some((node) => node.selected)
-    ? nodes.map((node) => (node.selected ? { ...node, selected: false } : node))
-    : nodes;
-}
-
 export interface TopologyOverlays {
   // Top-right actions, such as Connect cluster.
   actions?: ReactNode;
@@ -391,8 +385,10 @@ export interface TopologyProps {
   className?: string;
   // Canvas width the right-hand panels cover, kept clear when fitting.
   insetRight?: number;
-  // The resource open in the service panel. Closing the panel clears the
-  // card selection, and with it the dimming of unrelated cards.
+  // The resource open in the service panel, by cluster and uid. Its card is
+  // the selected one; closing the panel clears the selection, and with it
+  // the dimming of unrelated cards.
+  inspectedCluster?: string;
   inspectedUid?: string;
   // A Graph/List choice owned by the parent so it survives remounts; when
   // absent the topology keeps its own choice and the screen default.
@@ -458,26 +454,21 @@ function useCardGraph(props: TopologyProps, expanded: string[]) {
   return { graph, filterKey: filterKeyOf(props) };
 }
 
-// The resource open in the service panel. Closing the panel clears the card
-// selection, so unrelated cards stop dimming; opening or switching it brings
-// its card clear of the docked panel.
+// The resource open in the service panel. Opening or switching it from
+// anywhere selects its card (or none), so the dimming always matches the
+// panel and clears when it closes; the card is then brought clear of the
+// docked panel. On a new mount the selection is set here, but the reveal
+// waits for the initial fit, which would otherwise overwrite it.
 function useInspectedCard(
-  inspectedUid: string | undefined,
+  uid: string | undefined,
+  cluster: string | undefined,
   setNodes: Dispatch<SetStateAction<CardNode[]>>,
-  reveal: (uid: string) => void,
-  instance: ReactFlowInstance<CardNode> | undefined
+  reveal: () => void
 ) {
-  const inspecting = inspectedUid !== undefined;
   useEffect(() => {
-    if (!inspecting) {
-      setNodes(withoutSelection);
-    }
-  }, [inspecting, setNodes]);
-  useEffect(() => {
-    if (inspectedUid && instance) {
-      reveal(inspectedUid);
-    }
-  }, [inspectedUid, instance, reveal]);
+    setNodes((old) => selectInspected(old, { uid, cluster }));
+    reveal();
+  }, [uid, cluster, setNodes, reveal]);
 }
 
 export function Topology(props: TopologyProps) {
@@ -588,15 +579,28 @@ export function Topology(props: TopologyProps) {
       canvasViews.remember(viewKey, { expanded });
     }
   }, [viewKey, expanded]);
+  // The card of the resource open in the service panel, brought clear of the
+  // panel once the canvas has its opening view.
+  const revealInspected = useLatestCallback(() => {
+    const { inspectedUid: uid, inspectedCluster: cluster } = props;
+    const item = graph.items.find((entry) =>
+      drawsResource(entry, { uid, cluster })
+    );
+    if (fitted.current && instance && section.current && item) {
+      revealCard(instance, item.id, section.current, insetRight);
+    }
+  });
   useEffect(() => {
     if (!(instance && graph.items.length) || fitted.current) {
       return;
     }
-    // A remembered viewport replaces the initial fit.
-    const viewport =
-      restoring.current && viewKey
-        ? restoredCanvasView(canvasViews.recall(viewKey), filterKey).viewport
-        : undefined;
+    // A remembered viewport replaces the initial fit. It is what the
+    // operator left, so it is kept as it was rather than moved to the card.
+    const viewport = openingViewport(
+      restoring.current,
+      viewKey ? canvasViews.recall(viewKey) : undefined,
+      filterKey
+    );
     restoring.current = false;
     if (viewport) {
       fitted.current = true;
@@ -605,10 +609,14 @@ export function Topology(props: TopologyProps) {
     }
     const timer = setTimeout(() => {
       fitted.current = true;
-      fitInitial(instance, graph, layout.current, padding);
+      // A deep link to a resource: reveal its card after the fit, which
+      // would otherwise move it back under the panel or off the canvas.
+      fitInitial(instance, graph, layout.current, padding).then(
+        revealInspected
+      );
     }, 120);
     return () => clearTimeout(timer);
-  }, [instance, graph, padding, viewKey, filterKey]);
+  }, [instance, graph, padding, viewKey, filterKey, revealInspected]);
   useEffect(() => {
     const request = focusRequest.current;
     const canvas = section.current;
@@ -629,13 +637,12 @@ export function Topology(props: TopologyProps) {
     },
     [viewKey, filterKey]
   );
-  const revealInspected = useLatestCallback((uid: string) => {
-    const node = nodes.find((item) => item.data.item.entity.uid === uid);
-    if (instance && section.current && node) {
-      revealCard(instance, node.id, section.current, insetRight);
-    }
-  });
-  useInspectedCard(props.inspectedUid, setNodes, revealInspected, instance);
+  useInspectedCard(
+    props.inspectedUid,
+    props.inspectedCluster,
+    setNodes,
+    revealInspected
+  );
   const selectedId = nodes.find((node) => node.selected)?.id;
   const edges = useMemo(() => {
     const names = new Map(
@@ -778,8 +785,9 @@ export function Topology(props: TopologyProps) {
           </div>
           {/* Scope and actions share one row, so the actions take their real
               width and neither covers the other at any screen width. From lg
-              the scope also keeps clear of the Activity panel below it. */}
-          <div className="pointer-events-none absolute top-3 right-3 left-16 z-20 flex items-start gap-2">
+              the scope also keeps clear of the Activity panel below it. On
+              touch the toolbar widens for its 44 px Problems only button. */}
+          <div className="pointer-events-none absolute top-3 right-3 left-16 pointer-coarse:left-18 z-20 flex items-start gap-2">
             <div
               className={cn(
                 "flex min-w-0 flex-1 flex-col items-start gap-2",

@@ -93,10 +93,11 @@ function Group({
   orientation: Orientation;
   children: ReactNode;
 }) {
+  // Centred, so the 32 px buttons line up with a larger touch target.
   return (
     <fieldset
       className={cn(
-        "m-0 flex min-w-0 gap-0.5 border-0 p-0",
+        "m-0 flex min-w-0 items-center gap-0.5 border-0 p-0",
         orientation === "vertical" ? "flex-col" : "flex-row"
       )}
     >
