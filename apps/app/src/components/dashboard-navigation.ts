@@ -4,14 +4,7 @@
 
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { observationMs } from "../lib/time";
-import type { SearchState } from "../schemas/monitor";
-
-// Switching workspace or cluster starts from that scope's whole map, so a
-// namespace or search from the previous scope cannot hide its resources.
-export const scopeReset = {
-  namespace: "all",
-  q: "",
-} satisfies Partial<SearchState>;
+import { type SearchState, scopeReset } from "../schemas/monitor";
 
 // Only these views show changes, so only they ask the hub for them.
 const eventViews = new Set(["architecture", "activity", "observability"]);

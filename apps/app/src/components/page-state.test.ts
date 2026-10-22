@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { PageState } from "./page-state";
+import { PageState, retrySnapshot } from "./page-state";
 
 // Server-rendered markup of the dashboard's snapshot problem banner for
 // errors the hub can return.
@@ -45,6 +45,15 @@ describe("snapshot problem banner", () => {
     expect(
       render(new TypeError("Failed to fetch"), { clusters: [] })
     ).toContain(below);
+  });
+
+  it("retries once, and never a request that fails the same way", () => {
+    const network = new TypeError("Failed to fetch");
+    expect(retrySnapshot(0, network)).toBe(true);
+    expect(retrySnapshot(1, network)).toBe(false);
+    expect(retrySnapshot(0, new Error("snapshot outside retention"))).toBe(
+      false
+    );
   });
 
   it("shows nothing while the snapshot is fine", () => {

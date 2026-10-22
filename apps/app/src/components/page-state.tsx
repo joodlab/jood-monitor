@@ -2,6 +2,12 @@ import { Button } from "@jood-monitor/ui/button";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { snapshotError } from "../lib/install-errors";
 
+// One automatic retry, and none where the request fails the same way every
+// time (a time outside retention, a signed-out session).
+export function retrySnapshot(failures: number, error: unknown) {
+  return failures < 1 && snapshotError(error).retryable;
+}
+
 // Why the dashboard's observations are missing or may be out of date, and
 // the skeleton while the first snapshot loads.
 export function PageState({

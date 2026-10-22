@@ -19,8 +19,7 @@ import {
 } from "../hooks/api/clusters";
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
-import { snapshotError } from "../lib/install-errors";
-import type { SearchState } from "../schemas/monitor";
+import { type SearchState, scopeReset } from "../schemas/monitor";
 import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
 import { CommandPalette } from "./command-palette";
@@ -29,7 +28,6 @@ import {
   eventsKey,
   linkedSettingsView,
   rangeOnlyChange,
-  scopeReset,
   settingsLink,
   settingsSection,
 } from "./dashboard-navigation";
@@ -38,7 +36,7 @@ import { EventsPage } from "./events-page";
 import { NewWorkspace } from "./new-workspace";
 import { Observability } from "./observability";
 import { PageHeader } from "./page";
-import { PageState } from "./page-state";
+import { PageState, retrySnapshot } from "./page-state";
 import { ProjectBar, projectTabs } from "./project-bar";
 import { RangeSelect } from "./range-select";
 import { ResourceBrowser } from "./resource-browser";
@@ -104,9 +102,7 @@ function useMonitorData(search: SearchState) {
     queryKey: ["snapshot", scope, search.at ?? "live"],
     queryFn: () => fetchSnapshot(scope, search.at),
     refetchInterval: search.at ? false : refreshInterval,
-    // A time outside retention or a signed-out session fails the same way
-    // every time.
-    retry: (failures, error) => failures < 1 && snapshotError(error).retryable,
+    retry: retrySnapshot,
   });
   const workspaces = useQuery({
     queryKey: ["workspaces"],
