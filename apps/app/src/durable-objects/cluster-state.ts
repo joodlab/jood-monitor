@@ -221,10 +221,17 @@ export class ClusterState extends DurableObject<Env> {
         return { ok: true, value: this.profile() };
       }
       if (kind === "snapshot") {
-        return { ok: true, value: this.snapshot(cluster) };
-      }
-      if (kind === "pendingInventory") {
-        return { ok: true, value: this.pendingInventory(String(input)) };
+        // A frozen read names its instant, so the outbox is read in this call,
+        // before the caller reads the archive.
+        const at = (input as { pendingAt?: unknown } | null)?.pendingAt;
+        const view = this.snapshot(cluster);
+        return {
+          ok: true,
+          value:
+            typeof at === "string"
+              ? { ...view, pending: this.pendingInventory(at) }
+              : view,
+        };
       }
       if (kind === "status") {
         return {

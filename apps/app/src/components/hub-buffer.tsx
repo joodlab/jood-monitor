@@ -40,6 +40,9 @@ function Reading({
           Acknowledged telemetry stays in this buffer while the hub retries.
         </p>
       )}
+      {summary.headroomUnknown && (
+        <p className="text-warning-text">{summary.headroomUnknown}</p>
+      )}
       {summary.nearQuota && (
         <p className="text-warning-text">
           Above 80% of the buffer quota. When it is full the hub refuses new

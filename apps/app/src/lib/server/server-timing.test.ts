@@ -33,7 +33,7 @@ describe("createTiming", () => {
       return Promise.resolve();
     });
     expect(timing.header()).toBe(
-      'd1;dur=12.3;desc="D1 cluster registry", do;dur=40.0;desc="Durable Object state", total;dur=53.3;desc="Server function"'
+      'd1;dur=12.3;desc="D1 queries", do;dur=40.0;desc="Durable Object state", total;dur=53.3;desc="Server function"'
     );
   });
 
@@ -43,8 +43,8 @@ describe("createTiming", () => {
     const first = deferred<void>(),
       second = deferred<void>();
     const both = Promise.all([
-      timing.measure("archive", () => first.promise),
-      timing.measure("archive", () => second.promise),
+      timing.measure("r2", () => first.promise),
+      timing.measure("r2", () => second.promise),
     ]);
     advance(10);
     first.resolve();
@@ -52,7 +52,7 @@ describe("createTiming", () => {
     advance(5);
     second.resolve();
     await both;
-    expect(timing.header()).toContain("archive;dur=15.0;");
+    expect(timing.header()).toContain("r2;dur=15.0;");
   });
 
   it("accumulates sequential waits and keeps results and failures", async () => {

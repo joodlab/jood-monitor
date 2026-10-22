@@ -58,7 +58,32 @@ describe("hubBufferSummary", () => {
     expect(summary.warn).toBe(true);
   });
 
-  it("warns when the quota is unknown, since no headroom is proven", () => {
-    expect(hubBufferSummary({ ...healthy, quotaBytes: 0 }).warn).toBe(true);
+  it("warns when the quota is unknown without calling the buffer full", () => {
+    const summary = hubBufferSummary({ ...healthy, quotaBytes: 0 });
+    expect(summary.warn).toBe(true);
+    expect(summary.nearQuota).toBe(false);
+    expect(summary.headroomUnknown).toBe(
+      "Buffer quota not reported; headroom unknown."
+    );
+    expect(summary.awaiting).toBe(
+      "Awaiting archive: 3 inventories, 1.5 KiB used"
+    );
+    expect(summary.awaiting).not.toContain("of 0 B");
+  });
+
+  it("warns when the size is unknown and never shows it as zero", () => {
+    const summary = hubBufferSummary({ ...healthy, bytes: Number.NaN });
+    expect(summary.warn).toBe(true);
+    expect(summary.nearQuota).toBe(false);
+    expect(summary.headroomUnknown).toBe(
+      "Buffer size not reported; headroom unknown."
+    );
+    expect(summary.awaiting).toBe(
+      "Awaiting archive: 3 inventories, size not reported"
+    );
+  });
+
+  it("reports known headroom as known", () => {
+    expect(hubBufferSummary(healthy).headroomUnknown).toBeNull();
   });
 });

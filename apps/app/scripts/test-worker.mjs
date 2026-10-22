@@ -839,10 +839,14 @@ try {
       await ok(`/__test/hub-buffer?workspace=${workspace}&cluster=freeze`)
     ).json();
   await freezeHeartbeat("freeze-fixture-archived");
-  const archivedSource = new Date(Date.now() - 5 * 60_000).toISOString();
+  const archivedSource = new Date(Date.now() - 30 * 60_000).toISOString();
   await freezeInventory(archivedSource);
   await ok("/__test/flush?cluster=freeze");
   assert.equal((await hubBuffer("freeze")).pendingInventories, 0);
+  // Archival that falls behind leaves older observations in the outbox.
+  await freezeHeartbeat("freeze-fixture-behind");
+  const behindSource = new Date(Date.now() - 15 * 60_000).toISOString();
+  await freezeInventory(behindSource);
   await freezeHeartbeat("freeze-fixture-pending");
   const pendingSource = new Date().toISOString();
   await freezeInventory(pendingSource);
@@ -894,6 +898,14 @@ try {
     "a pending inventory after the instant must not be chosen"
   );
   assert.equal(between.heartbeat.version, "freeze-fixture-archived");
+  const behindAt = new Date(Date.parse(behindSource) + 60_000).toISOString();
+  const behindView = await frozenView(behindAt);
+  assert.equal(
+    Date.parse(behindView.inventory.sourceTime),
+    Date.parse(behindSource),
+    "an observation awaiting archive is chosen however old the instant is"
+  );
+  assert.equal(behindView.heartbeat.version, "freeze-fixture-behind");
   const pendingBuffer = await hubBuffer("freeze");
   assert.deepEqual(
     Object.keys(pendingBuffer).sort(),
@@ -908,13 +920,13 @@ try {
   );
   assert.equal(
     pendingBuffer.pendingInventories,
-    1,
+    2,
     "frozen reads must not consume the inventory outbox"
   );
   assert.equal(pendingBuffer.archiveError, null);
   assert.equal(pendingBuffer.quotaBytes, 448 * 1024 * 1024);
   assert.ok(pendingBuffer.bytes > 0);
-  assert.equal((await hubBuffer("global")).pendingInventories, 1);
+  assert.equal((await hubBuffer("global")).pendingInventories, 2);
   assert.equal(
     (await call("/__test/hub-buffer?workspace=fixture&cluster=freeze")).status,
     403,
@@ -927,7 +939,7 @@ try {
   await mf.setOptions(options("1"));
   assert.equal((await call("/__test/flush?cluster=freeze")).status, 503);
   const failingBuffer = await hubBuffer("freeze");
-  assert.equal(failingBuffer.pendingInventories, 1);
+  assert.equal(failingBuffer.pendingInventories, 2);
   assert.deepEqual(Object.keys(failingBuffer.archiveError).sort(), [
     "at",
     "error",
@@ -946,6 +958,11 @@ try {
     await frozenView(freezeAt),
     beforeArchive,
     "the same frozen instant resolves to the same observation after archival"
+  );
+  assert.deepEqual(
+    await frozenView(behindAt),
+    behindView,
+    "an older instant resolves to the same observation after archival catches up"
   );
   const sourceRegistry = {
     workspaces: [{ id: "migrated", name: "Private migration fixture" }],

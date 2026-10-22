@@ -32,7 +32,7 @@ import { hash, token } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
 import { hubBufferStatus } from "../../lib/server/hub-buffer";
 import { newerObservation } from "../../lib/server/observations";
-import { createTiming, type Timing } from "../../lib/server/server-timing";
+import { createTiming } from "../../lib/server/server-timing";
 import { compareMetrics } from "../../lib/server/telemetry";
 import { nanoTimestamp, timestampNano } from "../../lib/server/time";
 import {
@@ -178,37 +178,6 @@ export async function alterCredential(
   return credential ? { credential } : { status: "revoked" };
 }
 
-// The archival writer drains the outbox about every five minutes, so unless
-// archival is failing (the hub buffer reports that), only a recent instant can
-// name an observation that is still awaiting archive.
-const pendingWindowMs = 600_000;
-
-// Reading the outbox before the archive leaves no gap: the writer commits an
-// observation's archive index before it clears that observation's entry.
-async function savedObservation(
-  env: Env,
-  cluster: ClusterRow,
-  at: string,
-  timing: Timing
-) {
-  const pending =
-    validRangeTime(at) >= Date.now() - pendingWindowMs
-      ? (unwrap(
-          await timing.measure("do", () =>
-            clusterState(env, cluster.id).command(
-              cluster,
-              "pendingInventory",
-              normalizeTime(at)
-            )
-          )
-        ) as Observation | null)
-      : null;
-  const archived = await timing.measure("archive", () =>
-    historicalInventory(env, cluster.id, at)
-  );
-  return newerObservation(archived, pending);
-}
-
 export async function getSnapshot(
   env: Env,
   input: z.infer<typeof snapshotSchema>,
@@ -227,14 +196,26 @@ export async function getSnapshot(
     throw new HttpError(400, "snapshot outside retention");
   }
   for (const cluster of clusters) {
-    const view = unwrap(
+    // The outbox is read with the live view, before the archive, and the
+    // writer indexes an observation before it clears its outbox entry, so an
+    // instant names the same observation before and after archival, however
+    // far behind archival is. A Durable Object still on an earlier version
+    // ignores the instant and omits pending; the archive alone then answers.
+    const { pending, ...view } = unwrap(
       await timing.measure("do", () =>
-        clusterState(env, cluster.id).command(cluster, "snapshot", null)
+        clusterState(env, cluster.id).command(
+          cluster,
+          "snapshot",
+          input.at ? { pendingAt: normalizeTime(input.at) } : null
+        )
       )
-    ) as ClusterView & { revision: number };
+    ) as ClusterView & { revision: number; pending?: Observation | null };
     revisions.push([cluster.id, view.revision]);
     if (input.at) {
-      const saved = await savedObservation(env, cluster, input.at, timing);
+      const saved = newerObservation(
+        await historicalInventory(env, cluster.id, input.at, timing),
+        pending ?? null
+      );
       const observation = saved ? { data: saved } : null;
       if (observation) {
         view.inventory = observation.data.inventory;
@@ -410,7 +391,7 @@ export async function getHistory(
     pending.map((row) => [row.key, row])
   );
   for (const kind of ["raw", "diagnostic"]) {
-    const archives = await timing.measure("archive", () =>
+    const archives = await timing.measure("d1", () =>
       listArchives(getDb(env.DB), {
         clusterId: cluster.id,
         kind,
@@ -423,7 +404,7 @@ export async function getHistory(
       throw new HttpError(413, "query too broad; select an entity and metric");
     }
     for (let offset = 0; offset < archives.length; offset += 8) {
-      const documents = await timing.measure("archive", () =>
+      const documents = await timing.measure("r2", () =>
         Promise.all(
           archives
             .slice(offset, offset + 8)

@@ -7,16 +7,37 @@ function count(value: number, one: string, many: string) {
   return `${value} ${value === 1 ? one : many}`;
 }
 
-// A failed archive or a buffer near its quota warns. Without a known quota
-// there is no proven headroom, so that warns too.
+function usage(bytes: number | null, quota: number | null) {
+  if (bytes === null) {
+    return "size not reported";
+  }
+  return quota === null
+    ? `${formatBytes(bytes)} used`
+    : `${formatBytes(bytes)} of ${formatBytes(quota)} used`;
+}
+
+// A failed archive or a buffer near its quota warns. An unreported size or
+// quota proves no headroom, so it warns too, but is never shown as full.
 export function hubBufferSummary(status: HubBufferStatus) {
-  const nearQuota = !(
-    status.quotaBytes > 0 && status.bytes <= status.quotaBytes * nearQuotaRatio
-  );
+  const bytes =
+    Number.isFinite(status.bytes) && status.bytes >= 0 ? status.bytes : null;
+  const quota =
+    Number.isFinite(status.quotaBytes) && status.quotaBytes > 0
+      ? status.quotaBytes
+      : null;
+  let headroomUnknown: string | null = null;
+  if (quota === null) {
+    headroomUnknown = "Buffer quota not reported; headroom unknown.";
+  } else if (bytes === null) {
+    headroomUnknown = "Buffer size not reported; headroom unknown.";
+  }
+  const nearQuota =
+    bytes !== null && quota !== null && bytes > quota * nearQuotaRatio;
   return {
-    awaiting: `Awaiting archive: ${count(status.pendingInventories, "inventory", "inventories")}, ${formatBytes(status.bytes)} of ${formatBytes(status.quotaBytes)} used`,
+    awaiting: `Awaiting archive: ${count(status.pendingInventories, "inventory", "inventories")}, ${usage(bytes, quota)}`,
     partitions: `${count(status.dirtyPartitions, "metric partition", "metric partitions")} open or awaiting archive`,
     nearQuota,
-    warn: nearQuota || status.archiveError !== null,
+    headroomUnknown,
+    warn: nearQuota || headroomUnknown !== null || status.archiveError !== null,
   };
 }

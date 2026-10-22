@@ -1,9 +1,11 @@
-type TimingStage = "archive" | "d1" | "do";
+type TimingStage = "d1" | "do" | "r2";
 
+// d1 covers every D1 query, the cluster registry and the archive index alike;
+// r2 covers fetching and verifying archived objects.
 const descriptions: Record<TimingStage | "total", string> = {
-  d1: "D1 cluster registry",
+  d1: "D1 queries",
   do: "Durable Object state",
-  archive: "Saved history (D1 index and R2)",
+  r2: "R2 archive objects",
   total: "Server function",
 };
 
