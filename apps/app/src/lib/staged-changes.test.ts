@@ -126,6 +126,7 @@ describe("staging drafts", () => {
     expect(calls).toBe(1);
     expect(stagedSnapshot().entries[view.cluster.id]).toEqual({
       base: "4:standard",
+      changed: true,
       draft,
       workspaceId: "synthetic",
     });
@@ -150,6 +151,9 @@ describe("staging drafts", () => {
     stageDraft(view, draft, now);
     expect(draftFor(stagedSnapshot(), view, now).scope).toBe("selected");
     expect(stagedClusters(stagedSnapshot(), [view], now)).toEqual([]);
+    // Nothing is staged yet, even where only the workspace can be checked.
+    expect(stagedSnapshot().entries[view.cluster.id]?.changed).toBe(false);
+    expect(stagedInScope(stagedSnapshot(), "global")).toBe(false);
   });
 
   it("preselects a requested node only when it is in the inventory", () => {
@@ -240,6 +244,18 @@ describe("profile changes underneath a draft", () => {
     expect(stagedSnapshot().cleared[view.cluster.id]).toContain(
       "diagnostic ended"
     );
+  });
+
+  it("leaves drafts alone for a snapshot older than they are", () => {
+    const view = fixture();
+    view.profile = { ...view.profile, revision: 6 };
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    // A cached scope still shows revision 5 while it refreshes.
+    const cached = { ...view, profile: { ...view.profile, revision: 5 } };
+    pruneStaged([cached], now);
+    expect(stagedSnapshot().entries[view.cluster.id]).toBeDefined();
+    expect(stagedSnapshot().cleared).toEqual({});
+    expect(stagedDraftFor(stagedSnapshot(), view, now)?.paused).toBe(true);
   });
 
   it("leaves drafts alone while their request is in flight", () => {
@@ -602,15 +618,16 @@ describe("cluster filter", () => {
       "a",
       "b",
     ]);
-    expect(scope.elsewhere).toBe(0);
-    expect(scope.views).toBe(views);
+    expect(scope.discard).toEqual(["a", "b"]);
+    expect(scope.elsewhere).toEqual({ staged: 0, unconfirmed: 0 });
   });
 
   it("applies the filtered cluster and leaves hidden drafts staged", async () => {
     const views = stageBoth();
     const scope = stagedScope(stagedSnapshot(), views, "a", now);
+    // Apply sends the card's clusters: the filtered one only.
     expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual(["a"]);
-    expect(scope.elsewhere).toBe(2);
+    expect(scope.elsewhere).toEqual({ staged: 2, unconfirmed: 0 });
     const send = vi.fn().mockResolvedValue({ revision: 5 });
     const accepted = vi.fn();
     await applyStagedClusters(scope.clusters, send, accepted, () => now);
@@ -626,12 +643,14 @@ describe("cluster filter", () => {
   it("discards the filtered cluster and leaves hidden drafts staged", () => {
     const views = stageBoth();
     const scope = stagedScope(stagedSnapshot(), views, "a", now);
-    discardStaged(scope.views.map((view) => view.cluster.id));
+    // Discard all removes the clusters the card covers: the filtered one.
+    expect(scope.discard).toEqual(["a"]);
+    discardStaged(scope.discard);
     expect(Object.keys(stagedSnapshot().entries)).toEqual(["b"]);
     // Nothing left to show here, but the hidden drafts are still counted.
     expect(stagedScope(stagedSnapshot(), views, "a", now)).toMatchObject({
       clusters: [],
-      elsewhere: 2,
+      elsewhere: { staged: 2, unconfirmed: 0 },
     });
   });
 
@@ -639,9 +658,30 @@ describe("cluster filter", () => {
     const views = stageBoth();
     expect(stagedScope(stagedSnapshot(), views, "gone", now)).toEqual({
       clusters: [],
-      elsewhere: 3,
-      views: [],
+      discard: [],
+      elsewhere: { staged: 3, unconfirmed: 0 },
+      recent: [],
     });
+  });
+
+  it("follows the filtered cluster's requests and counts hidden unconfirmed ones", () => {
+    const a = fixture("a");
+    const b = fixture("b");
+    for (const view of [a, b]) {
+      markApplying([view.cluster.id]);
+      applySucceeded(view.cluster.id, { revision: 5, at: now });
+      view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
+      // One of two nodes acknowledges, past the patience window.
+      acknowledge(view, 5, now + 181_000, 1);
+    }
+    const scope = stagedScope(stagedSnapshot(), [a, b], "a", now + 181_000);
+    expect(scope.recent.map((item) => item.view.cluster.id)).toEqual(["a"]);
+    // The unconfirmed request for b is out of sight, never silently dropped.
+    expect(scope.elsewhere).toEqual({ staged: 0, unconfirmed: 1 });
+    dismissRequests(["b"]);
+    expect(
+      stagedScope(stagedSnapshot(), [a, b], "a", now + 181_000).elsewhere
+    ).toEqual({ staged: 0, unconfirmed: 0 });
   });
 });
 
@@ -731,6 +771,33 @@ describe("unload guard", () => {
     discardStaged([view.cluster.id]);
     stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
     expect(target.listeners.size).toBe(0);
+  });
+
+  it("never asks for drafts the Apply card and badge do not count", () => {
+    const target = fakeWindow();
+    const stop = guardUnload(target);
+    // A choice still being built has nothing to lose.
+    const view = fixture();
+    stageDraft(
+      view,
+      { ...draftFromProfile(view.profile), scope: "selected" },
+      now
+    );
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", [view], now, true)
+    ).toBeUndefined();
+    expect(target.listeners.size).toBe(0);
+    // A staged change arms it; once the profile changes underneath, the
+    // pruned draft disarms it again.
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(target.listeners.size).toBe(1);
+    view.profile = { ...view.profile, revision: 5 };
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", [view], now, true)
+    ).toBeUndefined();
+    pruneStaged([view], now);
+    expect(target.listeners.size).toBe(0);
+    stop();
   });
 });
 

@@ -29,7 +29,11 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
 import { freshness } from "../lib/metrics";
-import { stagedBadge, useStagedState } from "../lib/staged-changes";
+import {
+  pruneStaged,
+  stagedBadge,
+  useStagedState,
+} from "../lib/staged-changes";
 import {
   formatDateTime,
   type TimeZonePreference,
@@ -275,6 +279,14 @@ export function ProjectBar({
   const stagedState = useStagedState();
   // Every cluster in the workspace scope, whatever the cluster filter hides.
   const staged = stagedBadge(stagedState, workspace, clusters, now, !frozen);
+  // Drafts whose profile changed are dropped (with the reason Settings shows)
+  // from every tab, not only where the Apply card runs, so neither this badge
+  // nor the unload prompt counts a draft that can no longer apply.
+  useEffect(() => {
+    if (!frozen && now) {
+      pruneStaged(clusters, now);
+    }
+  }, [frozen, now, clusters]);
   const [timeTravel, setTimeTravel] = useState(false);
   const tabs = useRef<HTMLElement>(null);
   // On phones the tab strip scrolls; keep the current tab in sight.

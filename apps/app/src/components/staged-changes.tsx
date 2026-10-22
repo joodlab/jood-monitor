@@ -58,13 +58,14 @@ import {
   applyStagedClusters,
   discardStaged,
   dismissRequests,
+  type Elsewhere,
   pausingClusters,
   pruneStaged,
   type RecentRequest,
-  recentRequests,
   revertField,
   type StagedCluster,
   type StagedRow,
+  type StagedScope,
   type StagedState,
   settleRequests,
   stageDraft,
@@ -74,6 +75,7 @@ import {
   stagedScope,
   useStagedState,
 } from "../lib/staged-changes";
+import { scopeReset } from "../schemas/monitor";
 import type { AckRequest, DraftField } from "./collection-model";
 import {
   ackPatienceMs,
@@ -109,6 +111,13 @@ const keepFocus = cn(
 const headingFocus = cn("rounded-sm outline-none", focusRing);
 
 const noViews: ClusterView[] = [];
+
+const noScope: StagedScope = {
+  clusters: [],
+  discard: [],
+  elsewhere: { staged: 0, unconfirmed: 0 },
+  recent: [],
+};
 
 // The live snapshot the dashboard already keeps fresh. This reader adds no
 // schedule of its own; it fetches only when nothing is cached yet. While
@@ -546,19 +555,33 @@ function StagedStatus({ clusters }: { clusters: StagedCluster[] }) {
 
 type HeadingRef = RefObject<HTMLParagraphElement | null>;
 
-// Drafts the top bar's cluster filter hides. The card never applies or
-// discards them out of sight, so it says they exist and offers the way back.
-// Without a card of its own to head, the line takes focus as the heading.
+function hasElsewhere(elsewhere: Elsewhere) {
+  return elsewhere.staged > 0 || elsewhere.unconfirmed > 0;
+}
+
+function elsewhereText({ staged, unconfirmed }: Elsewhere) {
+  const parts = [
+    staged > 0 && `${plural(staged, "change")} staged`,
+    unconfirmed > 0 &&
+      `${unconfirmed} unconfirmed change${unconfirmed === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return `${parts.join(" and ")} for other clusters`;
+}
+
+// Drafts and unconfirmed requests the top bar's cluster filter hides. The
+// card never applies, discards or drops them out of sight, so it says they
+// exist and offers the way back. Without a card of its own to head, the line
+// takes focus as the heading.
 function OtherClusters({
-  count,
+  elsewhere,
   heading,
   onShowAll,
 }: {
-  count: number;
+  elsewhere: Elsewhere;
   heading?: HeadingRef;
   onShowAll: () => void;
 }) {
-  if (!count) {
+  if (!hasElsewhere(elsewhere)) {
     return null;
   }
   return (
@@ -573,7 +596,7 @@ function OtherClusters({
         ref={heading}
         tabIndex={heading ? -1 : undefined}
       >
-        {plural(count, "change")} staged for other clusters
+        {elsewhereText(elsewhere)}
       </p>
       <Button
         className={focusRing}
@@ -601,7 +624,7 @@ function StagedCard({
   className?: string;
   clusters: StagedCluster[];
   applying: boolean;
-  elsewhere: number;
+  elsewhere: Elsewhere;
   heading: HeadingRef;
   onApply: () => void;
   onDetails: () => void;
@@ -612,7 +635,7 @@ function StagedCard({
   // Discarding never reaches the hidden clusters, so the menu names the one
   // it does.
   const shownOnly =
-    elsewhere > 0 && clusters.length === 1
+    elsewhere.staged > 0 && clusters.length === 1
       ? clusters[0]?.view.cluster.name
       : undefined;
   return (
@@ -675,26 +698,30 @@ function StagedCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <OtherClusters count={elsewhere} onShowAll={onShowAll} />
+      <OtherClusters elsewhere={elsewhere} onShowAll={onShowAll} />
     </section>
   );
 }
 
-// Nothing staged for the filtered cluster, but drafts wait for others.
+// Nothing staged or settling for the filtered cluster, but others have some.
 function ElsewhereCard({
   className,
-  count,
+  elsewhere,
   heading,
   onShowAll,
 }: {
   className?: string;
-  count: number;
+  elsewhere: Elsewhere;
   heading: HeadingRef;
   onShowAll: () => void;
 }) {
   return (
     <section aria-label="Staged changes" className={cn(cardBase, className)}>
-      <OtherClusters count={count} heading={heading} onShowAll={onShowAll} />
+      <OtherClusters
+        elsewhere={elsewhere}
+        heading={heading}
+        onShowAll={onShowAll}
+      />
     </section>
   );
 }
@@ -745,7 +772,7 @@ function ProgressCard({
   onShowAll,
 }: {
   className?: string;
-  elsewhere: number;
+  elsewhere: Elsewhere;
   recent: RecentRequest[];
   heading: HeadingRef;
   onSettings?: (clusterId?: string) => void;
@@ -819,7 +846,7 @@ function ProgressCard({
           )}
         </div>
       )}
-      <OtherClusters count={elsewhere} onShowAll={onShowAll} />
+      <OtherClusters elsewhere={elsewhere} onShowAll={onShowAll} />
     </section>
   );
 }
@@ -884,7 +911,7 @@ function barKind(
   waiting: boolean,
   clusters: StagedCluster[],
   recent: RecentRequest[],
-  elsewhere: number
+  elsewhere: Elsewhere
 ): BarKind {
   if (frozen) {
     return waiting ? "frozen" : "none";
@@ -895,7 +922,7 @@ function barKind(
   if (recent.length > 0) {
     return "progress";
   }
-  return elsewhere > 0 ? "elsewhere" : "none";
+  return hasElsewhere(elsewhere) ? "elsewhere" : "none";
 }
 
 // One short summary for the bar's single live region. It exists before any
@@ -905,7 +932,7 @@ function announcement(
   kind: BarKind,
   clusters: StagedCluster[],
   recent: RecentRequest[],
-  elsewhere: number,
+  elsewhere: Elsewhere,
   emptied: boolean
 ) {
   if (kind === "staged") {
@@ -918,42 +945,87 @@ function announcement(
     return progressHeading(recent).text;
   }
   if (kind === "elsewhere") {
-    return `${plural(elsewhere, "change")} staged for other clusters, not applied`;
+    return elsewhereText(elsewhere);
   }
   return kind === "none" && emptied
     ? "No staged changes left. Nothing waiting to apply."
     : "";
 }
 
+// Moves focus to `target` on the next frame, unless it already landed
+// somewhere real.
+function recoverFocus(target: () => HTMLElement | null, done?: () => void) {
+  const frame = requestAnimationFrame(() => {
+    done?.();
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      target()?.focus();
+    }
+  });
+  return () => cancelAnimationFrame(frame);
+}
+
 // When the card holding focus unmounts (its last change discarded or
 // applied, a progress card dismissed, frozen view resumed), its buttons, menu
-// and dialogs go with it and focus would drop to the page body. Moves focus
-// to `target` then, unless it already landed somewhere real. Also reports
-// whether the bar just emptied after staged changes.
-function useFocusRecovery(kind: BarKind, target: () => HTMLElement | null) {
-  const last = useRef(kind);
+// and dialogs go with it and focus would drop to the page body; so does the
+// line about other clusters, with its button, when it goes. Moves focus to
+// `target` then. Also reports whether the bar just emptied after staged
+// changes.
+function useFocusRecovery(
+  kind: BarKind,
+  others: boolean,
+  target: () => HTMLElement | null
+) {
+  const last = useRef({ kind, others });
   const latestTarget = useRef(target);
   latestTarget.current = target;
   const [emptied, setEmptied] = useState(false);
   useEffect(() => {
     const was = last.current;
-    last.current = kind;
-    if (was === kind) {
+    last.current = { kind, others };
+    if (was.kind === kind) {
+      return was.others && !others
+        ? recoverFocus(() => latestTarget.current())
+        : undefined;
+    }
+    setEmptied(kind === "none" && was.kind === "staged");
+    if (was.kind === "none") {
       return;
     }
-    setEmptied(kind === "none" && was === "staged");
-    if (was === "none") {
-      return;
-    }
-    const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      if (!active || active === document.body) {
-        latestTarget.current()?.focus();
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [kind]);
+    return recoverFocus(() => latestTarget.current());
+  }, [kind, others]);
   return emptied;
+}
+
+// Show all clusters removes the button it was pressed on, and on the canvas
+// the bar remounts with the new scope (the canvas is keyed by it), so the
+// request to focus the card heading outlives the bar that made it.
+let headingWanted = false;
+
+// Clears the cluster filter as choosing All clusters in the top bar does,
+// then focuses the card heading.
+function useShowAll(target: () => HTMLElement | null) {
+  const navigate = useNavigate({ from: "/" });
+  const { cluster } = useSearch({ from: "/" });
+  const latestTarget = useRef(target);
+  latestTarget.current = target;
+  useEffect(() => {
+    if (cluster !== undefined || !headingWanted) {
+      return;
+    }
+    return recoverFocus(
+      () => latestTarget.current(),
+      () => {
+        headingWanted = false;
+      }
+    );
+  }, [cluster]);
+  return () => {
+    headingWanted = true;
+    navigate({
+      search: (old) => ({ ...old, ...scopeReset, cluster: undefined }),
+    });
+  };
 }
 
 function focusable(element: HTMLElement | null): element is HTMLElement {
@@ -1049,22 +1121,20 @@ function useBarState() {
     }
   }, [live, now, views]);
   const scope = useMemo(
-    () =>
-      now
-        ? stagedScope(staged, views, search.cluster, now)
-        : { clusters: [], elsewhere: 0, views: noViews },
+    () => (now ? stagedScope(staged, views, search.cluster, now) : noScope),
     [staged, views, search.cluster, now]
-  );
-  const recent = useMemo(
-    () => (now ? recentRequests(staged, scope.views, now) : []),
-    [staged, scope.views, now]
   );
   const waiting =
     frozen && frozenWaiting(staged, search.workspace, cached, now);
   return {
     ...scope,
-    kind: barKind(frozen, waiting, scope.clusters, recent, scope.elsewhere),
-    recent,
+    kind: barKind(
+      frozen,
+      waiting,
+      scope.clusters,
+      scope.recent,
+      scope.elsewhere
+    ),
   };
 }
 
@@ -1082,13 +1152,14 @@ export function StagedChangesBar({
 }) {
   const search = useSearch({ from: "/" });
   const navigate = useNavigate({ from: "/" });
-  const { clusters, elsewhere, kind, recent, views } = useBarState();
+  const { clusters, discard, elsewhere, kind, recent } = useBarState();
   const heading = useRef<HTMLParagraphElement>(null);
   const anchor = useRef<HTMLParagraphElement>(null);
   const focusTarget = () =>
     heading.current ?? focusFallback?.() ?? anchor.current;
   const controls = useStagedControls(clusters, focusTarget);
-  const emptied = useFocusRecovery(kind, focusTarget);
+  const emptied = useFocusRecovery(kind, hasElsewhere(elsewhere), focusTarget);
+  const showAll = useShowAll(focusTarget);
   const onSettings =
     search.view === "settings"
       ? undefined
@@ -1103,17 +1174,6 @@ export function StagedChangesBar({
               diagnosticNode: undefined,
             }),
           });
-  // As choosing All clusters in the top bar does: a namespace or search from
-  // the single cluster cannot hide the others' resources.
-  const showAll = () =>
-    navigate({
-      search: (old) => ({
-        ...old,
-        namespace: "all",
-        q: "",
-        cluster: undefined,
-      }),
-    });
   return (
     <>
       <p aria-atomic="true" className="sr-only" role="status">
@@ -1149,9 +1209,7 @@ export function StagedChangesBar({
           heading={heading}
           onApply={controls.start}
           onDetails={controls.openDetails}
-          onDiscardAll={() =>
-            discardStaged(views.map((view) => view.cluster.id))
-          }
+          onDiscardAll={() => discardStaged(discard)}
           onShowAll={showAll}
         />
       )}
@@ -1168,7 +1226,7 @@ export function StagedChangesBar({
       {kind === "elsewhere" && (
         <ElsewhereCard
           className={className}
-          count={elsewhere}
+          elsewhere={elsewhere}
           heading={heading}
           onShowAll={showAll}
         />

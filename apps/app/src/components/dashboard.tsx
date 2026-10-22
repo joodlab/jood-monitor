@@ -20,7 +20,7 @@ import {
 } from "../hooks/api/clusters";
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
-import type { SearchState } from "../schemas/monitor";
+import { type SearchState, scopeReset } from "../schemas/monitor";
 import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
 import { CommandPalette } from "./command-palette";
@@ -53,10 +53,6 @@ const pageDescriptions: Record<string, string> = {
     "Observer health, collection profiles, diagnostics and cluster enrollment.",
   workspaces: "Workspaces group clusters and scope what you see.",
 };
-
-// Switching workspace or cluster starts from that scope's whole map, so a
-// namespace or search from the previous scope cannot hide its resources.
-const scopeReset = { namespace: "all", q: "" } satisfies Partial<SearchState>;
 
 // Components written for the previous navigation still ask for its views;
 // translate them to the project tabs.

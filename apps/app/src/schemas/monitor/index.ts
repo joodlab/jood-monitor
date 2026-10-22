@@ -26,6 +26,13 @@ export interface SearchState {
   workspace: string;
 }
 
+// Switching workspace or cluster starts from that scope's whole map, so a
+// namespace or search from the previous scope cannot hide its resources.
+export const scopeReset = {
+  namespace: "all",
+  q: "",
+} satisfies Partial<SearchState>;
+
 export const pageSizes = [25, 50, 100] as const;
 export const defaultPageSize = pageSizes[0];
 

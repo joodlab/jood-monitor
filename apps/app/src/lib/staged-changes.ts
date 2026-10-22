@@ -41,6 +41,9 @@ type Profile = ClusterView["profile"];
 export interface StagedEntry {
   // Revision and effective profile the draft was staged against.
   base: string;
+  // The draft requests a change. A choice still being built (such as an
+  // empty namespace selection) is kept for the form but has nothing to lose.
+  changed: boolean;
   draft: ProfileDraft;
   // The cluster's workspace, so views without a live snapshot (frozen) can
   // tell which drafts are in their scope.
@@ -114,11 +117,12 @@ export function useStagedState() {
   );
 }
 
-// Unloading the tab now would lose a draft or cut off an apply on its way to
-// the hub.
+// Unloading the tab now would lose a staged change or cut off an apply on
+// its way to the hub. Drafts whose profile changed are pruned on every tab,
+// so they stop counting once a live view sees them.
 function unloadLoses(current: StagedState) {
   return (
-    Object.keys(current.entries).length > 0 ||
+    Object.values(current.entries).some((entry) => entry.changed) ||
     Object.keys(current.applying).length > 0
   );
 }
@@ -208,6 +212,8 @@ export function stageDraft(
       ...state.entries,
       [id]: {
         base: profileBase(view.profile, now),
+        changed:
+          draftFieldChanges(draft, view.profile, undefined, now).length > 0,
         draft,
         workspaceId: view.cluster.workspaceId,
       },
@@ -377,14 +383,17 @@ export function awaitingSnapshot(current: StagedState, view: ClusterView) {
   );
 }
 
+function baseRevision(entry: StagedEntry) {
+  return Number(entry.base.split(":")[0]);
+}
+
 function clearedReason(
   current: StagedState,
   view: ClusterView,
   entry: StagedEntry
 ) {
-  const [revision] = entry.base.split(":");
   const latest = view.profile.revision;
-  if (Number(revision) === latest) {
+  if (baseRevision(entry) === latest) {
     return "The diagnostic ended after you staged these changes, so they were discarded rather than starting it again. Review the current settings and stage them again.";
   }
   if (current.requests[view.cluster.id]?.revision === latest) {
@@ -395,13 +404,15 @@ function clearedReason(
 
 // Drops drafts whose profile changed underneath them and says why. Requests
 // in flight, or accepted but not in the snapshot yet, are left alone: their
-// own revision lands first.
+// own revision lands first. So is a snapshot older than the draft (a cached
+// scope still refreshing), which cannot judge it.
 export function pruneStaged(views: ClusterView[], now: number) {
   const stale = views.filter((view) => {
     const entry = state.entries[view.cluster.id];
     return (
       entry &&
       !awaitingSnapshot(state, view) &&
+      baseRevision(entry) <= view.profile.revision &&
       entry.base !== profileBase(view.profile, now)
     );
   });
@@ -441,11 +452,12 @@ export function stagedDraftFor(
     : undefined;
 }
 
-// Whether any draft is staged for a cluster in a workspace scope ("global"
+// Whether any change is staged for a cluster in a workspace scope ("global"
 // is every workspace). For views without a live snapshot to check drafts.
 export function stagedInScope(current: StagedState, scope: string) {
   return Object.values(current.entries).some(
-    (entry) => scope === "global" || entry.workspaceId === scope
+    (entry) =>
+      entry.changed && (scope === "global" || entry.workspaceId === scope)
   );
 }
 
@@ -691,37 +703,49 @@ export function stagedCount(clusters: StagedCluster[]) {
   return clusters.reduce((total, cluster) => total + cluster.rows.length, 0);
 }
 
-interface StagedScope {
-  // Staged clusters the card lists, applies and discards.
-  clusters: StagedCluster[];
-  // Changes staged for clusters the cluster filter hides.
-  elsewhere: number;
-  // The views the card covers.
-  views: ClusterView[];
+// What the cluster filter hides from the Apply card.
+export interface Elsewhere {
+  // Changes staged for the hidden clusters.
+  staged: number;
+  // Hidden clusters' requests not every node confirmed in time.
+  unconfirmed: number;
 }
 
-// What the Apply card covers. With a cluster filter it lists, applies and
-// discards that cluster only; drafts for the others are counted, never
-// applied or discarded out of sight.
+export interface StagedScope {
+  // Staged clusters the card lists, and the targets Apply sends.
+  clusters: StagedCluster[];
+  // Clusters whose drafts Discard all removes: every cluster the card covers.
+  discard: string[];
+  elsewhere: Elsewhere;
+  // Requests the card follows.
+  recent: RecentRequest[];
+}
+
+// What the Apply card covers. With a cluster filter it lists, applies,
+// discards and follows that cluster only; the others' drafts and unconfirmed
+// requests are counted, never applied, discarded or dropped out of sight.
 export function stagedScope(
   current: StagedState,
   views: ClusterView[],
   cluster: string | undefined,
   now: number
 ): StagedScope {
-  if (!cluster) {
-    return {
-      clusters: stagedClusters(current, views, now),
-      elsewhere: 0,
-      views,
-    };
-  }
-  const shown = views.filter((view) => view.cluster.id === cluster);
-  const hidden = views.filter((view) => view.cluster.id !== cluster);
+  const shown = cluster
+    ? views.filter((view) => view.cluster.id === cluster)
+    : views;
+  const hidden = cluster
+    ? views.filter((view) => view.cluster.id !== cluster)
+    : [];
   return {
     clusters: stagedClusters(current, shown, now),
-    elsewhere: stagedCount(stagedClusters(current, hidden, now)),
-    views: shown,
+    discard: shown.map((view) => view.cluster.id),
+    elsewhere: {
+      staged: stagedCount(stagedClusters(current, hidden, now)),
+      unconfirmed: recentRequests(current, hidden, now).filter(
+        (item) => item.timedOut
+      ).length,
+    },
+    recent: recentRequests(current, shown, now),
   };
 }
 
