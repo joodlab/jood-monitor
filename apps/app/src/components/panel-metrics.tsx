@@ -3,7 +3,7 @@ import { Button } from "@jood-monitor/ui/button";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { ChartLine, History } from "lucide-react";
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { getHistoryFn } from "../functions/clusters";
 import { podProblem } from "../lib/attention";
 import {
@@ -22,8 +22,27 @@ import {
 import { CoverageNote } from "./inspector-sections";
 import { UsageCell } from "./panel-pods";
 import { RangeSelect } from "./range-select";
-import { ResourceChart } from "./resource-chart";
 import { StatusBadge } from "./resource-status";
+
+// The charting library is the largest single dependency; load it only when a
+// chart is shown so every other view starts faster.
+const ResourceChart = lazy(() =>
+  import("./resource-chart").then((module) => ({
+    default: module.ResourceChart,
+  }))
+);
+
+function ChartSkeleton({ title }: { title: string }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="font-medium text-sm">{title}</h3>
+      <Skeleton
+        aria-label={`Loading ${title} history`}
+        className="h-[220px] w-full"
+      />
+    </div>
+  );
+}
 
 type Inspected = { view: ClusterView; entity: Entity } | null;
 
@@ -319,15 +338,7 @@ function HistoryPlot({
     [entity, field]
   );
   if (query.isPending) {
-    return (
-      <div className="space-y-2">
-        <h3 className="font-medium text-sm">{title}</h3>
-        <Skeleton
-          aria-label={`Loading ${title} history`}
-          className="h-[220px] w-full"
-        />
-      </div>
-    );
+    return <ChartSkeleton title={title} />;
   }
   if (query.isError) {
     return (
@@ -343,17 +354,19 @@ function HistoryPlot({
     );
   }
   return (
-    <ResourceChart
-      field={field}
-      from={query.data.from}
-      height={220}
-      name={usageName(entity, field)}
-      percentBase={percentBase}
-      references={refs}
-      samples={query.data.samples}
-      subject={`${entity.kind} ${entity.name}`}
-      title={title}
-      to={query.data.to}
-    />
+    <Suspense fallback={<ChartSkeleton title={title} />}>
+      <ResourceChart
+        field={field}
+        from={query.data.from}
+        height={220}
+        name={usageName(entity, field)}
+        percentBase={percentBase}
+        references={refs}
+        samples={query.data.samples}
+        subject={`${entity.kind} ${entity.name}`}
+        title={title}
+        to={query.data.to}
+      />
+    </Suspense>
   );
 }

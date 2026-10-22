@@ -153,6 +153,10 @@ function InspectorBody({
   const tab = activeTab(chosen, entity.kind, links.length > 0);
   const scroller = useRef<HTMLDivElement>(null);
   const key = inspectionKey(view, entity);
+  // Fetch the chart code while the operator reads the first tab.
+  useEffect(() => {
+    import("./resource-chart").catch(() => undefined);
+  }, []);
   useEffect(() => {
     if (key) {
       const region = scroller.current;
