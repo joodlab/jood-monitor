@@ -52,6 +52,7 @@ describe("inventory coverage", () => {
       observed: 1,
       missing: 0,
       aged: 0,
+      observerAged: 0,
     });
     expect(
       emptyTopology(emptyGraph, problemsOnly, inventoryCoverage(views, now))
@@ -63,11 +64,47 @@ describe("inventory coverage", () => {
     const views = [cluster("synthetic-a", ago(150), ago(150))];
     const coverage = inventoryCoverage(views, now);
     expect(coverage.aged).toBe(1);
+    expect(coverage.observerAged).toBe(1);
     // The observer is a critical problem, so the canvas is not all clear.
     const observer = attentionItems(views, now)[0];
     expect(observer?.severity).toBe("critical");
     expect(observer?.title).toBe("Observer heartbeat is stale");
     expect(emptyTopology(emptyGraph, problemsOnly, coverage)).toBe("partial");
+  });
+
+  it("names the heartbeat, not the inventory, as the reason", () => {
+    const render = (views: ClusterView[]) =>
+      renderToStaticMarkup(
+        createElement(TopologyEmpty, {
+          coverage: inventoryCoverage(views, now),
+          frozen: false,
+          graph: emptyGraph,
+          namespace: "all",
+          problems: true,
+          search: "",
+          showSystem: false,
+        })
+      );
+    // Fresh inventory (150 s, inside 240 s) from a stale observer (90 s).
+    const one = render([cluster("synthetic-a", ago(150), ago(150))]);
+    expect(one).toContain("No problems in the last inventory");
+    expect(one).toContain(
+      "The observer heartbeat is not current, so the current state is unknown."
+    );
+    expect(one).not.toContain("stale inventory");
+    expect(one).not.toContain("The inventory is stale");
+    expect(one).not.toContain("No problems observed");
+    const mixed = render([
+      cluster("synthetic-a", ago(150), ago(150)),
+      cluster("synthetic-b", ago(10), ago(600)),
+      cluster("synthetic-c", ago(10), ago(30)),
+    ]);
+    expect(mixed).toContain(
+      "1 of 3 clusters have stale inventory, so their current state is unknown."
+    );
+    expect(mixed).toContain(
+      "1 of 3 clusters have no current observer heartbeat, so their current state is unknown."
+    );
   });
 
   it("ages inventory whose heartbeat is ahead of the hub clock", () => {
@@ -93,6 +130,7 @@ describe("inventory coverage", () => {
       observed: 1,
       missing: 1,
       aged: 1,
+      observerAged: 0,
     });
   });
 });
@@ -103,6 +141,12 @@ describe("registered clusters that never reported", () => {
 
   it("names live clusters without a heartbeat", () => {
     expect(silentClusters([silent, reporting], false)).toEqual([silent]);
+  });
+
+  it("does not name a cluster whose inventory arrived before its heartbeat", () => {
+    // Its cards are on the canvas, so it has reported.
+    const early = cluster("synthetic-early", null, ago(30));
+    expect(silentClusters([silent, early], false)).toEqual([silent]);
   });
 
   it("names none in a saved observation", () => {
@@ -157,6 +201,22 @@ describe("registered clusters that never reported", () => {
     );
     expect(markup).toContain(
       "synthetic-new and 1 other cluster have not reported since registration"
+    );
+    // Every silent cluster is reachable, through a menu rather than only
+    // the first one's button.
+    expect(markup).toContain(
+      'aria-label="Install or renew the observer on a cluster that has not reported"'
+    );
+    expect(markup).not.toContain("Install or renew the observer on synthetic");
+    expect(markup).not.toContain("truncate");
+    const single = renderToStaticMarkup(
+      createElement(SilentClustersChip, {
+        clusters: [silent],
+        onCluster: () => undefined,
+      })
+    );
+    expect(single).toContain(
+      'aria-label="Install or renew the observer on synthetic-new"'
     );
     expect(
       renderToStaticMarkup(

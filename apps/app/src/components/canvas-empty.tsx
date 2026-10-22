@@ -1,7 +1,16 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@jood-monitor/ui/dropdown-menu";
+import {
   BookOpen,
+  ChevronDown,
   CircleCheck,
   Clock,
   type LucideIcon,
@@ -25,40 +34,59 @@ function counted(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+export interface CanvasCoverage extends InventoryCoverage {
+  // Of the aged clusters, those whose inventory is fresh but whose live
+  // observer heartbeat is not (stale, ahead of the hub clock or missing).
+  observerAged: number;
+}
+
 // What the inventory in scope can vouch for: clusters with none at all, and
 // clusters whose last inventory is no longer fresh. Live, a heartbeat that
 // is not fresh ages the inventory too: the observer may have stopped before
 // its last inventory went stale, so it cannot vouch for an all clear beside
-// the stale-observer problem.
+// the stale-observer problem. Those are counted apart so the copy names the
+// heartbeat, not the inventory, as the reason.
 export function inventoryCoverage(
   views: ClusterView[],
   now: number,
   frozen = false
-): InventoryCoverage {
+): CanvasCoverage {
   const coverage = observationCoverage(views, now);
-  const aged = views.filter((view) => {
+  let aged = 0;
+  let observerAged = 0;
+  for (const view of views) {
     const inventory = inventoryFreshness(view.inventory.sourceTime, now);
     if (inventory === "unknown") {
-      return false;
+      continue;
     }
-    return (
-      inventory !== "fresh" ||
-      (!frozen && freshness(view.cluster.heartbeatAt, now) !== "fresh")
-    );
-  }).length;
-  return { ...coverage, aged };
+    if (inventory !== "fresh") {
+      aged++;
+    } else if (
+      !frozen &&
+      freshness(view.cluster.heartbeatAt, now) !== "fresh"
+    ) {
+      aged++;
+      observerAged++;
+    }
+  }
+  return { ...coverage, aged, observerAged };
 }
 
-// Registered clusters whose observer has never sent a heartbeat. Saved
-// observations keep no heartbeats, so only the live view can name them.
+// Registered clusters that have sent nothing: no observer heartbeat and no
+// inventory. Saved observations keep no heartbeats, so only the live view
+// can name them.
 export function silentClusters(views: ClusterView[], frozen: boolean) {
   return frozen
     ? []
-    : views.filter((view) => freshness(view.cluster.heartbeatAt) === "unknown");
+    : views.filter(
+        (view) =>
+          freshness(view.cluster.heartbeatAt) === "unknown" &&
+          inventoryFreshness(view.inventory.sourceTime) === "unknown"
+      );
 }
 
 interface EmptyProps {
-  coverage: InventoryCoverage;
+  coverage: CanvasCoverage;
   frozen: boolean;
   graph: ServiceGraph;
   namespace: string;
@@ -85,11 +113,19 @@ function coverageNotes({ coverage, frozen }: EmptyProps) {
       `${coverage.missing} of ${counted(coverage.total, "cluster")} ${frozen ? "have no saved observation at this time" : "have not reported inventory"}, so their problems cannot be evaluated.`
     );
   }
-  if (coverage.aged) {
+  const staleInventory = coverage.aged - coverage.observerAged;
+  if (staleInventory) {
     notes.push(
       coverage.total === 1
         ? "The inventory is stale, so the current state is unknown."
-        : `${coverage.aged} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
+        : `${staleInventory} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
+    );
+  }
+  if (coverage.observerAged) {
+    notes.push(
+      coverage.total === 1
+        ? "The observer heartbeat is not current, so the current state is unknown."
+        : `${coverage.observerAged} of ${counted(coverage.total, "cluster")} have no current observer heartbeat, so their current state is unknown.`
     );
   }
   return notes.join(" ");
@@ -275,8 +311,50 @@ function SilentList({
   );
 }
 
+// Several silent clusters share one chip; its menu opens each one's
+// Settings.
+function SetUpMenu({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            aria-label="Install or renew the observer on a cluster that has not reported"
+            className="h-9 shrink-0 focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
+            size="sm"
+            variant="outline"
+          />
+        }
+      >
+        Install or renew
+        <ChevronDown aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-80 max-w-80">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Clusters that have not reported</DropdownMenuLabel>
+          {clusters.map((view) => (
+            <DropdownMenuItem
+              key={view.cluster.id}
+              onClick={() => onCluster(view)}
+            >
+              <span className="min-w-0 break-words">{view.cluster.name}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 // Where other clusters fill the canvas, silent ones get a small chip
-// instead; it opens the first one's Settings.
+// instead. Its text wraps rather than truncates, so the reason stays
+// readable on narrow screens.
 export function SilentClustersChip({
   clusters,
   onCluster,
@@ -292,12 +370,16 @@ export function SilentClustersChip({
   return (
     <p className="pointer-events-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-muted-foreground/50 border-dashed bg-card/95 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur">
       <Clock aria-hidden="true" className="size-3.5 shrink-0" />
-      <span className="min-w-0 truncate">
+      <span className="min-w-0 break-words">
         {more
           ? `${first.cluster.name} and ${counted(more, "other cluster")} have not reported since registration`
           : silentText(first)}
       </span>
-      <SetUpButton onCluster={onCluster} view={first} />
+      {more ? (
+        <SetUpMenu clusters={clusters} onCluster={onCluster} />
+      ) : (
+        <SetUpButton onCluster={onCluster} view={first} />
+      )}
     </p>
   );
 }
