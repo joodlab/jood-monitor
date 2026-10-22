@@ -19,6 +19,7 @@ import {
   activeDiagnostic,
   continuesDiagnostic,
   diagnosticMinutes,
+  diagnosticNodeOptions,
   effectiveProfileName,
   type ProfileName,
   profileChoices,
@@ -253,6 +254,11 @@ export function DiagnosticOptions({
     profile,
     now
   );
+  const options = diagnosticNodeOptions(nodes, profile, now);
+  // Any node of the running diagnostic selects its one choice.
+  const selected = continuing
+    ? (activeDiagnostic(profile, now)?.nodeUids[0] ?? value)
+    : value;
   return (
     <fieldset
       className={cn(
@@ -269,9 +275,11 @@ export function DiagnosticOptions({
       {nodes.length > 0 ? (
         <Select
           disabled={disabled}
-          items={Object.fromEntries(nodes.map((node) => [node.uid, node.name]))}
+          items={Object.fromEntries(
+            options.map((option) => [option.value, option.label])
+          )}
           onValueChange={(next) => onChange(next ?? "")}
-          value={value}
+          value={selected}
         >
           <SelectTrigger
             aria-describedby={`${uid}-note`}
@@ -281,9 +289,9 @@ export function DiagnosticOptions({
             <SelectValue placeholder="Choose a node" />
           </SelectTrigger>
           <SelectContent>
-            {nodes.map((node) => (
-              <SelectItem key={node.uid} value={node.uid}>
-                <span className="font-mono text-xs">{node.name}</span>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                <span className="font-mono text-xs">{option.label}</span>
               </SelectItem>
             ))}
           </SelectContent>

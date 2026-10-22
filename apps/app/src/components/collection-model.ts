@@ -143,6 +143,50 @@ export function diagnosticNodes(
   return draft.node ? [draft.node] : [];
 }
 
+interface NodeOption {
+  label: string;
+  value: string;
+}
+
+// The diagnostic node choices. A diagnostic running on several nodes is one
+// choice, valued by its first node: picking any of them keeps it on all of
+// them, so they are never offered one by one.
+export function diagnosticNodeOptions(
+  nodes: Entity[],
+  profile: Profile,
+  now: number
+): NodeOption[] {
+  const options = (items: Entity[]) =>
+    items.map((node) => ({ value: node.uid, label: node.name }));
+  const running = activeDiagnostic(profile, now)?.nodeUids ?? [];
+  const [first] = running;
+  if (!first || running.length < 2) {
+    return options(nodes);
+  }
+  const name = (uid: string) =>
+    nodes.find((node) => node.uid === uid)?.name ?? uid;
+  return [
+    { value: first, label: `${running.map(name).join(", ")} (running)` },
+    ...options(nodes.filter((node) => !running.includes(node.uid))),
+  ];
+}
+
+// Nodes of the diagnostic the draft continues that left the inventory. The
+// request keeps every node it runs on, and the hub refuses unknown ones.
+function departedNodes(
+  draft: ProfileDraft,
+  nodes: Entity[],
+  profile: Profile | undefined,
+  now: number
+) {
+  if (!(profile && continuesDiagnostic(draft, profile, now))) {
+    return [];
+  }
+  return profile.nodeUids.filter(
+    (uid) => !nodes.some((node) => node.uid === uid)
+  );
+}
+
 function profileChange(
   draft: ProfileDraft,
   profile: Profile,
@@ -264,6 +308,11 @@ function diagnosticProblem(
   }
   if (!nodes.length) {
     return "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes.";
+  }
+  const departed = departedNodes(draft, nodes, profile, now);
+  if (departed.length && profile) {
+    const returnTo = profileChoices[returnProfile(profile)].label;
+    return `${departed.join(", ")} left the cluster inventory, so the running diagnostic cannot continue unchanged. Move it to a node it does not run on, choose another profile, or wait for it to return to ${returnTo} and apply then.`;
   }
   if (!nodes.some((node) => node.uid === draft.node)) {
     return "Choose the node to run the diagnostic on.";
