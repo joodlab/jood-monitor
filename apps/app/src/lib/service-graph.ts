@@ -3,6 +3,8 @@ import { podProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
+  isSystem,
+  isSystemNamespace,
   owningWorkload,
   type ResourceItem,
   relatedPods,
@@ -42,6 +44,10 @@ export interface ServiceGraphOptions {
 }
 export interface ServiceGraph {
   grouped: boolean;
+  // Cards this filter would draw from hidden system namespaces: matching or
+  // problem resources, or namespaces on the map. Counted only for an empty
+  // graph, so its empty state names what is hidden instead of all clear.
+  hiddenSystem: number;
   items: GraphItem[];
   links: GraphLink[];
   total: number;
@@ -100,13 +106,6 @@ const autoscalerKinds = new Set([
   "HorizontalPodAutoscaler",
   "VerticalPodAutoscaler",
 ]);
-const systemNamespaces = [
-  "kube-system",
-  "kube-public",
-  "kube-node-lease",
-  "jood-monitor",
-];
-
 interface GraphIndex {
   autoscaled: Map<string, string>;
   autoscalers: Map<string, Entity[]>;
@@ -356,16 +355,18 @@ function expandedEvidence(item: GraphItem, selector: boolean) {
   return "Pod ownerReferences (through ReplicaSet where present)";
 }
 
+function occupiedNamespaces(views: ClusterView[]) {
+  return filterResources(views, "").filter(
+    ({ view, entity }) =>
+      entity.kind === "Namespace" &&
+      view.inventory.entities.some((member) => member.namespace === entity.name)
+  );
+}
+
 function namespaceGraph(views: ClusterView[], showSystem: boolean) {
-  const items = filterResources(views, "", "all", showSystem)
-    .filter(
-      ({ view, entity }) =>
-        entity.kind === "Namespace" &&
-        (showSystem || !systemNamespaces.includes(entity.name)) &&
-        view.inventory.entities.some(
-          (member) => member.namespace === entity.name
-        )
-    )
+  const occupied = occupiedNamespaces(views);
+  const items = occupied
+    .filter(({ entity }) => showSystem || !isSystemNamespace(entity.name))
     .map((item) => ({ ...item, id: resourceId(item), lane: 0 }));
   return {
     items,
@@ -373,6 +374,7 @@ function namespaceGraph(views: ClusterView[], showSystem: boolean) {
     links: [] as GraphLink[],
     grouped: true,
     unshown: 0,
+    hiddenSystem: items.length ? 0 : occupied.length,
   };
 }
 
@@ -454,6 +456,18 @@ function graphItem(item: ResourceItem): GraphItem {
     autoscalers: index.autoscalers.get(item.entity.uid),
     replicaSets: index.replicaSets.get(item.entity.uid),
   };
+}
+
+// The cards a search or problems filter would seed from system namespaces it
+// hides. Nodes are cluster-scoped, so they are never hidden this way.
+function hiddenSystemSeeds(views: ClusterView[], options: ServiceGraphOptions) {
+  if (options.showSystem) {
+    return 0;
+  }
+  const hidden = filterResources(views, "").filter(
+    ({ entity }) => isSystem(entity) && inScope(entity, options)
+  );
+  return seedItems(hidden, options, options.now ?? Date.now()).seeds.size;
 }
 
 function inScope(entity: Entity, options: ServiceGraphOptions) {
@@ -546,7 +560,101 @@ export function serviceGraph(
     links: links.filter((link) => ids.has(link.source) && ids.has(link.target)),
     grouped: false,
     unshown,
+    hiddenSystem:
+      bounded.length || !focused ? 0 : hiddenSystemSeeds(views, options),
   };
+}
+
+export interface InventoryCoverage {
+  // Observed clusters whose last inventory is no longer fresh.
+  aged: number;
+  // Clusters with no inventory to evaluate.
+  missing: number;
+  observed: number;
+  total: number;
+}
+
+export type EmptyTopology =
+  // Only hidden system namespaces hold what the filter asks for.
+  | "hiddenSystem"
+  | "namespaces"
+  | "noMatch"
+  | "nothing"
+  // Problems only, with no inventory in scope to evaluate.
+  | "unobserved"
+  // Problems only: none in the inventory there is, but some is old or absent.
+  | "partial"
+  // Problems only: every cluster in scope has fresh inventory and none.
+  | "healthy";
+
+// Why an empty graph is empty. All clear is reserved for fresh inventory from
+// every cluster in scope with nothing hidden; anything less stays neutral.
+export function emptyTopology(
+  graph: Pick<ServiceGraph, "grouped" | "hiddenSystem">,
+  filter: { problems: boolean; search: string },
+  coverage: InventoryCoverage
+): EmptyTopology {
+  if (graph.hiddenSystem > 0) {
+    return "hiddenSystem";
+  }
+  if (graph.grouped) {
+    return "namespaces";
+  }
+  if (filter.search) {
+    return "noMatch";
+  }
+  if (!filter.problems) {
+    return "nothing";
+  }
+  if (!coverage.observed) {
+    return "unobserved";
+  }
+  return coverage.missing || coverage.aged ? "partial" : "healthy";
+}
+
+// Graph items are rebuilt on every graph pass; one that draws the same
+// resource from the same observation, in the same place, is unchanged.
+export function sameGraphItem(a: GraphItem, b: GraphItem) {
+  return (
+    a === b ||
+    (a.id === b.id &&
+      a.view === b.view &&
+      a.entity === b.entity &&
+      a.lane === b.lane &&
+      a.parent === b.parent &&
+      a.autoscalers === b.autoscalers &&
+      a.replicaSets === b.replicaSets)
+  );
+}
+
+// What a topology card renders from, besides its stable callbacks.
+export interface CardState {
+  expanded: boolean;
+  item: GraphItem;
+  now: number;
+  problem: boolean;
+  stale: boolean;
+}
+
+// A card whose inputs are unchanged keeps its node object, so the memoised
+// card skips the render on clock ticks, refreshes and parent re-renders. Pod
+// chips do not read the clock; every other card summarises usage freshness
+// against it, so a new evaluation time redraws them.
+export function unchangedCard(
+  before: { data: CardState; position: Point },
+  after: CardState,
+  position: Point | undefined
+) {
+  const { data } = before;
+  return (
+    sameGraphItem(data.item, after.item) &&
+    (data.now === after.now || after.item.entity.kind === "Pod") &&
+    data.expanded === after.expanded &&
+    data.problem === after.problem &&
+    data.stale === after.stale &&
+    before.position.x === position?.x &&
+    before.position.y === position?.y
+  );
 }
 
 // An indented reading of the graph for narrow screens and keyboard users:
@@ -599,6 +707,37 @@ export function topologyTree(graph: {
   return graph.items
     .filter((item) => !child.has(item.id))
     .map((item) => build(item, []));
+}
+
+// Graph draws the configured structure; List reads it as an indented tree.
+export type TopologyLayout = "graph" | "list";
+
+// A layout the parent controls wins, then the operator's own choice, then the
+// screen default (List on narrow screens, where a canvas is hard to use).
+export function topologyLayout(
+  controlled: TopologyLayout | undefined,
+  chosen: TopologyLayout | undefined,
+  narrow: boolean
+): TopologyLayout {
+  return controlled ?? chosen ?? (narrow ? "list" : "graph");
+}
+
+interface KeyTarget {
+  classList: { contains: (name: string) => boolean };
+  dataset: { id?: string };
+}
+
+// The card id when Enter or Space reaches the focused card wrapper itself, so
+// the keyboard opens it as a click does. Keys on the card's own buttons are
+// theirs to handle.
+export function activatedCard(key: string, target: KeyTarget | null) {
+  if (key !== "Enter" && key !== " ") {
+    return;
+  }
+  if (!target?.classList.contains("react-flow__node")) {
+    return;
+  }
+  return target.dataset.id;
 }
 
 export function validPosition(
@@ -1000,7 +1139,8 @@ export function stablePositions(
   previous: Record<string, { x: number; y: number }>,
   links: GraphLink[] = []
 ) {
-  const initial = initialPositions(items, links);
+  // The full layout is computed only when a card has no saved place.
+  let initial: Record<string, Point> | undefined;
   const positions: Record<string, Point> = {};
   const boxes: Box[] = [];
   for (const item of items) {
@@ -1014,6 +1154,7 @@ export function stablePositions(
     if (positions[item.id] || item.parent) {
       continue;
     }
+    initial ??= initialPositions(items, links);
     const position = { ...(initial[item.id] ?? { x: 0, y: 0 }) };
     for (
       let guard = 0;

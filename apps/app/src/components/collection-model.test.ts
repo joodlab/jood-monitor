@@ -2,15 +2,22 @@ import type { ClusterView } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import { profileSchema } from "../schemas/clusters";
 import {
+  ackPatienceMs,
+  ackPollDelay,
   activeDiagnostic,
+  awaitingAcknowledgment,
+  deliveryHealth,
   draftChanges,
   draftFromProfile,
   draftProblems,
+  effectiveProfileName,
   formatBytes,
   knownNamespaces,
+  latestPendingRequest,
   namespaceLimit,
   namespaceProblem,
   nodeAcknowledgments,
+  observationFreshness,
   profileRequest,
   requestProgress,
   returnProfile,
@@ -184,6 +191,117 @@ describe("diagnostics", () => {
       "basic"
     );
   });
+
+  it("keeps a running diagnostic's expiry unless the draft restarts it", () => {
+    const view = fixture();
+    const expiresAt = new Date(now + 60_000).toISOString();
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      returnProfile: "standard",
+      expiresAt,
+    };
+    const draft = draftFromProfile(view.profile, undefined, now);
+    expect(draft).toMatchObject({
+      name: "diagnostic",
+      node: "n1",
+      extend: false,
+    });
+    const edited = { ...draft, scope: "all" as const };
+    expect(draftChanges(edited, view.profile, undefined, now)).toEqual([
+      "Collect pod metrics in all namespaces instead of 1 selected namespace",
+    ]);
+    const kept = profileSchema.parse(profileRequest(edited, view.profile, now));
+    expect(kept.expiresAt).toBe(expiresAt);
+    const restarted = { ...edited, extend: true };
+    expect(
+      draftChanges(restarted, view.profile, () => "node-b", now)[0]
+    ).toContain("Restart the diagnostic on node-b for 9 minutes");
+    const renewed = profileRequest(restarted, view.profile, now);
+    expect(Date.parse(renewed.expiresAt ?? "") - now).toBe(9 * 60_000);
+    const moved = { ...draft, node: "n2" };
+    expect(draftChanges(moved, view.profile, () => "node-a", now)[0]).toBe(
+      "Run a 9-minute diagnostic on node-a, then return to Standard"
+    );
+    const fresh = profileRequest(moved, view.profile, now);
+    expect(Date.parse(fresh.expiresAt ?? "") - now).toBe(9 * 60_000);
+    const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
+    expect(draftProblems(edited, nodes, view.profile, now)).toEqual([]);
+    const ending = now + 60_000 - 10_000;
+    expect(draftProblems(edited, nodes, view.profile, ending)[0]).toContain(
+      "ends in under 30 seconds"
+    );
+    expect(draftProblems(restarted, nodes, view.profile, ending)).toEqual([]);
+  });
+
+  it("treats an expired diagnostic as already returned", () => {
+    const view = fixture();
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      returnProfile: "standard",
+      expiresAt: new Date(now - 1000).toISOString(),
+    };
+    expect(effectiveProfileName(view.profile, now)).toBe("standard");
+    const draft = draftFromProfile(view.profile, undefined, now);
+    expect(draft.name).toBe("standard");
+    expect(draftChanges(draft, view.profile, undefined, now)).toEqual([]);
+    // A draft still holding the old diagnostic is listed as a new run.
+    const stale = { ...draft, name: "diagnostic" as const, node: "n1" };
+    expect(draftChanges(stale, view.profile, undefined, now)[0]).toContain(
+      "Run a 9-minute diagnostic on n1"
+    );
+    const request = profileRequest(stale, view.profile, now);
+    expect(Date.parse(request.expiresAt ?? "") - now).toBe(9 * 60_000);
+  });
+});
+
+describe("delivery health", () => {
+  it("presents counters as current only with a fresh heartbeat", () => {
+    const view = fixture();
+    const fresh = deliveryHealth(view, now);
+    expect(fresh.note).toBeUndefined();
+    expect(
+      fresh.stats.map((stat) => [stat.term, stat.value, stat.warn])
+    ).toEqual([
+      ["Buffered on agent", "0 B", false],
+      ["Dropped", "0", false],
+      ["Rejected points", "0", false],
+    ]);
+    const stale = deliveryHealth(view, now + 10 * 60_000);
+    expect(stale.stats.find((stat) => stat.term === "Dropped")).toMatchObject({
+      value: "0 (last reported)",
+      warn: true,
+    });
+    expect(
+      stale.stats.every((stat) => stat.value.endsWith("(last reported)"))
+    ).toBe(true);
+    expect(stale.note).toContain("stale");
+  });
+
+  it("flags non-zero counters and never shows missing heartbeats as zero", () => {
+    const view = fixture();
+    view.heartbeat = { ...view.heartbeat, queueBytes: 2048, dropped: 3 };
+    expect(
+      deliveryHealth(view, now).stats.map((stat) => [stat.value, stat.warn])
+    ).toEqual([
+      ["2.0 KiB", true],
+      ["3", true],
+      ["0", false],
+    ]);
+    for (const heartbeatAt of [null, "0001-01-01T00:00:00Z"]) {
+      view.cluster = { ...view.cluster, heartbeatAt };
+      const missing = deliveryHealth(view, now);
+      expect(missing.note).toBeUndefined();
+      expect(
+        missing.stats.every(
+          (stat) => stat.value === "Not reported" && !stat.warn
+        )
+      ).toBe(true);
+    }
+  });
 });
 
 describe("acknowledgments", () => {
@@ -218,6 +336,92 @@ describe("acknowledgments", () => {
     expect(requestProgress(view, 4, now + 10 * 60_000).phase).toBe(
       "observer-stale"
     );
+  });
+
+  it("backs off acknowledgment refreshes within the patience window", () => {
+    const delays: number[] = [];
+    let elapsed = 0;
+    let delay = ackPollDelay(0, elapsed);
+    while (delay !== undefined) {
+      delays.push(delay);
+      elapsed += delay;
+      delay = ackPollDelay(delays.length, elapsed);
+    }
+    expect(delays).toEqual([
+      10_000, 20_000, 30_000, 30_000, 30_000, 30_000, 30_000,
+    ]);
+    expect(elapsed).toBeLessThanOrEqual(ackPatienceMs);
+    expect(ackPollDelay(0, ackPatienceMs)).toBeUndefined();
+  });
+
+  it("keeps refreshing only while a request can still be acknowledged", () => {
+    const view = fixture();
+    const request = { revision: 4, at: now - 5000 };
+    expect(awaitingAcknowledgment(view, undefined, now)).toBe(false);
+    expect(awaitingAcknowledgment(view, request, now)).toBe(true);
+    expect(awaitingAcknowledgment(view, { ...request, revision: 5 }, now)).toBe(
+      true
+    );
+    expect(awaitingAcknowledgment(view, { ...request, revision: 3 }, now)).toBe(
+      false
+    );
+    expect(
+      awaitingAcknowledgment(view, { ...request, at: now - ackPatienceMs }, now)
+    ).toBe(false);
+    const nodes = view.heartbeat.nodes ?? [];
+    nodes[1] = { ...nodes[1], appliedRevision: 4, profile: "standard" };
+    expect(awaitingAcknowledgment(view, request, now)).toBe(false);
+    const empty = fixture();
+    empty.inventory = {
+      ...empty.inventory,
+      entities: empty.inventory.entities.filter(
+        (entity) => entity.kind !== "Node"
+      ),
+    };
+    expect(awaitingAcknowledgment(empty, request, now)).toBe(false);
+  });
+
+  it("drives one page-wide poller from the latest pending request", () => {
+    const first = fixture();
+    const second = fixture();
+    second.cluster = { ...second.cluster, id: "synthetic-b" };
+    const views = [first, second];
+    expect(latestPendingRequest(views, {}, now)).toBeUndefined();
+    expect(
+      latestPendingRequest(
+        views,
+        {
+          "synthetic-a": { revision: 4, at: now - 60_000 },
+          "synthetic-b": { revision: 4, at: now - 20_000 },
+        },
+        now
+      )
+    ).toBe(now - 20_000);
+    expect(
+      latestPendingRequest(
+        views,
+        {
+          "synthetic-a": { revision: 4, at: now - 60_000 },
+          "synthetic-b": { revision: 3, at: now - 20_000 },
+          "not-displayed": { revision: 4, at: now - 1000 },
+        },
+        now
+      )
+    ).toBe(now - 60_000);
+  });
+
+  it("judges inventory against its reconciliation cadence", () => {
+    const twoMinutes = new Date(now - 120_000).toISOString();
+    const fiveMinutes = new Date(now - 300_000).toISOString();
+    expect(observationFreshness("heartbeat", twoMinutes, now)).toBe("stale");
+    expect(observationFreshness("inventory", twoMinutes, now)).toBe("fresh");
+    expect(observationFreshness("inventory", fiveMinutes, now)).toBe("stale");
+    for (const kind of ["heartbeat", "inventory"] as const) {
+      expect(observationFreshness(kind, null, now)).toBe("unknown");
+      expect(observationFreshness(kind, "0001-01-01T00:00:00Z", now)).toBe(
+        "unknown"
+      );
+    }
   });
 
   it("formats agent buffers in binary units", () => {

@@ -29,7 +29,7 @@ function NamespaceChip({
   return (
     <label
       className={cn(
-        "inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full border px-3 text-xs transition-colors hover:bg-muted/50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50",
+        "inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full border px-3 text-xs transition-colors hover:bg-muted/50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
         checked && "border-primary bg-primary/10",
         disabled && "cursor-not-allowed opacity-50"
       )}
@@ -258,7 +258,7 @@ export function NamespaceField({
       >
         {scopes.map((scope) => (
           <label
-            className="flex cursor-pointer items-start gap-2.5 rounded-md py-1 text-sm has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50"
+            className="flex cursor-pointer items-start gap-2.5 rounded-md py-1 text-sm has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
             key={scope.value}
           >
             <input

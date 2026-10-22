@@ -462,6 +462,7 @@ function DashboardContent() {
         onInspect={inspect}
         range={search.range}
         referenceTime={referenceTime}
+        scope={search.workspace}
       />
       {/* Absence is only claimed against a loaded snapshot; while the hub is
           unreachable the link stays in the URL and Retry reopens it. */}

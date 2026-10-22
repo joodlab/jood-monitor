@@ -8,11 +8,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@jood-monitor/ui/card";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Server } from "lucide-react";
+import { useEffect, useState } from "react";
 import { fetchWorkspaces } from "../hooks/api/clusters";
+import { useDisplay } from "../hooks/display";
 import type { SearchState } from "../schemas/monitor";
 import { ClusterCollection } from "./collection-cluster";
+import {
+  type AckRequest,
+  ackPollDelay,
+  latestPendingRequest,
+} from "./collection-model";
 import { EmptyState, Section } from "./page";
 
 const capabilityLabels: Record<string, string> = {
@@ -84,6 +91,48 @@ function AvailableSources({ views }: { views: ClusterView[] }) {
   );
 }
 
+type Requests = Partial<Record<string, AckRequest>>;
+
+// One poller for the whole page. While any card's request awaits
+// acknowledgment, the displayed live snapshot is refreshed on a capped backoff
+// (10 s, 20 s, then every 30 s) from the latest request until the patience
+// window ends. Hidden tabs skip refreshes; the query refetches on focus. A
+// slow scope-wide fetch is not cancelled by the next tick.
+function useAcknowledgmentPolling(
+  views: ClusterView[],
+  requests: Requests,
+  search: SearchState
+) {
+  const client = useQueryClient();
+  const { now } = useDisplay();
+  const live = !search.at;
+  const since = live ? latestPendingRequest(views, requests, now) : undefined;
+  const scope = search.workspace;
+  useEffect(() => {
+    if (since === undefined) {
+      return;
+    }
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      const delay = ackPollDelay(attempt, Date.now() - since);
+      timer = delay === undefined ? undefined : setTimeout(tick, delay);
+    };
+    const tick = () => {
+      attempt += 1;
+      if (document.visibilityState === "visible") {
+        client.invalidateQueries(
+          { queryKey: ["snapshot", scope, "live"] },
+          { cancelRefetch: false }
+        );
+      }
+      schedule();
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [client, scope, since]);
+}
+
 export function CollectionSettings({
   search,
   views,
@@ -97,11 +146,13 @@ export function CollectionSettings({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
   });
+  const [requests, setRequests] = useState<Requests>({});
+  useAcknowledgmentPolling(views, requests, search);
   if (search.at) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Collection status is current</CardTitle>
+          <CardTitle>Collection status is not retained historically</CardTitle>
           <CardDescription>
             Saved observations retain inventory and metrics. Resume live to
             inspect collection acknowledgments and change profiles.
@@ -142,8 +193,14 @@ export function CollectionSettings({
               : undefined
           }
           key={view.cluster.id}
+          onRequest={(request) =>
+            setRequests((current) => ({
+              ...current,
+              [view.cluster.id]: request,
+            }))
+          }
+          request={requests[view.cluster.id]}
           view={view}
-          workspace={search.workspace}
           workspaceName={
             names[view.cluster.workspaceId] ?? view.cluster.workspaceId
           }

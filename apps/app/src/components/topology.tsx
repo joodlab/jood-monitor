@@ -35,6 +35,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import {
+  type KeyboardEvent,
   memo,
   useCallback,
   useEffect,
@@ -44,6 +45,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useDisplay } from "../hooks/display";
+import { observationCoverage } from "../lib/attention";
 import {
   compactCpu,
   compactMemory,
@@ -54,17 +56,24 @@ import {
 } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
+  activatedCard,
+  type CardState,
   cardSize,
   chipSize,
+  emptyTopology,
   type GraphItem,
   type GraphLink,
+  type InventoryCoverage,
   itemProblem,
   kindSymbol,
   type ServiceGraph,
   serviceGraph,
   stablePositions,
+  type TopologyLayout,
   type TreeEntry,
+  topologyLayout,
   topologyTree,
+  unchangedCard,
 } from "../lib/service-graph";
 import { EmptyState } from "./page";
 import { StatusBadge } from "./resource-status";
@@ -73,22 +82,17 @@ import { StatusBadge } from "./resource-status";
 // placement. Nothing here measures or implies traffic between resources.
 
 type Inspect = (view: ClusterView, entity: Entity) => void;
-interface CardData extends Record<string, unknown> {
-  expanded: boolean;
-  item: GraphItem;
-  now: number;
+interface CardHandlers {
   onExpand: (id: string) => void;
   onInspect: Inspect;
   onNamespace: (namespace: string) => void;
-  problem: boolean;
-  stale: boolean;
 }
+type CardData = CardState & CardHandlers & Record<string, unknown>;
 type CardNode = Node<CardData, "resource" | "pod">;
 interface Point {
   x: number;
   y: number;
 }
-type LayoutMode = "graph" | "list";
 type Tone = "critical" | "warning" | "stale" | "healthy" | "neutral";
 
 // Below `compactZoom`, cards show only a large name and status instead of
@@ -431,15 +435,17 @@ function CardFooter({
   );
 }
 
-// The name is a real button for keyboard and screen reader users; its click
-// bubbles to the card, which selects it and opens the inspector.
+// Keyboard users reach each card once and open it with Enter or Space, so the
+// name stays out of the tab order. It is still a button for screen reader
+// browse mode; its click bubbles to the card, which selects and opens it.
 function NameButton({ name, className }: { name: string; className: string }) {
   return (
     <button
       className={cn(
-        "min-w-0 truncate rounded-sm text-left font-medium font-mono hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+        "min-w-0 truncate rounded-sm text-left font-medium font-mono hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className
       )}
+      tabIndex={-1}
       title={name}
       type="button"
     >
@@ -758,12 +764,87 @@ function useNarrowScreen() {
   );
 }
 
+// React Flow's default card description mentions deleting and moving nodes;
+// the topology is read-only, so describe what the keys actually do.
+const cardKeys =
+  "Press Enter or Space to open. Press Escape to clear the selection.";
+const ariaLabels = {
+  "node.a11yDescription.default": cardKeys,
+  "node.a11yDescription.keyboardDisabled": cardKeys,
+};
+
 function minimapColor(node: CardNode) {
   return node.data.problem ? "var(--warning)" : "var(--muted-foreground)";
 }
 
 function staleView(view: ClusterView, now: number) {
   return inventoryFreshness(view.inventory.sourceTime, now) !== "fresh";
+}
+
+// One callback identity for the component's life that always calls the
+// latest prop or closure, so a parent re-render never rebuilds every card.
+function useLatestCallback<A extends unknown[]>(
+  callback: (...args: A) => void
+) {
+  const latest = useRef(callback);
+  useEffect(() => {
+    latest.current = callback;
+  }, [callback]);
+  return useCallback((...args: A) => latest.current(...args), []);
+}
+
+interface CardInputs {
+  expanded: string[];
+  handlers: CardHandlers;
+  now: number;
+  positions: Record<string, Point>;
+}
+
+function cardNode(
+  before: CardNode | undefined,
+  item: GraphItem,
+  inputs: CardInputs
+): CardNode {
+  const state: CardState = {
+    item,
+    now: inputs.now,
+    expanded: inputs.expanded.includes(item.id),
+    problem: itemProblem(item, inputs.now),
+    stale: staleView(item.view, inputs.now),
+  };
+  const position = inputs.positions[item.id];
+  if (before && unchangedCard(before, state, position)) {
+    return before;
+  }
+  return {
+    ...before,
+    id: item.id,
+    type: item.entity.kind === "Pod" ? "pod" : "resource",
+    position,
+    data: { ...state, ...inputs.handlers },
+    connectable: false,
+    draggable: false,
+    ariaLabel: `${item.entity.kind} ${item.entity.name}${state.problem ? ", has a problem" : ""}`,
+  };
+}
+
+// Unchanged cards keep their node object, and the previous array survives
+// when nothing changed, so React Flow and the memoised cards skip the work.
+function nextNodes(old: CardNode[], items: GraphItem[], inputs: CardInputs) {
+  const previous = new Map(old.map((node) => [node.id, node]));
+  const next = items.map((item) =>
+    cardNode(previous.get(item.id), item, inputs)
+  );
+  const same =
+    next.length === old.length &&
+    next.every((node, index) => node === old[index]);
+  return same ? old : next;
+}
+
+function keepSelectAndSize(changes: NodeChange<CardNode>[]) {
+  return changes.filter(
+    (item) => item.type === "select" || item.type === "dimensions"
+  );
 }
 
 export function Topology({
@@ -775,6 +856,9 @@ export function Topology({
   showSystem = false,
   problems = false,
   onNamespace,
+  onShowSystem,
+  layout: controlledLayout,
+  onLayout,
 }: {
   views: ClusterView[];
   onInspect: Inspect;
@@ -784,18 +868,29 @@ export function Topology({
   showSystem?: boolean;
   problems?: boolean;
   onNamespace: (namespace: string) => void;
+  // Offered when the empty state finds matches or problems only in hidden
+  // system namespaces.
+  onShowSystem?: () => void;
+  // A Graph/List choice owned by the parent so it survives remounts; when
+  // absent the topology keeps its own choice and the screen default.
+  layout?: TopologyLayout;
+  onLayout?: (layout: TopologyLayout) => void;
 }) {
-  const { theme } = useDisplay();
+  const { theme, frozen } = useDisplay();
   const narrow = useNarrowScreen();
-  const [choice, setChoice] = useState<LayoutMode>();
-  const mode: LayoutMode = choice ?? (narrow ? "list" : "graph");
+  const [choice, setChoice] = useState<TopologyLayout>();
+  const mode = topologyLayout(controlledLayout, choice, narrow);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [nodes, setNodes] = useState<CardNode[]>([]);
   const [instance, setInstance] = useState<ReactFlowInstance<CardNode>>();
+  const [dimmed] = useState(() => new WeakMap<CardNode, CardNode>());
   const layout = useRef<Record<string, Point>>({});
   const layoutKey = useRef("");
   const fitted = useRef(false);
   const focusRequest = useRef<FocusRequest>(undefined);
+  // Only the problems filter reads the clock (pod start-up grace), so other
+  // graphs are not rebuilt on every tick.
+  const graphTime = problems ? referenceTime : undefined;
   const graph = useMemo(
     () =>
       serviceGraph(views, {
@@ -804,23 +899,35 @@ export function Topology({
         showSystem,
         problems,
         expanded,
-        now: referenceTime,
+        now: graphTime,
       }),
-    [views, search, namespace, showSystem, problems, expanded, referenceTime]
+    [views, search, namespace, showSystem, problems, expanded, graphTime]
   );
   const filterKey = `${namespace}:${search}:${showSystem}:${problems}`;
-  const toggle = useCallback(
-    (id: string) => {
-      const expand = !expanded.includes(id);
-      if (mode === "graph") {
-        focusRequest.current = { id, expand };
-      }
-      setExpanded(
-        expand ? [...expanded, id] : expanded.filter((item) => item !== id)
-      );
-    },
-    [expanded, mode]
+  const toggle = useLatestCallback((id: string) => {
+    const expand = !expanded.includes(id);
+    if (mode === "graph") {
+      focusRequest.current = { id, expand };
+    }
+    setExpanded(
+      expand ? [...expanded, id] : expanded.filter((item) => item !== id)
+    );
+  });
+  const inspect = useLatestCallback(onInspect);
+  const drill = useLatestCallback(onNamespace);
+  const handlers = useMemo<CardHandlers>(
+    () => ({ onExpand: toggle, onInspect: inspect, onNamespace: drill }),
+    [toggle, inspect, drill]
   );
+  useEffect(() => {
+    // Every Graph mount gets its own React Flow instance and initial fit,
+    // whether the operator, the parent or the screen width changed the mode.
+    fitted.current = false;
+    focusRequest.current = undefined;
+    if (mode === "list") {
+      setInstance(undefined);
+    }
+  }, [mode]);
   useEffect(() => {
     // A new filter gets a fresh compact layout; within one filter, cards keep
     // their place while pods expand and the live inventory changes.
@@ -831,40 +938,17 @@ export function Topology({
     }
     const positions = stablePositions(graph.items, layout.current, graph.links);
     layout.current = positions;
-    setNodes((old) => {
-      const previous = new Map(old.map((node) => [node.id, node]));
-      return graph.items.map((item) => {
-        const problem = itemProblem(item, referenceTime);
-        return {
-          ...previous.get(item.id),
-          id: item.id,
-          type: item.entity.kind === "Pod" ? "pod" : "resource",
-          position: positions[item.id],
-          data: {
-            item,
-            now: referenceTime,
-            expanded: expanded.includes(item.id),
-            onInspect,
-            onExpand: toggle,
-            onNamespace,
-            problem,
-            stale: staleView(item.view, referenceTime),
-          },
-          connectable: false,
-          draggable: false,
-          ariaLabel: `${item.entity.kind} ${item.entity.name}${problem ? ", has a problem" : ""}`,
-        };
-      });
-    });
-  }, [
-    graph,
-    filterKey,
-    referenceTime,
-    expanded,
-    onInspect,
-    toggle,
-    onNamespace,
-  ]);
+    // Live ticks redraw cards that summarise usage freshness; a frozen view,
+    // a refresh with no changes or a parent re-render keeps every node.
+    setNodes((old) =>
+      nextNodes(old, graph.items, {
+        expanded,
+        handlers,
+        now: referenceTime,
+        positions,
+      })
+    );
+  }, [graph, filterKey, referenceTime, expanded, handlers]);
   useEffect(() => {
     if (!(instance && graph.items.length) || fitted.current) {
       return;
@@ -897,50 +981,65 @@ export function Topology({
     if (!selectedId) {
       return nodes;
     }
+    // A card dimmed for one selection keeps its dimmed object for the next.
     const related = adjacentIds(graph.links, selectedId);
-    return nodes.map((node) =>
-      related.has(node.id) ? node : { ...node, className: "opacity-40" }
-    );
-  }, [nodes, graph.links, selectedId]);
+    return nodes.map((node) => {
+      if (related.has(node.id)) {
+        return node;
+      }
+      const faded = dimmed.get(node) ?? { ...node, className: "opacity-40" };
+      dimmed.set(node, faded);
+      return faded;
+    });
+  }, [nodes, graph.links, selectedId, dimmed]);
   const open = useCallback(
     (_: unknown, node: CardNode) => {
       const { item } = node.data;
       if (item.entity.kind === "Namespace") {
-        onNamespace(item.entity.name);
+        drill(item.entity.name);
       } else {
-        onInspect(item.view, item.entity);
+        inspect(item.view, item.entity);
       }
     },
-    [onInspect, onNamespace]
+    [inspect, drill]
   );
-  function change(changes: NodeChange<CardNode>[]) {
-    setNodes((old) =>
-      applyNodeChanges(
-        changes.filter(
-          (item) => item.type === "select" || item.type === "dimensions"
-        ),
-        old
-      )
-    );
-  }
-  function switchMode(next: LayoutMode) {
+  const change = useCallback((changes: NodeChange<CardNode>[]) => {
+    const kept = keepSelectAndSize(changes);
+    if (kept.length) {
+      setNodes((old) => applyNodeChanges(kept, old));
+    }
+  }, []);
+  function switchMode(next: TopologyLayout) {
     if (next === mode) {
       return;
     }
     setChoice(next);
-    setInstance(undefined);
-    fitted.current = false;
-    focusRequest.current = undefined;
+    onLayout?.(next);
   }
-  const stale = views.some((view) => staleView(view, referenceTime));
+  // Enter or Space on a focused card matches a click: React Flow selects it
+  // first, then this opens it. Space would otherwise scroll the page.
+  function keyOpen(event: KeyboardEvent<HTMLDivElement>) {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const id = activatedCard(event.key, target);
+    const node = id ? nodes.find((item) => item.id === id) : undefined;
+    if (!node) {
+      return;
+    }
+    event.preventDefault();
+    if (!event.repeat) {
+      open(event, node);
+    }
+  }
   const empty = graph.items.length ? null : (
     <TopologyEmpty
+      coverage={inventoryCoverage(views, referenceTime)}
+      frozen={frozen}
       graph={graph}
       namespace={namespace}
+      onShowSystem={onShowSystem}
       problems={problems}
       search={search}
       showSystem={showSystem}
-      stale={stale}
     />
   );
   return (
@@ -960,6 +1059,7 @@ export function Topology({
       {mode === "graph" ? (
         <div className="relative h-[calc(100svh-24rem)] min-h-[420px]">
           <ReactFlow<CardNode>
+            ariaLabelConfig={ariaLabels}
             colorMode={theme}
             deleteKeyCode={null}
             edges={edges}
@@ -972,6 +1072,7 @@ export function Topology({
             nodesDraggable={false}
             nodeTypes={nodeTypes}
             onInit={setInstance}
+            onKeyDown={keyOpen}
             onNodeClick={open}
             onNodesChange={change}
           >
@@ -1003,8 +1104,8 @@ export function Topology({
               graph={graph}
               now={referenceTime}
               onExpand={toggle}
-              onInspect={onInspect}
-              onNamespace={onNamespace}
+              onInspect={inspect}
+              onNamespace={drill}
             />
           )}
         </div>
@@ -1021,11 +1122,11 @@ function TopologyToolbar({
   onFit,
 }: {
   graph: ServiceGraph;
-  mode: LayoutMode;
-  onMode: (mode: LayoutMode) => void;
+  mode: TopologyLayout;
+  onMode: (mode: TopologyLayout) => void;
   onFit: () => void;
 }) {
-  const modes: { value: LayoutMode; label: string; icon: LucideIcon }[] = [
+  const modes: { value: TopologyLayout; label: string; icon: LucideIcon }[] = [
     { value: "graph", label: "Graph", icon: Network },
     { value: "list", label: "List", icon: ListTree },
   ];
@@ -1094,7 +1195,7 @@ function LegendItem({ dash, label }: { dash?: string; label: string }) {
   );
 }
 
-function legendHint(grouped: boolean, mode: LayoutMode) {
+function legendHint(grouped: boolean, mode: TopologyLayout) {
   if (grouped) {
     return mode === "graph"
       ? "Click a namespace to open it · search to find any resource"
@@ -1110,7 +1211,7 @@ function TopologyLegend({
   mode,
 }: {
   grouped: boolean;
-  mode: LayoutMode;
+  mode: TopologyLayout;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t bg-card px-3 py-1.5 text-muted-foreground text-xs">
@@ -1132,62 +1233,166 @@ function TopologyLegend({
   );
 }
 
-function emptyCopy({
-  graph,
-  namespace,
-  problems,
-  search,
-  showSystem,
-  stale,
-}: {
+function counted(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// What the inventory in scope can vouch for: clusters with none at all, and
+// clusters whose last inventory is no longer fresh.
+function inventoryCoverage(
+  views: ClusterView[],
+  now: number
+): InventoryCoverage {
+  const coverage = observationCoverage(views, now);
+  const notFresh = views.filter((view) => staleView(view, now)).length;
+  return { ...coverage, aged: notFresh - coverage.missing };
+}
+
+interface EmptyProps {
+  coverage: InventoryCoverage;
+  frozen: boolean;
   graph: ServiceGraph;
   namespace: string;
+  onShowSystem?: () => void;
   problems: boolean;
   search: string;
   showSystem: boolean;
-  stale: boolean;
-}) {
-  const scope = namespace === "all" ? "any namespace" : namespace;
-  const system = showSystem ? "" : " System namespaces are hidden.";
-  if (graph.grouped) {
+}
+interface EmptyCopy {
+  description: string;
+  icon: LucideIcon;
+  title: string;
+}
+
+function coverageNotes({ coverage, frozen }: EmptyProps) {
+  const notes: string[] = [];
+  if (coverage.missing) {
+    notes.push(
+      `${coverage.missing} of ${counted(coverage.total, "cluster")} ${frozen ? "have no saved observation at this time" : "have not reported inventory"}, so their problems cannot be evaluated.`
+    );
+  }
+  if (coverage.aged) {
+    notes.push(
+      coverage.total === 1
+        ? "The inventory is stale, so the current state is unknown."
+        : `${coverage.aged} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
+    );
+  }
+  return notes.join(" ");
+}
+
+function unobservedText(frozen: boolean) {
+  return frozen
+    ? "No cluster in scope has a saved observation at this time."
+    : "No cluster in scope has reported inventory yet.";
+}
+
+function hiddenCopy(props: EmptyProps): EmptyCopy {
+  const count = props.graph.hiddenSystem;
+  const verb = count === 1 ? "is" : "are";
+  if (props.graph.grouped) {
     return {
-      title: "No namespaces observed",
-      description: `The inventory has no namespaced resources to draw.${system}`,
+      icon: Network,
+      title: "Only system namespaces have resources",
+      description: `${counted(count, "system namespace")} with resources ${verb} hidden by the current filters.`,
     };
   }
-  if (search) {
-    const unshown = graph.unshown
-      ? ` ${graph.unshown} matching volume, EndpointSlice or idle ReplicaSet record${graph.unshown === 1 ? " has" : "s have"} no card; the List view shows them.`
-      : " Try a name, kind, namespace or status.";
+  if (props.search) {
     return {
-      title: `No ${problems ? "problem resources" : "topology"} match “${search}”`,
-      description: `Nothing in ${scope} matches.${unshown}`,
+      icon: props.problems ? TriangleAlert : Network,
+      title: `No ${props.problems ? "problem resources" : "topology"} match “${props.search}” outside system namespaces`,
+      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.`,
     };
   }
-  if (problems) {
-    return {
-      title: stale
-        ? "No problems in the last inventory"
-        : "No problems observed",
-      description: `${stale ? "The inventory is stale, so the current state is unknown. " : ""}No failing pods, under-replicated workloads or unready nodes in ${scope}.${system}`,
-    };
-  }
+  const notes = coverageNotes(props);
   return {
-    title: "No services or workloads observed",
-    description: `Nothing to draw in ${scope}.${system}`,
+    icon: TriangleAlert,
+    title: "Problems are in system namespaces",
+    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}`,
   };
 }
 
-function TopologyEmpty(props: Parameters<typeof emptyCopy>[0]) {
-  const { title, description } = emptyCopy(props);
-  const healthy = props.problems && !props.search && !props.stale;
+function scopeText(namespace: string) {
+  return namespace === "all" ? "any namespace" : namespace;
+}
+
+function emptyCopy(props: EmptyProps): EmptyCopy {
+  const { graph, problems, search, showSystem, frozen } = props;
+  const scope = scopeText(props.namespace);
+  const system = showSystem ? "" : " System namespaces are hidden.";
+  const problemList = `No failing pods, under-replicated workloads or unready nodes in ${scope}.`;
+  switch (emptyTopology(graph, { problems, search }, props.coverage)) {
+    case "hiddenSystem":
+      return hiddenCopy(props);
+    case "namespaces":
+      return {
+        icon: Network,
+        title: "No namespaces observed",
+        description: props.coverage.observed
+          ? "The inventory has no namespaced resources to draw."
+          : unobservedText(frozen),
+      };
+    case "noMatch":
+      return {
+        icon: Network,
+        title: `No ${problems ? "problem resources" : "topology"} match “${search}”`,
+        description: `Nothing in ${scope} matches.${
+          graph.unshown
+            ? ` ${graph.unshown} matching volume, EndpointSlice or idle ReplicaSet record${graph.unshown === 1 ? " has" : "s have"} no card; the List view shows them.`
+            : " Try a name, kind, namespace or status."
+        }`,
+      };
+    case "unobserved":
+      return {
+        icon: Network,
+        title: "No observations in scope",
+        description: `${unobservedText(frozen)} Problems cannot be evaluated.`,
+      };
+    case "partial":
+      return {
+        icon: Clock,
+        title: props.coverage.aged
+          ? "No problems in the last inventory"
+          : "No problems in the observed clusters",
+        description: `${coverageNotes(props)} ${problemList}`,
+      };
+    case "healthy":
+      return {
+        icon: CircleCheck,
+        title: "No problems observed",
+        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}`,
+      };
+    default:
+      return {
+        icon: Network,
+        title: "No services or workloads observed",
+        description: props.coverage.observed
+          ? `Nothing to draw in ${scope}.${system}`
+          : unobservedText(frozen),
+      };
+  }
+}
+
+function TopologyEmpty(props: EmptyProps) {
+  const { title, description, icon } = emptyCopy(props);
   return (
     <EmptyState
       className="max-w-lg bg-card"
       description={description}
-      icon={healthy ? CircleCheck : Network}
+      icon={icon}
       title={title}
-    />
+    >
+      {props.graph.hiddenSystem > 0 && props.onShowSystem && (
+        <Button
+          className="h-9 sm:h-8"
+          onClick={props.onShowSystem}
+          size="sm"
+          variant="outline"
+        >
+          Include system resources
+        </Button>
+      )}
+    </EmptyState>
   );
 }
 
@@ -1237,7 +1442,7 @@ function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
     <li>
       <div className="flex items-center gap-1">
         <button
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() =>
             entity.kind === "Namespace"
               ? props.onNamespace(entity.name)

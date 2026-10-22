@@ -1,14 +1,10 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { Badge } from "@jood-monitor/ui/badge";
 import { Card, CardContent, CardHeader } from "@jood-monitor/ui/card";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@jood-monitor/ui/tooltip";
 import { cn } from "@jood-monitor/ui/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  ChevronRight,
   CircleAlert,
   CircleCheck,
   CircleDashed,
@@ -18,18 +14,23 @@ import {
   Timer,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { updateProfileFn } from "../functions/clusters";
 import { useDisplay } from "../hooks/display";
 import { minutesLeft } from "../lib/install-enrollment";
 import { requestError } from "../lib/install-errors";
-import { freshness } from "../lib/metrics";
 import { formatClock, timeZoneLabel } from "../lib/time";
 import { profileSchema } from "../schemas/clusters";
 import {
+  type AckRequest,
+  ackPatienceMs,
   activeDiagnostic,
-  formatBytes,
+  type DeliveryStat,
+  deliveryHealth,
+  effectiveProfileName,
   nodeAcknowledgments,
+  type ObservationKind,
+  observationFreshness,
   type ProfileDraft,
   profileChoices,
   profileLabel,
@@ -41,12 +42,17 @@ import { Notice } from "./connect-parts";
 import { ProfileForm } from "./profile-form";
 import { TimeText } from "./time";
 
-const ackPollMs = 5000;
-const ackPatienceMs = 3 * 60_000;
-
-function Freshness({ value, label }: { value?: string | null; label: string }) {
+function Freshness({
+  value,
+  label,
+  kind,
+}: {
+  value?: string | null;
+  label: string;
+  kind: ObservationKind;
+}) {
   const { now } = useDisplay();
-  const state = freshness(value, now);
+  const state = observationFreshness(kind, value, now);
   if (state === "unknown") {
     return (
       <span className="inline-flex items-center gap-1 text-muted-foreground">
@@ -74,66 +80,64 @@ function Freshness({ value, label }: { value?: string | null; label: string }) {
   );
 }
 
-function Stat({
-  term,
-  definition,
-  value,
-  warn,
-}: {
-  term: string;
-  definition: string;
-  value: string;
-  warn: boolean;
-}) {
+function Stat({ stat }: { stat: DeliveryStat }) {
   return (
     <div className="flex items-center gap-1.5">
-      <dt>
-        <Tooltip>
-          <TooltipTrigger className="cursor-help rounded-sm text-muted-foreground underline decoration-dotted underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-            {term}
-          </TooltipTrigger>
-          <TooltipContent className="max-w-72">{definition}</TooltipContent>
-        </Tooltip>
-        <span className="text-muted-foreground">:</span>
-      </dt>
+      <dt className="text-muted-foreground">{stat.term}:</dt>
       <dd
         className={cn(
           "inline-flex items-center gap-1 tabular-nums",
-          warn && "text-warning-text"
+          stat.warn && "text-warning-text"
         )}
       >
-        {warn && <TriangleAlert aria-hidden className="size-3.5" />}
-        {value}
+        {stat.warn && <TriangleAlert aria-hidden className="size-3.5" />}
+        {stat.value}
       </dd>
     </div>
   );
 }
 
+// Definitions sit in a disclosure rather than a hover tooltip, so touch and
+// keyboard users can reach them.
 function DeliveryHealth({ view }: { view: ClusterView }) {
-  const reported = !!view.cluster.heartbeatAt;
-  const { queueBytes, dropped, rejectedPoints } = view.heartbeat;
-  const show = (value: string) => (reported ? value : "Not reported");
+  const { now } = useDisplay();
+  const uid = useId();
+  const { stats, note } = deliveryHealth(view, now);
   return (
-    <dl className="flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
-      <Stat
-        definition="Telemetry waiting in the observer's bounded local spool for the hub to accept it. It drains once delivery succeeds."
-        term="Buffered on agent"
-        value={show(formatBytes(queueBytes))}
-        warn={reported && queueBytes > 0}
-      />
-      <Stat
-        definition="Batches the observer or node collectors discarded because a bounded buffer was full or entries expired. Dropped samples are missing, not zero."
-        term="Dropped"
-        value={show(String(dropped))}
-        warn={reported && dropped > 0}
-      />
-      <Stat
-        definition="Data points the hub refused, for example with an unknown unit, entity or an out-of-range time."
-        term="Rejected points"
-        value={show(String(rejectedPoints))}
-        warn={reported && rejectedPoints > 0}
-      />
-    </dl>
+    <div className="space-y-1.5 text-xs">
+      <dl
+        aria-describedby={note ? `${uid}-note` : undefined}
+        className="flex flex-wrap gap-x-5 gap-y-1.5"
+      >
+        {stats.map((stat) => (
+          <Stat key={stat.term} stat={stat} />
+        ))}
+      </dl>
+      {note && (
+        <p className="text-warning-text" id={`${uid}-note`}>
+          {note}
+        </p>
+      )}
+      <details className="group">
+        <summary className="inline-flex min-h-6 cursor-pointer list-none items-center gap-1 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            aria-hidden
+            className="size-3.5 transition-transform group-open:rotate-90"
+          />
+          What these delivery counters mean
+        </summary>
+        <dl className="mt-1 space-y-1 pl-4.5">
+          {stats.map((stat) => (
+            <div key={stat.term}>
+              <dt className="inline font-medium">{stat.term}: </dt>
+              <dd className="inline text-muted-foreground">
+                {stat.definition}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </details>
+    </div>
   );
 }
 
@@ -147,6 +151,7 @@ function ClusterHeader({
   headingId: string;
 }) {
   const { cluster, profile, heartbeat } = view;
+  const { now } = useDisplay();
   return (
     <CardHeader className="gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -160,7 +165,9 @@ function ClusterHeader({
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          <Badge variant="outline">{profileLabel(profile.name)} profile</Badge>
+          <Badge variant="outline">
+            {profileLabel(effectiveProfileName(profile, now))} profile
+          </Badge>
           {profile.paused && (
             <Badge variant="warning">
               <CirclePause aria-hidden />
@@ -184,6 +191,7 @@ function ClusterHeader({
           <dt className="text-muted-foreground">Heartbeat</dt>
           <dd>
             <Freshness
+              kind="heartbeat"
               label="Last heartbeat received by the hub"
               value={cluster.heartbeatAt}
             />
@@ -193,6 +201,7 @@ function ClusterHeader({
           <dt className="text-muted-foreground">Inventory</dt>
           <dd className="flex flex-wrap gap-x-1.5">
             <Freshness
+              kind="inventory"
               label="Inventory source time (observer clock)"
               value={cluster.inventoryTime}
             />
@@ -234,15 +243,11 @@ function ActiveDiagnostic({ view }: { view: ClusterView }) {
         {formatClock(diagnostic.expiresAt, timeZone)}{" "}
         {timeZoneLabel(timeZone, diagnostic.expiresAt)}), then the cluster
         returns to {profileChoices[diagnostic.returnTo].label}. Choose another
-        profile and apply to end it early.
+        profile and apply to end it early. Other changes keep this end time
+        unless you restart the window.
       </p>
     </Notice>
   );
-}
-
-interface RequestState {
-  at: number;
-  revision: number;
 }
 
 function progressText(
@@ -276,7 +281,7 @@ function RequestFeedback({
   validation,
 }: {
   view: ClusterView;
-  request?: RequestState;
+  request?: AckRequest;
   mutation: { isPending: boolean; isError: boolean; error: unknown };
   validation?: string;
 }) {
@@ -366,52 +371,27 @@ function validationText(error: {
     .join("; ")}.`;
 }
 
-// While a request awaits acknowledgment, refresh this scope's snapshot more
-// often than the stream's throttled updates.
-function useAcknowledgmentPolling(
-  view: ClusterView,
-  request: RequestState | undefined,
-  workspace: string
-) {
-  const client = useQueryClient();
-  const { now } = useDisplay();
-  const phase = request
-    ? requestProgress(view, request.revision, now).phase
-    : "";
-  const active =
-    !!request &&
-    phase !== "complete" &&
-    phase !== "superseded" &&
-    Date.now() - request.at < ackPatienceMs;
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    const timer = setInterval(
-      () => client.invalidateQueries({ queryKey: ["snapshot", workspace] }),
-      ackPollMs
-    );
-    return () => clearInterval(timer);
-  }, [active, client, workspace]);
-}
-
+// The settings page holds each card's request, so one page-wide poller can
+// refresh acknowledgments for every card.
 export function ClusterCollection({
   view,
-  workspace,
   workspaceName,
   focused,
   initialNodeUid,
+  request,
+  onRequest,
 }: {
   view: ClusterView;
-  workspace: string;
   workspaceName: string;
   focused: boolean;
   initialNodeUid?: string;
+  request?: AckRequest;
+  onRequest: (request: AckRequest) => void;
 }) {
   const client = useQueryClient();
+  const { now } = useDisplay();
   const card = useRef<HTMLElement>(null);
   const headingId = `cluster-${view.cluster.id}-heading`;
-  const [request, setRequest] = useState<RequestState>();
   const [validation, setValidation] = useState<string>();
   const mutation = useMutation({
     mutationFn: (profile: ReturnType<typeof profileSchema.parse>) =>
@@ -420,7 +400,7 @@ export function ClusterCollection({
         data: { clusterId: view.cluster.id, profile },
       }),
     onSuccess: (result) => {
-      setRequest({ revision: result.revision, at: Date.now() });
+      onRequest({ revision: result.revision, at: Date.now() });
       client.invalidateQueries({ queryKey: ["snapshot"] });
     },
     onError: (error) => {
@@ -429,7 +409,6 @@ export function ClusterCollection({
       }
     },
   });
-  useAcknowledgmentPolling(view, request, workspace);
   useEffect(() => {
     if (!focused) {
       return;
@@ -453,8 +432,10 @@ export function ClusterCollection({
     }
     mutation.mutate(parsed.data);
   }
-  const { now } = useDisplay();
   const rows = nodeAcknowledgments(view, now);
+  // A new revision or an ended diagnostic resets the draft, so a form touched
+  // before expiry cannot silently re-arm the diagnostic.
+  const formKey = `${view.cluster.id}:${view.profile.revision}:${effectiveProfileName(view.profile, now)}`;
   return (
     <section
       aria-labelledby={headingId}
@@ -472,7 +453,7 @@ export function ClusterCollection({
           <ActiveDiagnostic view={view} />
           <ProfileForm
             initialNodeUid={initialNodeUid}
-            key={`${view.cluster.id}:${view.profile.revision}`}
+            key={formKey}
             onApply={apply}
             pending={mutation.isPending}
             view={view}

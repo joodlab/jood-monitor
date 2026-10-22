@@ -24,12 +24,15 @@ import { Timer, TriangleAlert } from "lucide-react";
 import { useId, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import { minutesLeft } from "../lib/install-enrollment";
+import { formatClock, timeZoneLabel } from "../lib/time";
 import {
   activeDiagnostic,
+  continuesDiagnostic,
   diagnosticMinutes,
   draftChanges,
   draftFromProfile,
   draftProblems,
+  effectiveProfileName,
   knownNamespaces,
   type ProfileDraft,
   type ProfileName,
@@ -42,7 +45,7 @@ import { NamespaceField } from "./collection-namespaces";
 type Profile = ClusterView["profile"];
 
 function currentBadge(choice: ProfileName, profile: Profile, now: number) {
-  if (choice !== profile.name) {
+  if (choice !== effectiveProfileName(profile, now)) {
     return;
   }
   const diagnostic = activeDiagnostic(profile, now);
@@ -77,7 +80,7 @@ function ProfileChoices({
           return (
             <label
               className={cn(
-                "group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 transition-colors hover:bg-muted/40 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/50",
+                "group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 transition-colors hover:bg-muted/40 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
                 value === name && "border-primary bg-primary/5"
               )}
               key={name}
@@ -126,19 +129,94 @@ function ProfileChoices({
   );
 }
 
+// When the selected node already runs the diagnostic, applying other changes
+// keeps its end time; restarting the window is an explicit choice.
+function RestartField({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  const uid = useId();
+  return (
+    <div className="flex items-start gap-3 border-info/30 border-t pt-3">
+      <Switch
+        aria-describedby={`${uid}-note`}
+        checked={checked}
+        className="mt-0.5"
+        id={`${uid}-restart`}
+        onCheckedChange={onChange}
+      />
+      <div className="space-y-1">
+        <Label htmlFor={`${uid}-restart`}>
+          Restart the {diagnosticMinutes}-minute window
+        </Label>
+        <p className="text-muted-foreground text-xs" id={`${uid}-note`}>
+          Runs the diagnostic for {diagnosticMinutes} minutes from when you
+          apply. Leave this off to keep the current end time.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ExpiryNote({
+  id,
+  node,
+  extend,
+  profile,
+}: {
+  id: string;
+  node: string;
+  extend: boolean;
+  profile: Profile;
+}) {
+  const { now, timeZone } = useDisplay();
+  const returnTo = profileChoices[returnProfile(profile)].label;
+  const kept =
+    !extend && continuesDiagnostic({ name: "diagnostic", node }, profile, now)
+      ? activeDiagnostic(profile, now)
+      : undefined;
+  return (
+    <p
+      className="flex items-start gap-1.5 text-muted-foreground text-xs"
+      id={id}
+    >
+      <Timer aria-hidden className="mt-px size-3.5 shrink-0 text-info-text" />
+      <span>
+        {kept
+          ? `Keeps its current end time, ${formatClock(kept.expiresAt, timeZone)} ${timeZoneLabel(timeZone, kept.expiresAt)} (${minutesLeft(kept.expiresAt, now)} left), then returns to ${returnTo}.`
+          : `Expires ${diagnosticMinutes} minutes after you apply, then returns to ${returnTo}.`}{" "}
+        The node enforces the expiry itself, even if the hub is unreachable.
+        Diagnostic samples stay queryable for 24 hours.
+      </span>
+    </p>
+  );
+}
+
 function DiagnosticOptions({
   value,
+  extend,
   nodes,
   profile,
   onChange,
+  onExtendChange,
 }: {
   value: string;
+  extend: boolean;
   nodes: Entity[];
   profile: Profile;
   onChange: (uid: string) => void;
+  onExtendChange: (value: boolean) => void;
 }) {
   const uid = useId();
-  const returnTo = profileChoices[returnProfile(profile)].label;
+  const { now } = useDisplay();
+  const continuing = continuesDiagnostic(
+    { name: "diagnostic", node: value },
+    profile,
+    now
+  );
   return (
     <div className="space-y-2 rounded-lg border border-info/40 bg-info/5 p-3">
       <Label htmlFor={`${uid}-node`}>Diagnostic node</Label>
@@ -168,17 +246,15 @@ function DiagnosticOptions({
           No nodes in the inventory yet.
         </p>
       )}
-      <p
-        className="flex items-start gap-1.5 text-muted-foreground text-xs"
+      <ExpiryNote
+        extend={extend}
         id={`${uid}-note`}
-      >
-        <Timer aria-hidden className="mt-px size-3.5 shrink-0 text-info-text" />
-        <span>
-          Expires {diagnosticMinutes} minutes after you apply, then returns to{" "}
-          {returnTo}. The node enforces the expiry itself, even if the hub is
-          unreachable. Diagnostic samples stay queryable for 24 hours.
-        </span>
-      </p>
+        node={value}
+        profile={profile}
+      />
+      {continuing && (
+        <RestartField checked={extend} onChange={onExtendChange} />
+      )}
     </div>
   );
 }
@@ -331,6 +407,7 @@ export function ProfileForm({
   onApply: (draft: ProfileDraft) => void;
 }) {
   const [confirming, setConfirming] = useState<ProfileDraft>();
+  const { now } = useDisplay();
   const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
   const nodeName = (uid: string) =>
     nodes.find((node) => node.uid === uid)?.name ?? uid;
@@ -348,7 +425,8 @@ export function ProfileForm({
       view.profile,
       nodes.some((node) => node.uid === initialNodeUid)
         ? initialNodeUid
-        : undefined
+        : undefined,
+      now
     ),
     onSubmit: ({ value }) => {
       if (value.paused && !view.profile.paused) {
@@ -380,13 +458,19 @@ export function ProfileForm({
         {(name) =>
           name === "diagnostic" && (
             <form.Field name="node">
-              {(field) => (
-                <DiagnosticOptions
-                  nodes={nodes}
-                  onChange={field.handleChange}
-                  profile={view.profile}
-                  value={field.state.value}
-                />
+              {(node) => (
+                <form.Field name="extend">
+                  {(extend) => (
+                    <DiagnosticOptions
+                      extend={extend.state.value}
+                      nodes={nodes}
+                      onChange={node.handleChange}
+                      onExtendChange={extend.handleChange}
+                      profile={view.profile}
+                      value={node.state.value}
+                    />
+                  )}
+                </form.Field>
               )}
             </form.Field>
           )
@@ -418,10 +502,10 @@ export function ProfileForm({
       <form.Subscribe selector={(state) => state.values}>
         {(values) => (
           <ApplyBar
-            changes={draftChanges(values, view.profile, nodeName)}
+            changes={draftChanges(values, view.profile, nodeName, now)}
             onDiscard={() => form.reset()}
             pending={pending}
-            problems={draftProblems(values, nodes)}
+            problems={draftProblems(values, nodes, view.profile, now)}
           />
         )}
       </form.Subscribe>

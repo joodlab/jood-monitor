@@ -8,6 +8,7 @@ import {
 import { lazy, Suspense, useCallback } from "react";
 import { isSystemNamespace } from "../lib/infrastructure";
 import type { ResourceFilter } from "../lib/resource-table";
+import type { TopologyLayout } from "../lib/service-graph";
 import { defaultPageSize, type SearchState } from "../schemas/monitor";
 import { ResourceFilterBar } from "./resource-filter-bar";
 import { Resources } from "./resources";
@@ -80,6 +81,23 @@ function ResourceViews({
       update({ pageSize: size === defaultPageSize ? undefined : size }, true),
     [update]
   );
+  // Stable callbacks keep the topology from rebuilding every card when this
+  // page re-renders for unrelated reasons. Drilling into a namespace is
+  // navigation, so Back returns to the map.
+  const drill = useCallback(
+    (namespace: string) => update({ namespace }),
+    [update]
+  );
+  // The Graph/List choice lives in the URL, so it survives the topology's
+  // remount; choosing it replaces the entry rather than adding one.
+  const chooseLayout = useCallback(
+    (layout: TopologyLayout) => update({ layout }, true),
+    [update]
+  );
+  const includeSystem = useCallback(
+    () => update({ system: true }, true),
+    [update]
+  );
   const common = {
     onInspect: inspect,
     referenceTime,
@@ -127,8 +145,10 @@ function ResourceViews({
         <Topology
           {...common}
           key={`${search.workspace}:${search.cluster ?? "all"}:${search.namespace}:${search.at ? "frozen" : "live"}`}
-          // Drilling into a namespace is navigation: Back returns to the map.
-          onNamespace={(namespace) => update({ namespace })}
+          layout={search.layout}
+          onLayout={chooseLayout}
+          onNamespace={drill}
+          onShowSystem={includeSystem}
         />
       </Suspense>
     );

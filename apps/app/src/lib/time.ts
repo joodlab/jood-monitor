@@ -15,12 +15,26 @@ export function resolveTimeZone(preference: TimeZonePreference) {
   }
 }
 
+// Intl formatters are expensive to construct and pages render hundreds of
+// times every clock tick, so they are cached per kind and zone.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function formatter(
+  kind: string,
+  timeZone: string,
+  options: Intl.DateTimeFormatOptions
+) {
+  const key = `${kind}|${timeZone}`;
+  let cached = formatters.get(key);
+  if (!cached) {
+    cached = new Intl.DateTimeFormat("en", { timeZone, ...options });
+    formatters.set(key, cached);
+  }
+  return cached;
+}
+
 export function timeZoneLabel(timeZone: string, at = Date.now()) {
   try {
-    const part = new Intl.DateTimeFormat("en", {
-      timeZone,
-      timeZoneName: "short",
-    })
+    const part = formatter("zone", timeZone, { timeZoneName: "short" })
       .formatToParts(at)
       .find((item) => item.type === "timeZoneName");
     return part?.value ?? timeZone;
@@ -48,13 +62,12 @@ export function formatClock(
   if (time == null) {
     return "Unknown";
   }
-  return new Date(time).toLocaleTimeString("en", {
-    timeZone,
+  return formatter("clock", timeZone, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  });
+  }).format(time);
 }
 
 export function formatDateTime(
@@ -65,15 +78,14 @@ export function formatDateTime(
   if (time == null) {
     return "Unknown";
   }
-  return new Date(time).toLocaleString("en", {
-    timeZone,
+  return formatter("dateTime", timeZone, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  });
+  }).format(time);
 }
 
 export function formatDay(value: string | number, timeZone: string) {
@@ -81,12 +93,11 @@ export function formatDay(value: string | number, timeZone: string) {
   if (time == null) {
     return "Unknown";
   }
-  return new Date(time).toLocaleDateString("en", {
-    timeZone,
+  return formatter("day", timeZone, {
     weekday: "short",
     month: "short",
     day: "numeric",
-  });
+  }).format(time);
 }
 
 // Compact age such as "45s", "12m", "3h", "9d". Future values (clock skew)

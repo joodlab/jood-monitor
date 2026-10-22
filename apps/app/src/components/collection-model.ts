@@ -1,5 +1,9 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { freshness, nodeProfileOutcome } from "../lib/metrics";
+import {
+  freshness,
+  inventoryFreshness,
+  nodeProfileOutcome,
+} from "../lib/metrics";
 
 // Pure collection-settings logic: drafts, change summaries, validation and
 // acknowledgment progress. The hub's profile stays the source of truth.
@@ -47,6 +51,8 @@ export function profileLabel(value: string | undefined) {
 }
 
 export interface ProfileDraft {
+  // Restart a running diagnostic's window. Off keeps its current expiry.
+  extend: boolean;
   name: ProfileName;
   namespaces: string[];
   node: string;
@@ -58,14 +64,16 @@ type Profile = ClusterView["profile"];
 
 export function draftFromProfile(
   profile: Profile,
-  initialNode?: string
+  initialNode?: string,
+  now = Date.now()
 ): ProfileDraft {
   return {
-    name: asProfileName(profile.name),
+    name: asProfileName(effectiveProfileName(profile, now)),
     node: initialNode || profile.nodeUids[0] || "",
     scope: profile.namespaces.length ? "selected" : "all",
     namespaces: [...profile.namespaces],
     paused: profile.paused,
+    extend: false,
   };
 }
 
@@ -96,22 +104,63 @@ function namespaceSummary(values: string[]) {
     : "all namespaces";
 }
 
+// The profile in effect at `now`. A diagnostic past its expiry has already
+// returned, even before the next snapshot reports it.
+export function effectiveProfileName(profile: Profile, now: number) {
+  return profile.name === "diagnostic" && !activeDiagnostic(profile, now)
+    ? returnProfile(profile)
+    : profile.name;
+}
+
+// Whether the draft keeps the diagnostic already running on the same node.
+export function continuesDiagnostic(
+  draft: Pick<ProfileDraft, "name" | "node">,
+  profile: Profile,
+  now: number
+) {
+  const running = activeDiagnostic(profile, now);
+  return (
+    draft.name === "diagnostic" &&
+    !!running &&
+    running.nodeUids[0] === draft.node
+  );
+}
+
+function profileChange(
+  draft: ProfileDraft,
+  profile: Profile,
+  nodeName: (uid: string) => string,
+  now: number
+) {
+  const current = asProfileName(effectiveProfileName(profile, now));
+  if (draft.name !== "diagnostic") {
+    return draft.name === current
+      ? undefined
+      : `Switch from ${profileChoices[current].label} to ${profileChoices[draft.name].label}`;
+  }
+  const node = draft.node ? nodeName(draft.node) : "a node";
+  const returnTo = profileChoices[returnProfile(profile)].label;
+  if (!continuesDiagnostic(draft, profile, now)) {
+    return `Run a ${diagnosticMinutes}-minute diagnostic on ${node}, then return to ${returnTo}`;
+  }
+  return draft.extend
+    ? `Restart the diagnostic on ${node} for ${diagnosticMinutes} minutes from apply, then return to ${returnTo}`
+    : undefined;
+}
+
 // Human-readable changes the draft would request; empty when unchanged.
+// Other changes keep a running diagnostic's expiry unless the draft
+// explicitly restarts it.
 export function draftChanges(
   draft: ProfileDraft,
   profile: Profile,
-  nodeName: (uid: string) => string = (uid) => uid
+  nodeName: (uid: string) => string = (uid) => uid,
+  now = Date.now()
 ) {
   const changes: string[] = [];
-  const current = asProfileName(profile.name);
-  const diagnosticNodeChanged =
-    draft.name === "diagnostic" && profile.nodeUids[0] !== draft.node;
-  if (draft.name !== current || diagnosticNodeChanged) {
-    changes.push(
-      draft.name === "diagnostic"
-        ? `Run a ${diagnosticMinutes}-minute diagnostic on ${draft.node ? nodeName(draft.node) : "a node"}, then return to ${profileChoices[returnProfile(profile)].label}`
-        : `Switch from ${profileChoices[current].label} to ${profileChoices[draft.name].label}`
-    );
+  const change = profileChange(draft, profile, nodeName, now);
+  if (change) {
+    changes.push(change);
   }
   const namespaces = draftNamespaces(draft);
   if (!sameNamespaces(namespaces, profile.namespaces)) {
@@ -147,17 +196,46 @@ export function namespaceProblem(value: string, selected: string[]) {
   return;
 }
 
-// Problems that block applying the draft, written as next steps.
-export function draftProblems(draft: ProfileDraft, nodes: Entity[]) {
+// A kept expiry this close could lapse before the hub accepts the request.
+const keepMarginMs = 30_000;
+
+function diagnosticProblem(
+  draft: ProfileDraft,
+  nodes: Entity[],
+  profile: Profile | undefined,
+  now: number
+) {
+  if (draft.name !== "diagnostic") {
+    return;
+  }
+  if (!nodes.length) {
+    return "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes.";
+  }
+  if (!nodes.some((node) => node.uid === draft.node)) {
+    return "Choose the node to run the diagnostic on.";
+  }
+  if (!profile || draft.extend || !continuesDiagnostic(draft, profile, now)) {
+    return;
+  }
+  const running = activeDiagnostic(profile, now);
+  if (running && running.expiresAt - now < keepMarginMs) {
+    return `The diagnostic ends in under ${keepMarginMs / 1000} seconds. Restart its window, or wait for it to return to ${profileChoices[running.returnTo].label} and apply then.`;
+  }
+  return;
+}
+
+// Problems that block applying the draft, written as next steps. With the
+// current profile, a running diagnostic about to end is also flagged.
+export function draftProblems(
+  draft: ProfileDraft,
+  nodes: Entity[],
+  profile?: Profile,
+  now = Date.now()
+) {
   const problems: string[] = [];
-  if (draft.name === "diagnostic") {
-    if (!nodes.length) {
-      problems.push(
-        "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes."
-      );
-    } else if (!nodes.some((node) => node.uid === draft.node)) {
-      problems.push("Choose the node to run the diagnostic on.");
-    }
+  const diagnostic = diagnosticProblem(draft, nodes, profile, now);
+  if (diagnostic) {
+    problems.push(diagnostic);
   }
   const namespaces = draftNamespaces(draft);
   if (draft.scope === "selected" && namespaces.length === 0) {
@@ -174,13 +252,15 @@ export function draftProblems(draft: ProfileDraft, nodes: Entity[]) {
 }
 
 // The profile sent to the hub. The hub assigns the next revision and the
-// profile a diagnostic returns to.
+// profile a diagnostic returns to. A diagnostic already running on the same
+// node keeps its expiry unless the draft restarts it.
 export function profileRequest(
   draft: ProfileDraft,
   profile: Profile,
   now: number
 ) {
   const diagnostic = draft.name === "diagnostic";
+  const keep = !draft.extend && continuesDiagnostic(draft, profile, now);
   return {
     name: draft.name,
     revision: profile.revision,
@@ -190,7 +270,9 @@ export function profileRequest(
     namespaces: draftNamespaces(draft),
     ...(diagnostic
       ? {
-          expiresAt: new Date(now + diagnosticMinutes * 60_000).toISOString(),
+          expiresAt: keep
+            ? profile.expiresAt
+            : new Date(now + diagnosticMinutes * 60_000).toISOString(),
         }
       : {}),
   };
@@ -298,6 +380,152 @@ export function requestProgress(
     phase = counts.acknowledged > 0 ? "partial" : "waiting";
   }
   return { phase, observerReceived, ...counts };
+}
+
+// While a profile request awaits acknowledgment, the snapshot is refreshed on
+// a capped backoff that ends with the patience window.
+export const ackPatienceMs = 3 * 60_000;
+const ackPollStepsMs = [10_000, 20_000, 30_000];
+
+// Delay before refresh `attempt` (0-based) when `elapsedMs` have passed since
+// the request, or undefined once that refresh would fall outside the window.
+export function ackPollDelay(attempt: number, elapsedMs: number) {
+  const delay =
+    ackPollStepsMs[Math.min(attempt, ackPollStepsMs.length - 1)] ??
+    ackPatienceMs;
+  return elapsedMs + delay > ackPatienceMs ? undefined : delay;
+}
+
+// A profile request the hub accepted: its revision and when it was sent.
+export interface AckRequest {
+  at: number;
+  revision: number;
+}
+
+// Whether a request still needs snapshot refreshes to show acknowledgments:
+// inside the patience window, not complete or superseded, and with nodes
+// that could acknowledge it.
+export function awaitingAcknowledgment(
+  view: ClusterView,
+  request: AckRequest | undefined,
+  now: number
+) {
+  if (!request || now - request.at >= ackPatienceMs) {
+    return false;
+  }
+  const progress = requestProgress(view, request.revision, now);
+  return (
+    progress.total > 0 &&
+    progress.phase !== "complete" &&
+    progress.phase !== "superseded"
+  );
+}
+
+// When the most recent request still awaiting acknowledgment was sent, so a
+// single page-wide poller can back off from it; undefined when none waits.
+export function latestPendingRequest(
+  views: ClusterView[],
+  requests: Partial<Record<string, AckRequest>>,
+  now: number
+) {
+  let latest: number | undefined;
+  for (const view of views) {
+    const request = requests[view.cluster.id];
+    if (
+      request &&
+      awaitingAcknowledgment(view, request, now) &&
+      (latest === undefined || request.at > latest)
+    ) {
+      latest = request.at;
+    }
+  }
+  return latest;
+}
+
+export type ObservationKind = "heartbeat" | "inventory";
+
+// Heartbeats arrive about every 15 s, while inventory is reconciled about
+// every 60 s, so each is judged against its own staleness budget.
+export function observationFreshness(
+  kind: ObservationKind,
+  at: string | null | undefined,
+  now: number
+) {
+  return kind === "inventory"
+    ? inventoryFreshness(at, now)
+    : freshness(at, now);
+}
+
+export interface DeliveryStat {
+  definition: string;
+  term: string;
+  value: string;
+  warn: boolean;
+}
+
+type Heartbeat = ClusterView["heartbeat"];
+
+const deliveryTerms: {
+  term: string;
+  definition: string;
+  read: (heartbeat: Heartbeat) => number;
+  format: (value: number) => string;
+}[] = [
+  {
+    term: "Buffered on agent",
+    definition:
+      "Telemetry waiting in the observer's bounded local spool for the hub to accept it. It drains once delivery succeeds.",
+    read: (heartbeat) => heartbeat.queueBytes,
+    format: (value) => formatBytes(value),
+  },
+  {
+    term: "Dropped",
+    definition:
+      "Batches the observer or node collectors discarded because a bounded buffer was full or entries expired. Dropped samples are missing, not zero.",
+    read: (heartbeat) => heartbeat.dropped,
+    format: String,
+  },
+  {
+    term: "Rejected points",
+    definition:
+      "Data points the hub refused, for example with an unknown unit, entity or an out-of-range time.",
+    read: (heartbeat) => heartbeat.rejectedPoints,
+    format: String,
+  },
+];
+
+function deliveryNote(state: ReturnType<typeof freshness>) {
+  if (state === "stale") {
+    return "The heartbeat is stale, so these are the last values the observer reported. Current buffering, drops and rejections are unknown.";
+  }
+  if (state === "clock skew") {
+    return "The heartbeat time is ahead of this browser's clock, so these last reported values cannot be confirmed as current.";
+  }
+  return;
+}
+
+// Delivery counters from the latest heartbeat. Without a fresh heartbeat they
+// are last-reported values, never a verified current zero.
+export function deliveryHealth(view: ClusterView, now: number) {
+  const state = freshness(view.cluster.heartbeatAt, now);
+  const reported = state !== "unknown";
+  const current = state === "fresh";
+  const stats: DeliveryStat[] = deliveryTerms.map(
+    ({ term, definition, read, format }) => {
+      const raw = read(view.heartbeat);
+      let value = "Not reported";
+      if (reported) {
+        value = current ? format(raw) : `${format(raw)} (last reported)`;
+      }
+      return {
+        term,
+        definition,
+        value,
+        warn: reported && (!current || raw > 0),
+      };
+    }
+  );
+  return { stats, note: deliveryNote(state) };
 }
 
 export function formatBytes(value: number) {
