@@ -138,11 +138,70 @@ describe("card status line", () => {
 
   it("calls a fully ready workload healthy with its readiness", () => {
     const view = fixture();
+    Object.assign(find(view, "web-3"), {
+      status: "Running",
+      ready: 1,
+      restarts: 0,
+    });
     const web = { ...find(view, "web"), ready: 3 };
     expect(cardStatus(web, summarize(view, web, now), fresh)).toEqual({
       tone: "healthy",
       text: "Healthy · 3/3 ready",
     });
+  });
+
+  it("never calls a workload healthy beside a failing member pod", () => {
+    // Complete readiness, as during a surge rollout, while web-3 crashes.
+    const view = fixture();
+    const web = { ...find(view, "web"), ready: 3 };
+    expect(cardStatus(web, summarize(view, web, now), fresh)).toEqual({
+      tone: "neutral",
+      text: "3/3 ready · CrashLoopBackOff · 1 of 3 pods",
+    });
+  });
+
+  it("gives a pod inside its start-up grace no health signal", () => {
+    const starting = pod("web-4", {
+      status: "ContainerCreating",
+      ready: 0,
+      createdAt: new Date(now - 30_000).toISOString(),
+    });
+    expect(toneOf(starting, false, false)).toBe("neutral");
+    expect(toneOf(pod("web-5"), false, false)).toBe("healthy");
+    expect(toneOf(starting, false, true)).toBe("stale");
+  });
+
+  it("says selector-matched, not endpoint, pods without endpoint discovery", () => {
+    const view = fixture();
+    view.inventory.capabilities.push("endpointslices_unavailable");
+    view.inventory.edges = [
+      ...view.inventory.edges.filter(
+        (item) => item.relation !== "has_endpoint"
+      ),
+      edge("web-svc", "web-1", "selects"),
+      edge("web-svc", "web-2", "selects"),
+    ];
+    const service = find(view, "web-svc");
+    const summary = summarize(view, service, now);
+    const status = cardStatus(service, summary, {
+      ...fresh,
+      selectorOnly: true,
+    });
+    expect(status).toEqual({
+      tone: "neutral",
+      text: "2/2 selector-matched pods ready",
+    });
+    expect(podsLabel(service, summary, true)).toBe("2 selector-matched pods");
+    expect(`${status.text} ${podsLabel(service, summary, true)}`).not.toMatch(
+      "endpoint pod"
+    );
+    const empty = entity("lonely-svc", "Service");
+    expect(
+      cardStatus(empty, summarize(view, empty, now), {
+        ...fresh,
+        selectorOnly: true,
+      }).text
+    ).toBe("No selector-matched pods · endpoints not observed");
   });
 
   it("never calls stale inventory healthy and keeps a stale problem visible", () => {

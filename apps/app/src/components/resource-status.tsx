@@ -28,7 +28,15 @@ type Tone = "neutral" | "ok" | "problem" | "stale";
 // warning so staleness does not hide it; the label says it is stale either way.
 function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
   const status = resourceStatus(entity);
+  // A not-ready pod the caller has judged unproblematic is still starting:
+  // neutral, never a green "ok".
+  const starting =
+    problem === false &&
+    entity.kind === "Pod" &&
+    entity.ready === 0 &&
+    !["Succeeded", "Completed", "Failed"].includes(entity.status);
   if (
+    starting ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
     ["Unknown", "Observed"].includes(status) ||
     entity.kind === "Service" ||

@@ -123,7 +123,7 @@ function AddNamespace({
           value={value}
         />
         <Button
-          className="h-8"
+          className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
           disabled={disabled || !value.trim()}
           onClick={add}
           size="sm"

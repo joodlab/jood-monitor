@@ -32,6 +32,7 @@ import { useId, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import { minutesLeft } from "../lib/install-enrollment";
 import {
+  awaitingSnapshot,
   dismissCleared,
   draftFor,
   stageDraft,
@@ -47,6 +48,7 @@ import {
   capabilityLabel,
   clusterNodes,
   type DeliveryStat,
+  type DraftField,
   deliveryHealth,
   diagnosticMinutes,
   draftFieldProblems,
@@ -72,6 +74,9 @@ import { SettingsRail, StagedPill } from "./settings-rail";
 import { TimeText } from "./time";
 
 type Cluster = ClusterView["cluster"];
+
+// Full-strength focus ring; it replaces the Button primitive's softer halo.
+const focusRing = "focus-visible:ring-2 focus-visible:ring-ring";
 
 function Freshness({
   value,
@@ -397,7 +402,12 @@ function EnrollmentRail({
     >
       <RenewalHint cluster={cluster} />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <Button onClick={() => setOpen(true)} size="sm" variant="outline">
+        <Button
+          className={focusRing}
+          onClick={() => setOpen(true)}
+          size="sm"
+          variant="outline"
+        >
           <RefreshCw />
           Renew enrollment
         </Button>
@@ -495,7 +505,7 @@ function ClearedNotice({ clusterId }: { clusterId: string }) {
     <Notice icon={<Info className="size-4" />} role="status" tone="info">
       <p>{message}</p>
       <Button
-        className="h-8"
+        className={cn("h-8", focusRing)}
         onClick={() => dismissCleared(clusterId)}
         size="sm"
         variant="outline"
@@ -529,6 +539,7 @@ function DiagnosticStarter({
           : "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes."}
       </p>
       <Button
+        className={focusRing}
         disabled={disabled || !nodes.length}
         onClick={onStage}
         size="sm"
@@ -540,6 +551,58 @@ function DiagnosticStarter({
     </div>
   );
 }
+
+// The inspector asked for a node other than the one running the diagnostic.
+// Moving it ends the current window and starts a new one, so it is an
+// explicit staged change, never the form's starting point.
+function MoveDiagnostic({
+  view,
+  draft,
+  requested,
+  disabled,
+  onMove,
+}: {
+  view: ClusterView;
+  draft: ProfileDraft;
+  requested?: string;
+  disabled: boolean;
+  onMove: (node: string) => void;
+}) {
+  const { now } = useDisplay();
+  const running = activeDiagnostic(view.profile, now);
+  const known = clusterNodes(view).some((node) => node.uid === requested);
+  if (
+    !(running && requested && known) ||
+    draft.name !== "diagnostic" ||
+    draft.node === requested ||
+    running.nodeUids[0] === requested
+  ) {
+    return null;
+  }
+  const namer = nodeNamer(view);
+  const name = namer(requested);
+  const current = running.nodeUids.map(namer).join(", ") || "another node";
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed p-3">
+      <p className="min-w-0 flex-1 text-muted-foreground text-xs">
+        The diagnostic runs on {current} now. Moving it to {name} ends that
+        window and runs {diagnosticMinutes} minutes on {name} after you apply.
+      </p>
+      <Button
+        className={focusRing}
+        disabled={disabled}
+        onClick={() => onMove(requested)}
+        size="sm"
+        variant="outline"
+      >
+        <Stethoscope />
+        Move the diagnostic to {name}
+      </Button>
+    </div>
+  );
+}
+
+const noFields: ReadonlySet<DraftField> = new Set();
 
 // One cluster's settings as Railway-style rails. Edits are staged in the
 // shared store and applied from the staged-changes card; this panel shows
@@ -560,12 +623,17 @@ export function ClusterSettings({
   const id = view.cluster.id;
   const draft = draftFor(staged, view, now, initialNodeUid);
   const entry = stagedDraftFor(staged, view, now);
-  const fields = stagedFields(draft, view.profile, now);
+  // Staged indicators come from the store only, so pills and the heading
+  // count always match the Apply card.
+  const fields = entry ? stagedFields(entry, view.profile, now) : noFields;
   const nodes = clusterNodes(view);
   const problems = entry
     ? draftFieldProblems(draft, nodes, view.profile, now)
     : { profile: [], namespaces: [] };
   const applying = !!staged.applying[id];
+  // Sending, or accepted while the snapshot still shows the old profile:
+  // edits now would be staged against the revision being replaced.
+  const locked = awaitingSnapshot(staged, view);
   const update = (patch: Partial<ProfileDraft>) =>
     stageDraft(view, { ...draft, ...patch }, now);
   const inventory = new Set(
@@ -594,7 +662,7 @@ export function ClusterSettings({
           title="Collection profile"
         >
           <ProfileChoices
-            disabled={applying}
+            disabled={locked}
             onChange={(name) => update({ name })}
             profile={view.profile}
             staged={profileStaged}
@@ -608,9 +676,16 @@ export function ClusterSettings({
           title="Diagnostics"
         >
           <ActiveDiagnostic view={view} />
+          <MoveDiagnostic
+            disabled={locked}
+            draft={draft}
+            onMove={(node) => update({ node })}
+            requested={initialNodeUid}
+            view={view}
+          />
           {draft.name === "diagnostic" ? (
             <DiagnosticOptions
-              disabled={applying}
+              disabled={locked}
               extend={draft.extend}
               nodes={nodes}
               onChange={(node) => update({ node })}
@@ -621,7 +696,7 @@ export function ClusterSettings({
             />
           ) : (
             <DiagnosticStarter
-              disabled={applying}
+              disabled={locked}
               node={draft.node}
               onStage={() => update({ name: "diagnostic" })}
               view={view}
@@ -637,7 +712,7 @@ export function ClusterSettings({
         >
           <NamespaceField
             current={view.profile.namespaces}
-            disabled={applying}
+            disabled={locked}
             draft={draft}
             inventory={inventory}
             known={knownNamespaces(view)}
@@ -654,7 +729,7 @@ export function ClusterSettings({
           <PauseField
             checked={draft.paused}
             current={view.profile.paused}
-            disabled={applying}
+            disabled={locked}
             onChange={(paused) => update({ paused })}
             staged={fields.has("paused")}
           />

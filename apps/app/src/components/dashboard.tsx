@@ -48,12 +48,15 @@ const pageDescriptions: Record<string, string> = {
   observability:
     "What needs attention, readiness and measured usage across the clusters in scope.",
   resources: "Servers, workloads, pods and services, with filters and search.",
-  activity:
-    "Node, scaling and resource changes observed in Kubernetes, plus reported automation receipts.",
+  activity: "A timeline of what changed in the clusters in scope.",
   settings:
     "Observer health, collection profiles, diagnostics and cluster enrollment.",
   workspaces: "Workspaces group clusters and scope what you see.",
 };
+
+// Switching workspace or cluster starts from that scope's whole map, so a
+// namespace or search from the previous scope cannot hide its resources.
+const scopeReset = { namespace: "all", q: "" } satisfies Partial<SearchState>;
 
 // Components written for the previous navigation still ask for its views;
 // translate them to the project tabs.
@@ -198,6 +201,18 @@ function useDashboardNavigation() {
   const openCluster = useCallback(
     (view: ClusterView) =>
       go("architecture", {
+        ...scopeReset,
+        workspace: view.cluster.workspaceId,
+        cluster: view.cluster.id,
+      }),
+    [go]
+  );
+  // The finder promises a cluster's servers.
+  const openClusterServers = useCallback(
+    (view: ClusterView) =>
+      go("resources", {
+        ...scopeReset,
+        tab: "servers",
         workspace: view.cluster.workspaceId,
         cluster: view.cluster.id,
       }),
@@ -214,7 +229,15 @@ function useDashboardNavigation() {
     }),
     [inspect, go]
   );
-  return { update, go, inspect, closeInspector, openCluster, actions };
+  return {
+    update,
+    go,
+    inspect,
+    closeInspector,
+    openCluster,
+    openClusterServers,
+    actions,
+  };
 }
 
 // ⌘K / Ctrl+K opens the finder. There is no single-key shortcut, so speech
@@ -300,11 +323,13 @@ function PageBody({
     case "workspaces":
       return (
         <WorkspacesPage
+          error={data.workspaces.isError && !data.workspaces.data}
           loading={data.workspaces.isPending}
           onNewWorkspace={onNewWorkspace}
           onOpen={(workspace) =>
-            go("architecture", { workspace, cluster: undefined })
+            go("architecture", { ...scopeReset, workspace, cluster: undefined })
           }
+          onRetry={() => data.workspaces.refetch()}
           scope={search.workspace}
           views={data.allViews}
           workspaces={data.workspaces.data ?? []}
@@ -347,16 +372,21 @@ function DashboardContent() {
   const summary = attentionSummary(attention);
   const [newWorkspace, setNewWorkspace] = useState(false);
   const dashboardNavigation = useDashboardNavigation();
-  const { update, go, inspect, closeInspector, openCluster } =
-    dashboardNavigation;
+  const { update, go, inspect, closeInspector } = dashboardNavigation;
   const openPalette = useCallback(() => setPalette(true), []);
+  // The canvas is the landing view: fetch its chunk alongside the snapshot
+  // instead of after it.
+  useEffect(() => {
+    if (search.view === "architecture") {
+      import("./topology").catch(() => undefined);
+    }
+  }, [search.view]);
   usePaletteShortcut(openPalette);
   function changeWorkspace(workspace: string) {
     update({
+      ...scopeReset,
       workspace,
       cluster: undefined,
-      namespace: "all",
-      q: "",
       resource: undefined,
       resourceCluster: undefined,
       diagnosticNode: undefined,
@@ -390,7 +420,7 @@ function DashboardContent() {
         cluster={search.cluster}
         clusters={allViews}
         connection={connection}
-        onCluster={(cluster) => update({ cluster, namespace: "all" })}
+        onCluster={(cluster) => update({ ...scopeReset, cluster })}
         onFreeze={(at) => update({ at })}
         onNavigate={(view) => go(view)}
         onNewWorkspace={() => setNewWorkspace(true)}
@@ -481,7 +511,7 @@ function DashboardContent() {
         </DialogContent>
       </Dialog>
       <CommandPalette
-        onCluster={openCluster}
+        onCluster={dashboardNavigation.openClusterServers}
         onInspect={inspect}
         onOpenChange={setPalette}
         open={palette}

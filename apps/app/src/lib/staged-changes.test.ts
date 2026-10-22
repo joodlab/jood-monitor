@@ -1,11 +1,14 @@
 import type { ClusterView } from "@jood-monitor/api-client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { draftFromProfile } from "../components/collection-model";
 import {
   applyFailed,
+  applyStagedCluster,
   applySucceeded,
+  awaitingSnapshot,
   discardStaged,
   dismissCleared,
+  dismissRequests,
   draftFor,
   isPristine,
   markApplying,
@@ -15,11 +18,13 @@ import {
   recentRequests,
   resetStaged,
   revertField,
+  settleRequests,
   stageDraft,
   stagedClusters,
   stagedCount,
   stagedDraftFor,
   stagedFields,
+  stagedInScope,
   stagedNotes,
   stagedRows,
   stagedSnapshot,
@@ -118,6 +123,7 @@ describe("staging drafts", () => {
     expect(stagedSnapshot().entries[view.cluster.id]).toEqual({
       base: "4:standard",
       draft,
+      workspaceId: "synthetic",
     });
     expect(stagedDraftFor(stagedSnapshot(), view, now)).toEqual(draft);
   });
@@ -146,6 +152,54 @@ describe("staging drafts", () => {
     const view = fixture();
     expect(draftFor(stagedSnapshot(), view, now, "n2").node).toBe("n2");
     expect(draftFor(stagedSnapshot(), view, now, "gone").node).toBe("");
+  });
+
+  it("lets a deep-linked node pick the target when other changes are staged", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    const draft = draftFor(stagedSnapshot(), view, now, "n2");
+    expect(draft).toMatchObject({ node: "n2", paused: true });
+    // Picking the target is not itself a change.
+    expect(stagedRows(draft, view, now).map((row) => row.field)).toEqual([
+      "paused",
+    ]);
+  });
+
+  it("keeps the node of a staged diagnostic", () => {
+    const view = fixture();
+    const diagnostic = {
+      ...draftFromProfile(view.profile),
+      name: "diagnostic" as const,
+      node: "n1",
+    };
+    stageDraft(view, diagnostic, now);
+    expect(draftFor(stagedSnapshot(), view, now, "n2").node).toBe("n1");
+  });
+
+  it("never moves a running diagnostic from a deep link", () => {
+    const view = runningDiagnostic(fixture());
+    const draft = draftFor(stagedSnapshot(), view, now, "n2");
+    expect(draft.node).toBe("n1");
+    expect(stagedFields(draft, view.profile, now).size).toBe(0);
+    // A namespace-only edit from that draft stages exactly that change.
+    stageDraft(
+      view,
+      { ...draft, scope: "selected", namespaces: ["shop"] },
+      now
+    );
+    const [cluster] = stagedClusters(stagedSnapshot(), [view], now);
+    expect(cluster?.rows.map((row) => row.field)).toEqual(["namespaces"]);
+    expect(cluster?.draft.node).toBe("n1");
+  });
+
+  it("tells which workspaces have drafts", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(stagedInScope(stagedSnapshot(), "synthetic")).toBe(true);
+    expect(stagedInScope(stagedSnapshot(), "other")).toBe(false);
+    expect(stagedInScope(stagedSnapshot(), "global")).toBe(true);
+    discardStaged([view.cluster.id]);
+    expect(stagedInScope(stagedSnapshot(), "global")).toBe(false);
   });
 
   it("discards selected clusters only", () => {
@@ -192,6 +246,34 @@ describe("profile changes underneath a draft", () => {
     pruneStaged([view], now);
     expect(stagedSnapshot().entries[view.cluster.id]).toBeDefined();
   });
+
+  it("stays locked until the snapshot shows the applied revision", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    markApplying([view.cluster.id]);
+    expect(awaitingSnapshot(stagedSnapshot(), view)).toBe(true);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    // Accepted, but the snapshot still shows revision 4.
+    expect(awaitingSnapshot(stagedSnapshot(), view)).toBe(true);
+    view.profile = { ...view.profile, revision: 5 };
+    expect(awaitingSnapshot(stagedSnapshot(), view)).toBe(false);
+  });
+
+  it("says when the operator's own apply replaced later edits", () => {
+    const view = fixture();
+    markApplying([view.cluster.id]);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    // An edit staged against revision 4 before the snapshot caught up.
+    stageDraft(view, { ...draftFromProfile(view.profile), name: "basic" }, now);
+    pruneStaged([view], now);
+    expect(stagedSnapshot().entries[view.cluster.id]).toBeDefined();
+    view.profile = { ...view.profile, revision: 5 };
+    pruneStaged([view], now);
+    expect(stagedSnapshot().entries).toEqual({});
+    expect(stagedSnapshot().cleared[view.cluster.id]).toContain(
+      "Your applied changes (revision 5)"
+    );
+  });
 });
 
 describe("applying", () => {
@@ -205,6 +287,78 @@ describe("applying", () => {
     expect(state.entries).toEqual({});
     expect(state.applying).toEqual({});
     expect(state.requests[view.cluster.id]).toEqual({ revision: 5, at: now });
+  });
+
+  it("sends the staged profile and records the accepted revision", async () => {
+    const view = fixture();
+    const draft = { ...draftFromProfile(view.profile), paused: true };
+    stageDraft(view, draft, now);
+    markApplying([view.cluster.id]);
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    await expect(
+      applyStagedCluster({ view, draft }, send, () => now)
+    ).resolves.toBe(true);
+    expect(send).toHaveBeenCalledWith(
+      view.cluster.id,
+      expect.objectContaining({ name: "standard", paused: true, revision: 4 })
+    );
+    expect(stagedSnapshot().requests[view.cluster.id]).toEqual({
+      revision: 5,
+      at: now,
+    });
+    expect(stagedSnapshot().entries).toEqual({});
+  });
+
+  it("keeps the draft and the hub's reason when sending fails", async () => {
+    const view = fixture();
+    const draft = { ...draftFromProfile(view.profile), paused: true };
+    stageDraft(view, draft, now);
+    markApplying([view.cluster.id]);
+    const send = vi.fn().mockRejectedValue(new Error("hub unavailable"));
+    await expect(
+      applyStagedCluster({ view, draft }, send, () => now)
+    ).resolves.toBe(false);
+    expect(stagedSnapshot().failures[view.cluster.id]).toContain(
+      "hub unavailable"
+    );
+    expect(stagedSnapshot().applying).toEqual({});
+    expect(stagedSnapshot().entries[view.cluster.id]).toBeDefined();
+  });
+
+  it("never re-arms a diagnostic that ended before the click landed", async () => {
+    // Runs on n1 and ends at E = now + 60 s; staged at E - 60 s.
+    const view = runningDiagnostic(fixture(), 1);
+    const draft = {
+      ...draftFromProfile(view.profile, undefined, now),
+      paused: true,
+    };
+    expect(draft).toMatchObject({ name: "diagnostic", node: "n1" });
+    stageDraft(view, draft, now);
+    markApplying([view.cluster.id]);
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    // The display clock still reads before E; the real clock is E + 3 s.
+    await applyStagedCluster({ view, draft }, send, () => now + 63_000);
+    expect(send).not.toHaveBeenCalled();
+    expect(stagedSnapshot().applying).toEqual({});
+    expect(stagedSnapshot().failures[view.cluster.id]).toContain(
+      "diagnostic ended"
+    );
+  });
+
+  it("refuses to keep a diagnostic end time about to lapse", async () => {
+    const view = runningDiagnostic(fixture(), 1);
+    const draft = {
+      ...draftFromProfile(view.profile, undefined, now),
+      paused: true,
+    };
+    stageDraft(view, draft, now);
+    markApplying([view.cluster.id]);
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    await applyStagedCluster({ view, draft }, send, () => now + 50_000);
+    expect(send).not.toHaveBeenCalled();
+    expect(stagedSnapshot().failures[view.cluster.id]).toContain(
+      "ends in under 30 seconds"
+    );
   });
 
   it("keeps the draft staged with the reason on failure", () => {
@@ -328,15 +482,89 @@ describe("staged clusters", () => {
     view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
     const pending = recentRequests(stagedSnapshot(), [view], now + 1000);
     expect(pending[0]?.progress?.phase).toBe("waiting");
-    const nodes = view.heartbeat.nodes ?? [];
-    view.heartbeat = {
-      ...view.heartbeat,
-      appliedRevision: 5,
-      nodes: nodes.map((node) => ({ ...node, appliedRevision: 5 })),
-    };
+    acknowledge(view, 5, now + 1000);
+    settleRequests([view], now + 1000);
     expect(
       recentRequests(stagedSnapshot(), [view], now + 1000)[0]?.progress?.phase
     ).toBe("complete");
     expect(recentRequests(stagedSnapshot(), [view], now + 61_000)).toEqual([]);
   });
+
+  it("shows success for a while from when completion is seen", () => {
+    const view = fixture();
+    markApplying([view.cluster.id]);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
+    // The nodes acknowledge after the 60 s refresh.
+    acknowledge(view, 5, now + 90_000);
+    settleRequests([view], now + 90_000);
+    expect(stagedSnapshot().requests[view.cluster.id]?.completedAt).toBe(
+      now + 90_000
+    );
+    // A later pass keeps the first time it was seen.
+    settleRequests([view], now + 95_000);
+    expect(stagedSnapshot().requests[view.cluster.id]?.completedAt).toBe(
+      now + 90_000
+    );
+    const shown = recentRequests(stagedSnapshot(), [view], now + 100_000);
+    expect(shown[0]?.progress?.phase).toBe("complete");
+    expect(shown[0]?.timedOut).toBeUndefined();
+    acknowledge(view, 5, now + 149_000);
+    expect(
+      recentRequests(stagedSnapshot(), [view], now + 149_000)
+    ).toHaveLength(1);
+    acknowledge(view, 5, now + 150_000);
+    expect(recentRequests(stagedSnapshot(), [view], now + 150_000)).toEqual([]);
+  });
+
+  it("flags unacknowledged requests after the patience window", () => {
+    const view = fixture();
+    markApplying([view.cluster.id]);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
+    // One of two nodes acknowledges.
+    acknowledge(view, 5, now + 181_000, 1);
+    const late = recentRequests(stagedSnapshot(), [view], now + 181_000);
+    expect(late).toHaveLength(1);
+    expect(late[0]?.progress?.phase).toBe("partial");
+    expect(late[0]?.timedOut).toBe(true);
+    // Still there much later, until dismissed.
+    acknowledge(view, 5, now + 600_000, 1);
+    expect(
+      recentRequests(stagedSnapshot(), [view], now + 600_000)
+    ).toHaveLength(1);
+    dismissRequests([view.cluster.id]);
+    expect(recentRequests(stagedSnapshot(), [view], now + 600_000)).toEqual([]);
+    // Settings still knows the request.
+    expect(stagedSnapshot().requests[view.cluster.id]?.revision).toBe(5);
+  });
+
+  it("drops a timed-out request once a newer revision replaces it", () => {
+    const view = fixture();
+    markApplying([view.cluster.id]);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    view.profile = { ...view.profile, revision: 6, appliedRevision: 6 };
+    acknowledge(view, 6, now + 200_000, 1);
+    expect(recentRequests(stagedSnapshot(), [view], now + 200_000)).toEqual([]);
+  });
 });
+
+// Fresh heartbeats at `time`, with the first `count` nodes on `revision`.
+function acknowledge(
+  view: ClusterView,
+  revision: number,
+  time: number,
+  count = Number.POSITIVE_INFINITY
+) {
+  const seen = new Date(time - 5000).toISOString();
+  view.cluster = { ...view.cluster, heartbeatAt: seen };
+  view.heartbeat = {
+    ...view.heartbeat,
+    appliedRevision: revision,
+    nodes: (view.heartbeat.nodes ?? []).map((node, index) => ({
+      ...node,
+      seenAt: seen,
+      appliedRevision: index < count ? revision : node.appliedRevision,
+    })),
+  };
+}

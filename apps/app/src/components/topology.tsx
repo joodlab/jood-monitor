@@ -251,7 +251,11 @@ function revealCard(
     { ...overlayInset, right: insetRight + 24 }
   );
   if (!visible) {
-    instance.setCenter(left + width / 2, top + height / 2, {
+    // Centre the card in the clear area between the overlays, not the whole
+    // canvas, so an open Activity panel never covers it.
+    const shiftX = (insetRight + 24 - overlayInset.left) / 2 / zoom;
+    const shiftY = (overlayInset.bottom - overlayInset.top) / 2 / zoom;
+    instance.setCenter(left + width / 2 + shiftX, top + height / 2 + shiftY, {
       zoom,
       duration: 200,
     });
@@ -434,6 +438,10 @@ export function Topology(props: TopologyProps) {
   const layoutKey = useRef("");
   const fitted = useRef(false);
   const focusRequest = useRef<FocusRequest>(undefined);
+  const section = useRef<HTMLElement>(null);
+  // The toolbar has a different parent in each layout, so a switch remounts
+  // it; focus follows to the pressed layout button instead of the page body.
+  const refocusMode = useRef<TopologyLayout>(undefined);
   const { graph, filterKey } = useCardGraph(props, expanded);
   const padding = useMemo(() => paddingFor(insetRight), [insetRight]);
   const focusPadding = useMemo(() => paddingFor(insetRight, 16), [insetRight]);
@@ -459,6 +467,13 @@ export function Topology(props: TopologyProps) {
     focusRequest.current = undefined;
     if (mode === "list") {
       setInstance(undefined);
+    }
+    const requested = refocusMode.current;
+    refocusMode.current = undefined;
+    if (requested === mode) {
+      section.current
+        ?.querySelector<HTMLElement>(`[data-layout="${mode}"]`)
+        ?.focus();
     }
   }, [mode]);
   useEffect(() => {
@@ -546,6 +561,7 @@ export function Topology(props: TopologyProps) {
     if (next === mode) {
       return;
     }
+    refocusMode.current = next;
     setChoice(next);
     onLayout?.(next);
   }
@@ -600,9 +616,10 @@ export function Topology(props: TopologyProps) {
       {overlays.scope}
       <FilterChips
         onProblems={props.onProblems}
-        onSystem={props.systemLocked ? undefined : props.onSystem}
+        onSystem={props.onSystem}
         problems={problems}
         system={showSystem}
+        systemLocked={props.systemLocked ?? false}
       />
     </>
   );
@@ -615,6 +632,7 @@ export function Topology(props: TopologyProps) {
           "h-[calc(100svh-16rem)] min-h-[480px] rounded-lg border"
       )}
       data-testid="service-topology"
+      ref={section}
     >
       {mode === "graph" ? (
         <>
@@ -629,20 +647,37 @@ export function Topology(props: TopologyProps) {
               orientation="vertical"
             />
           </div>
-          <div className="pointer-events-none absolute top-3 left-16 z-10 flex max-w-[calc(100%-9rem)] flex-col items-start gap-2 sm:max-w-[calc(100%-17rem)]">
-            <div className="pointer-events-auto flex flex-wrap items-center gap-2">
-              {scopeRow}
+          {/* Scope and actions share one row, so the actions take their real
+              width and neither covers the other at any screen width. From lg
+              the scope also keeps clear of the Activity panel below it. */}
+          <div className="pointer-events-none absolute top-3 right-3 left-16 z-20 flex items-start gap-2">
+            <div
+              className={cn(
+                "flex min-w-0 flex-1 flex-col items-start gap-2",
+                overlays.panel && "lg:max-w-[calc(100%-22.5rem)]"
+              )}
+            >
+              <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-2">
+                {scopeRow}
+              </div>
+              {overlays.below && (
+                <div className="pointer-events-auto empty:hidden">
+                  {overlays.below}
+                </div>
+              )}
+              <Truncated graph={graph} />
             </div>
-            {overlays.below && (
-              <div className="pointer-events-auto empty:hidden">
-                {overlays.below}
+            {overlays.actions && (
+              <div className="ml-auto flex shrink-0 items-center gap-2 *:pointer-events-auto">
+                {overlays.actions}
               </div>
             )}
-            <Truncated graph={graph} />
           </div>
-          {overlays.actions && (
-            <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center gap-2 *:pointer-events-auto">
-              {overlays.actions}
+          {/* Before the canvas in the DOM, so Tab reaches the panel right
+              after the button that opens it rather than after every card. */}
+          {overlays.panel && (
+            <div className="pointer-events-none absolute top-15 right-3 bottom-16 z-20 flex flex-col items-end">
+              {overlays.panel}
             </div>
           )}
           <ReactFlow<CardNode>
@@ -683,11 +718,6 @@ export function Topology(props: TopologyProps) {
               />
             )}
           </ReactFlow>
-          {overlays.panel && (
-            <div className="pointer-events-none absolute top-15 right-3 bottom-16 z-20 flex flex-col items-end">
-              {overlays.panel}
-            </div>
-          )}
           <CanvasLegend floating graph={graph} />
           {empty && (
             <div className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center p-4 pt-20">
@@ -707,6 +737,13 @@ export function Topology(props: TopologyProps) {
             )}
           </div>
           <div className="relative min-h-0 flex-1">
+            {/* Before the list in the DOM, so Tab reaches the panel before
+                the rows it covers. */}
+            {overlays.panel && (
+              <div className="pointer-events-none absolute top-3 right-3 bottom-3 z-20 flex flex-col items-end">
+                {overlays.panel}
+              </div>
+            )}
             <div
               className="h-full space-y-3 overflow-y-auto p-3"
               style={{
@@ -726,11 +763,6 @@ export function Topology(props: TopologyProps) {
                 />
               )}
             </div>
-            {overlays.panel && (
-              <div className="pointer-events-none absolute top-3 right-3 bottom-3 z-20 flex flex-col items-end">
-                {overlays.panel}
-              </div>
-            )}
           </div>
           <CanvasLegend graph={graph} />
         </div>
@@ -739,21 +771,26 @@ export function Topology(props: TopologyProps) {
   );
 }
 
+// Active filters as chips with a clear button. A locked System filter gets a
+// chip that says why, since the toolbar tooltip never reaches touch.
 function FilterChips({
   problems,
   system,
+  systemLocked,
   onProblems,
   onSystem,
 }: {
   problems: boolean;
   system: boolean;
+  // A system namespace is selected, so system resources cannot be hidden.
+  systemLocked: boolean;
   onProblems?: (problems: boolean) => void;
   onSystem?: (system: boolean) => void;
 }) {
   const chip =
     "flex h-9 items-center gap-1.5 rounded-lg border border-primary/40 bg-card/95 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur";
   const clear =
-    "flex size-7 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+    "flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <>
       {problems && onProblems && (
@@ -769,7 +806,12 @@ function FilterChips({
           </button>
         </span>
       )}
-      {system && onSystem && (
+      {systemLocked && onSystem && (
+        <span className={cn(chip, "pr-2.5")}>
+          System resources shown: system namespace selected
+        </span>
+      )}
+      {system && !systemLocked && onSystem && (
         <span className={chip}>
           System resources shown
           <button

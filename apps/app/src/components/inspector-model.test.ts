@@ -10,6 +10,7 @@ import {
   historyRefetchInterval,
   inspectorTabs,
   nextTrail,
+  panelLinks,
   placement,
   podCoverage,
   podGroups,
@@ -255,7 +256,65 @@ describe("panel tabs", () => {
     expect(activeTab("details", "Pod")).toBe("details");
     expect(activeTab("pods", "Pod")).toBe("metrics");
     expect(activeTab("links", "Node")).toBe("pods");
+    expect(activeTab("links", "Node", true)).toBe("links");
     expect(activeTab("unknown", "Ingress")).toBe("details");
+  });
+  it("gives a Node a Links tab only for links other than pod placement", () => {
+    expect(inspectorTabs("Node", true)).toEqual([
+      "pods",
+      "metrics",
+      "details",
+      "links",
+    ]);
+    expect(inspectorTabs("Node", false)).toEqual([
+      "pods",
+      "metrics",
+      "details",
+    ]);
+  });
+});
+
+describe("panel links", () => {
+  // Synthetic kubelet Service whose EndpointSlice targets a Node, as in
+  // kube-system; the Node also runs one pod.
+  const node = entity({ uid: "node-a", kind: "Node" });
+  const pod = entity({ uid: "pod-a", kind: "Pod", nodeUid: "node-a" });
+  const kubelet = entity({ uid: "svc-kubelet", kind: "Service" });
+  const placementEdge = {
+    source: "pod-a",
+    target: "node-a",
+    relation: "scheduled_on",
+    evidence: "Pod.spec.nodeName",
+  };
+  const endpointEdge = {
+    source: "svc-kubelet",
+    target: "node-a",
+    relation: "has_endpoint",
+    evidence: "EndpointSlice.targetRef; observed endpoint, not traffic",
+  };
+  it("lists a Node's endpoint links but not the pods its Pods tab lists", () => {
+    const view = clusterView(
+      [node, pod, kubelet],
+      [placementEdge, endpointEdge]
+    );
+    const links = panelLinks(view, node);
+    expect(links.map((link) => link.edge.relation)).toEqual(["has_endpoint"]);
+    expect(links[0].other).toBe(kubelet);
+    expect(links[0].outgoing).toBe(false);
+    expect(relationText(links[0], node)).toBe("Service has endpoint this Node");
+  });
+  it("leaves a Node with only pod placement without links", () => {
+    const view = clusterView([node, pod], [placementEdge]);
+    expect(panelLinks(view, node)).toEqual([]);
+  });
+  it("keeps placement on the Pod's own links", () => {
+    const view = clusterView(
+      [node, pod, kubelet],
+      [placementEdge, endpointEdge]
+    );
+    expect(panelLinks(view, pod).map((link) => link.edge.relation)).toEqual([
+      "scheduled_on",
+    ]);
   });
 });
 

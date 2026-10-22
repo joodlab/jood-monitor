@@ -797,6 +797,27 @@ describe("resource URL state", () => {
     for (const [raw, expected] of cases) {
       expect(validateMonitorSearch(raw)).toMatchObject(expected);
     }
+    // Old URLs serialized the default tab=workloads alongside the mode.
+    expect(
+      validateMonitorSearch({
+        view: "infrastructure",
+        mode: "servers",
+        tab: "workloads",
+      })
+    ).toMatchObject({ view: "resources", tab: "servers", mode: "servers" });
+    expect(
+      validateMonitorSearch({
+        view: "infrastructure",
+        mode: "list",
+        tab: "workloads",
+        kind: "Deployment",
+      })
+    ).toMatchObject({
+      view: "resources",
+      tab: "all",
+      mode: "list",
+      kind: "Deployment",
+    });
   });
   it("reads the Resources tab directly and still understands the previous shape", () => {
     const tabOf = (raw: Record<string, unknown>) =>

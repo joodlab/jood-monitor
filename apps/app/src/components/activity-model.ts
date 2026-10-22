@@ -139,3 +139,18 @@ export function receivedLate(event: Lifecycle) {
 export function recentActivity(entries: ActivityEntry[], limit: number) {
   return entries.filter((entry) => !entry.summary.rolloutStep).slice(0, limit);
 }
+
+// What the widget says when it has no rows to show. Hidden rollout steps were
+// still observed, so they are counted instead of reported as no change.
+export function quietActivityText(steps: number) {
+  if (steps === 0) {
+    return "No node, scaling or resource changes were observed in the selected range.";
+  }
+  const label = `${steps} Deployment rollout step${steps === 1 ? "" : "s"}`;
+  return `No node, scaling or resource changes besides ${label} were observed in the selected range. Rollout steps are on the Activity page.`;
+}
+
+// Notes rollout steps left out of a non-empty widget list.
+export function hiddenStepsText(steps: number) {
+  return `${steps} Deployment rollout step${steps === 1 ? "" : "s"} not shown; see the Activity page.`;
+}

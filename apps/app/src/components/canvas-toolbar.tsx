@@ -14,12 +14,12 @@ import {
   TriangleAlert,
   Workflow,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import type { TopologyLayout } from "../lib/service-graph";
 
 // Railway's floating canvas toolbar: layout, zoom and the two filters that
 // change what the canvas draws. Toggles expose aria-pressed and the filters
-// also appear as removable chips, so state never rests on colour alone.
+// also appear as chips, so state never rests on colour alone.
 
 type Orientation = "vertical" | "horizontal";
 
@@ -29,6 +29,7 @@ function ToolButton({
   hint,
   pressed,
   locked = false,
+  layout,
   onClick,
   side,
 }: {
@@ -36,17 +37,24 @@ function ToolButton({
   label: string;
   hint?: string;
   pressed?: boolean;
-  // Shown as pressed but fixed by another choice; stays focusable so the
-  // tooltip can say why.
+  // Shown as pressed but fixed by another choice; stays focusable so its
+  // description can say why.
   locked?: boolean;
+  // Marks a layout button, so focus can follow a layout switch.
+  layout?: TopologyLayout;
   onClick: () => void;
   side: "right" | "bottom";
 }) {
+  const hintId = useId();
+  // The tooltip is not exposed to assistive technology or touch, so the hint
+  // also describes the button.
+  const described = hint !== undefined && hint !== label;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <button
+            aria-describedby={described ? hintId : undefined}
             aria-disabled={locked || undefined}
             aria-label={label}
             aria-pressed={pressed}
@@ -55,12 +63,18 @@ function ToolButton({
               "aria-pressed:bg-primary/15 aria-pressed:text-primary aria-pressed:ring-1 aria-pressed:ring-primary/50",
               locked && "cursor-not-allowed opacity-70"
             )}
+            data-layout={layout}
             onClick={locked ? undefined : onClick}
             type="button"
           />
         }
       >
         <Icon aria-hidden="true" className="size-4" />
+        {described && (
+          <span className="sr-only" id={hintId}>
+            {hint}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent side={side}>{hint ?? label}</TooltipContent>
     </Tooltip>
@@ -207,6 +221,7 @@ export function CanvasToolbar(props: CanvasToolbarProps) {
           hint="Graph: cards and configured relationships"
           icon={Workflow}
           label="Graph layout"
+          layout="graph"
           onClick={() => onMode("graph")}
           pressed={mode === "graph"}
           side={side}
@@ -215,6 +230,7 @@ export function CanvasToolbar(props: CanvasToolbarProps) {
           hint="List: an indented tree of the same resources"
           icon={ListTree}
           label="List layout"
+          layout="list"
           onClick={() => onMode("list")}
           pressed={mode === "list"}
           side={side}

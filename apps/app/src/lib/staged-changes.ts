@@ -17,11 +17,15 @@ import {
   type ProfileDraft,
   profileChoices,
   profileLabel,
+  profileRequest,
   type RequestProgress,
   requestProgress,
   returnProfile,
+  validationText,
 } from "../components/collection-model";
+import { profileSchema } from "../schemas/clusters";
 import { minutesLeft } from "./install-enrollment";
+import { requestError } from "./install-errors";
 
 // Railway-style staged changes for collection settings. Edits wait here, per
 // cluster, until the operator applies or discards them. The store lives in
@@ -36,6 +40,17 @@ export interface StagedEntry {
   // Revision and effective profile the draft was staged against.
   base: string;
   draft: ProfileDraft;
+  // The cluster's workspace, so views without a live snapshot (frozen) can
+  // tell which drafts are in their scope.
+  workspaceId: string;
+}
+
+// A request the hub accepted, as this tab follows it.
+interface StagedRequest extends AckRequest {
+  // When this tab first saw every node acknowledge it.
+  completedAt?: number;
+  // The operator dismissed it from compact progress. Settings still shows it.
+  dismissed?: true;
 }
 
 export interface StagedState {
@@ -47,7 +62,7 @@ export interface StagedState {
   // Why the last apply failed, per cluster.
   failures: Readonly<Record<string, string>>;
   // The latest request the hub accepted, per cluster.
-  requests: Readonly<Record<string, AckRequest>>;
+  requests: Readonly<Record<string, StagedRequest>>;
 }
 
 const emptyState: StagedState = {
@@ -133,7 +148,11 @@ export function stageDraft(
     ...state,
     entries: {
       ...state.entries,
-      [id]: { base: profileBase(view.profile, now), draft },
+      [id]: {
+        base: profileBase(view.profile, now),
+        draft,
+        workspaceId: view.cluster.workspaceId,
+      },
     },
     cleared: without(state.cleared, keys),
     failures: without(state.failures, keys),
@@ -182,22 +201,127 @@ export function applyFailed(clusterId: string, message: string) {
   });
 }
 
-function clearedReason(view: ClusterView, entry: StagedEntry) {
-  const [revision] = entry.base.split(":");
-  if (Number(revision) !== view.profile.revision) {
-    return `The collection profile changed to revision ${view.profile.revision} after you staged these changes, so they were discarded. Review the current settings and stage them again.`;
+const endedNotice =
+  "The diagnostic ended after you staged these changes, so nothing was sent. Review the current settings and stage them again.";
+
+type ProfileInput = ReturnType<typeof profileSchema.parse>;
+
+// Sends one cluster's staged profile through `send`. Validity is checked
+// again on the real clock, with the same `now` the request is built from:
+// the display clock ticks every 15 s, so a diagnostic can end between the
+// last check and the click, and a request built then would re-arm it.
+// Resolves true when the hub accepted the request.
+export async function applyStagedCluster(
+  target: { draft: ProfileDraft; view: ClusterView },
+  send: (
+    clusterId: string,
+    profile: ProfileInput
+  ) => Promise<{ revision: number }>,
+  clock: () => number = Date.now
+) {
+  const { view, draft } = target;
+  const id = view.cluster.id;
+  const now = clock();
+  const entry = state.entries[id];
+  const problems = draftProblems(draft, clusterNodes(view), view.profile, now);
+  if (
+    !entry ||
+    entry.base !== profileBase(view.profile, now) ||
+    problems.length > 0
+  ) {
+    applyFailed(id, problems[0] ?? endedNotice);
+    return false;
   }
-  return "The diagnostic ended after you staged these changes, so they were discarded rather than starting it again. Review the current settings and stage them again.";
+  const parsed = profileSchema.safeParse(
+    profileRequest(draft, view.profile, now)
+  );
+  if (!parsed.success) {
+    applyFailed(id, validationText(parsed.error));
+    return false;
+  }
+  try {
+    const result = await send(id, parsed.data);
+    applySucceeded(id, { revision: result.revision, at: clock() });
+    return true;
+  } catch (error) {
+    applyFailed(id, requestError(error).message);
+    return false;
+  }
+}
+
+// Records when each request is first seen fully acknowledged, so compact
+// progress shows the outcome for a while from then, not from sending.
+export function settleRequests(views: ClusterView[], now: number) {
+  const completed = views.flatMap((view) => {
+    const id = view.cluster.id;
+    const request = state.requests[id];
+    return request &&
+      request.completedAt === undefined &&
+      requestProgress(view, request.revision, now).phase === "complete"
+      ? [[id, { ...request, completedAt: now }] as const]
+      : [];
+  });
+  if (completed.length) {
+    commit({
+      ...state,
+      requests: { ...state.requests, ...Object.fromEntries(completed) },
+    });
+  }
+}
+
+// Hides requests from compact progress. Settings keeps showing them.
+export function dismissRequests(clusterIds: string[]) {
+  const dismissed = clusterIds.flatMap((id) => {
+    const request = state.requests[id];
+    return request && !request.dismissed
+      ? [[id, { ...request, dismissed: true as const }] as const]
+      : [];
+  });
+  if (dismissed.length) {
+    commit({
+      ...state,
+      requests: { ...state.requests, ...Object.fromEntries(dismissed) },
+    });
+  }
+}
+
+// Sending, or accepted while the snapshot still shows an older revision. The
+// settings form would show the profile from before the apply, so it stays
+// locked, and drafts are not judged stale until the new revision lands.
+export function awaitingSnapshot(current: StagedState, view: ClusterView) {
+  const id = view.cluster.id;
+  const request = current.requests[id];
+  return (
+    !!current.applying[id] ||
+    (!!request && view.profile.revision < request.revision)
+  );
+}
+
+function clearedReason(
+  current: StagedState,
+  view: ClusterView,
+  entry: StagedEntry
+) {
+  const [revision] = entry.base.split(":");
+  const latest = view.profile.revision;
+  if (Number(revision) === latest) {
+    return "The diagnostic ended after you staged these changes, so they were discarded rather than starting it again. Review the current settings and stage them again.";
+  }
+  if (current.requests[view.cluster.id]?.revision === latest) {
+    return `Your applied changes (revision ${latest}) landed after you made these edits, so the edits were discarded. Review the current settings and stage them again.`;
+  }
+  return `The collection profile changed to revision ${latest} after you staged these changes, so they were discarded. Review the current settings and stage them again.`;
 }
 
 // Drops drafts whose profile changed underneath them and says why. Requests
-// in flight are left alone: their own revision lands first.
+// in flight, or accepted but not in the snapshot yet, are left alone: their
+// own revision lands first.
 export function pruneStaged(views: ClusterView[], now: number) {
   const stale = views.filter((view) => {
     const entry = state.entries[view.cluster.id];
     return (
       entry &&
-      !state.applying[view.cluster.id] &&
+      !awaitingSnapshot(state, view) &&
       entry.base !== profileBase(view.profile, now)
     );
   });
@@ -208,7 +332,7 @@ export function pruneStaged(views: ClusterView[], now: number) {
   for (const view of stale) {
     const entry = state.entries[view.cluster.id];
     if (entry) {
-      cleared[view.cluster.id] = clearedReason(view, entry);
+      cleared[view.cluster.id] = clearedReason(state, view, entry);
     }
   }
   const ids = stale.map((view) => view.cluster.id);
@@ -237,21 +361,38 @@ export function stagedDraftFor(
     : undefined;
 }
 
-// What the settings form shows: the staged draft, else the profile.
+// Whether any draft is staged for a cluster in a workspace scope ("global"
+// is every workspace). For views without a live snapshot to check drafts.
+export function stagedInScope(current: StagedState, scope: string) {
+  return Object.values(current.entries).some(
+    (entry) => scope === "global" || entry.workspaceId === scope
+  );
+}
+
+// What the settings form shows: the staged draft, else the profile. A node
+// requested by a deep link (the inspector) becomes the target of a draft that
+// is not a diagnostic yet, so staging one uses it. It never moves a running
+// or staged diagnostic: that stays an explicit, staged choice.
 export function draftFor(
   current: StagedState,
   view: ClusterView,
   now: number,
   initialNode?: string
 ) {
-  const nodes = clusterNodes(view);
-  return (
-    stagedDraftFor(current, view, now) ??
-    draftFromProfile(
-      view.profile,
-      nodes.some((node) => node.uid === initialNode) ? initialNode : undefined,
-      now
-    )
+  const requested = clusterNodes(view).some((node) => node.uid === initialNode)
+    ? initialNode
+    : undefined;
+  const staged = stagedDraftFor(current, view, now);
+  if (staged) {
+    // The node is ignored until the draft is a diagnostic.
+    return requested && staged.name !== "diagnostic"
+      ? { ...staged, node: requested }
+      : staged;
+  }
+  return draftFromProfile(
+    view.profile,
+    activeDiagnostic(view.profile, now) ? undefined : requested,
+    now
   );
 }
 
@@ -480,12 +621,31 @@ const completeVisibleMs = 60_000;
 
 export interface RecentRequest {
   progress?: RequestProgress;
-  request?: AckRequest;
+  request?: StagedRequest;
+  // Not every node acknowledged within the patience window. It stays until
+  // dismissed, superseded or acknowledged, never silently dropped.
+  timedOut?: true;
   view: ClusterView;
 }
 
-// Requests being sent or still settling, for compact progress: inside the
-// patience window, not superseded, and complete only briefly.
+function settled(
+  request: StagedRequest,
+  progress: RequestProgress,
+  now: number
+) {
+  if (request.dismissed || progress.phase === "superseded") {
+    return true;
+  }
+  return (
+    progress.phase === "complete" &&
+    request.completedAt !== undefined &&
+    now - request.completedAt >= completeVisibleMs
+  );
+}
+
+// Requests being sent or still settling, for compact progress. A completed
+// request shows briefly from when completion was first seen; one still
+// unacknowledged after the patience window is flagged rather than hidden.
 export function recentRequests(
   current: StagedState,
   views: ClusterView[],
@@ -497,14 +657,15 @@ export function recentRequests(
       return [{ view }];
     }
     const request = current.requests[id];
-    const age = request ? now - request.at : Number.POSITIVE_INFINITY;
-    if (!request || age >= ackPatienceMs) {
+    if (!request) {
       return [];
     }
     const progress = requestProgress(view, request.revision, now);
-    const settled =
-      progress.phase === "superseded" ||
-      (progress.phase === "complete" && age >= completeVisibleMs);
-    return settled ? [] : [{ view, request, progress }];
+    if (settled(request, progress, now)) {
+      return [];
+    }
+    return progress.phase !== "complete" && now - request.at >= ackPatienceMs
+      ? [{ view, request, progress, timedOut: true as const }]
+      : [{ view, request, progress }];
   });
 }

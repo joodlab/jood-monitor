@@ -9,10 +9,14 @@ import { SeverityIcon, severityTone } from "./severity";
 import { type WorkspaceCard, workspaceCards } from "./widget-model";
 
 export interface WorkspacesPageProps {
+  // The workspace list failed and no earlier copy is available. Counts and
+  // per-workspace cards are hidden rather than shown as zero.
+  error?: boolean;
   // Hides the grid while the workspace list is still loading.
   loading?: boolean;
   onNewWorkspace: () => void;
   onOpen: (workspace: string) => void;
+  onRetry?: () => void;
   // Workspace the loaded snapshot is scoped to ("global" for all). Counts
   // are only claimed for workspaces whose clusters are loaded.
   scope?: string;
@@ -48,6 +52,32 @@ function Health({ card }: { card: WorkspaceCard }) {
       />
       {health.label}
     </span>
+  );
+}
+
+function heading(loading: boolean, error: boolean, count: number) {
+  if (loading) {
+    return "Loading workspaces…";
+  }
+  return error ? "Workspace list unavailable" : plural(count, "workspace");
+}
+
+function Unavailable({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm"
+      role="alert"
+    >
+      <span>
+        The workspace list could not be loaded. Per-workspace cards and counts
+        are hidden until it loads.
+      </span>
+      {onRetry && (
+        <Button className="h-8" onClick={onRetry} size="sm" variant="outline">
+          Retry
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -133,18 +163,30 @@ export function WorkspacesPage({
   views,
   scope,
   loading = false,
+  error = false,
   onOpen,
   onNewWorkspace,
+  onRetry,
 }: WorkspacesPageProps) {
   const { referenceTime, frozen } = useDisplay();
-  const cards = workspaceCards(workspaces, views, referenceTime, frozen, scope);
+  // An unknown list is not an empty one: without it only the All tile, built
+  // from the loaded snapshot, is shown.
+  const known = error ? [] : workspaces;
+  const cards = workspaceCards(known, views, referenceTime, frozen, scope);
+  if (error) {
+    // With no list, "every workspace is loaded" cannot be inferred.
+    const loaded = scope === "global";
+    cards.all = {
+      ...cards.all,
+      loaded,
+      health: loaded ? cards.all.health : undefined,
+    };
+  }
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm">
-          {loading
-            ? "Loading workspaces…"
-            : plural(workspaces.length, "workspace")}
+          {heading(loading, error, workspaces.length)}
         </p>
         <Button
           className="h-8"
@@ -156,6 +198,7 @@ export function WorkspacesPage({
           New workspace
         </Button>
       </div>
+      {error && !loading && <Unavailable onRetry={onRetry} />}
       {loading ? (
         <div
           aria-busy="true"
@@ -172,7 +215,11 @@ export function WorkspacesPage({
               all
               card={cards.all}
               onOpen={onOpen}
-              subtitle={`Every cluster across ${plural(workspaces.length, "workspace")}`}
+              subtitle={
+                error
+                  ? "Every cluster in every workspace"
+                  : `Every cluster across ${plural(workspaces.length, "workspace")}`
+              }
             />
           </li>
           {cards.workspaces.map((card) => (
@@ -180,7 +227,7 @@ export function WorkspacesPage({
               <Tile card={card} onOpen={onOpen} subtitle={card.id} />
             </li>
           ))}
-          {workspaces.length === 0 && (
+          {!error && workspaces.length === 0 && (
             <li>
               <button
                 className="flex h-full min-h-44 w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-5 text-center text-muted-foreground text-sm outline-none transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"

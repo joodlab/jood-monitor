@@ -26,6 +26,9 @@ export interface StatusLine {
 export interface CardContext {
   now: number;
   problem: boolean;
+  // Endpoint discovery is unavailable, so Service membership is selector
+  // configuration only, never observed serving endpoints.
+  selectorOnly?: boolean;
   // Source time of the inventory the card was drawn from.
   sourceTime?: string;
   stale: boolean;
@@ -45,23 +48,45 @@ function critical(entity: Entity) {
   return entity.ready === 0 && (entity.desired ?? 0) > 0;
 }
 
+// A pod that is not ready and not finished, yet not a problem, is inside its
+// start-up grace period: no health signal yet, so never healthy.
+function starting(entity: Entity) {
+  return entity.kind === "Pod" && entity.ready === 0 && !isFinished(entity);
+}
+
 function neutral(entity: Entity) {
   const status = resourceStatus(entity);
   return (
     ["Unknown", "Observed"].includes(status) ||
     ["Service", "Ingress", "Namespace"].includes(entity.kind) ||
-    (entity.kind === "Pod" && entity.ready == null && status === "Running")
+    (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
+    starting(entity)
   );
 }
 
-export function toneOf(entity: Entity, problem: boolean, stale: boolean): Tone {
+// A workload's failing member pods, including failed pods retained after
+// their replacement became ready. Other kinds have no members here.
+export function failingMembers(entity: Entity, pods: Entity[], now: number) {
+  return workloadKinds.has(entity.kind)
+    ? pods.filter((pod) => podProblem(pod, now))
+    : [];
+}
+
+// `failing` counts failing member pods: a workload beside one is never
+// called healthy, even when its own readiness is complete.
+export function toneOf(
+  entity: Entity,
+  problem: boolean,
+  stale: boolean,
+  failing = 0
+): Tone {
   if (problem) {
     return critical(entity) ? "critical" : "warning";
   }
   if (stale) {
     return "stale";
   }
-  return neutral(entity) ? "neutral" : "healthy";
+  return neutral(entity) || failing > 0 ? "neutral" : "healthy";
 }
 
 // Why a card is dimmed: inventory that is old, ahead of the hub clock, or
@@ -142,35 +167,53 @@ function problemText(entity: Entity, summary: ResourceSummary, now: number) {
   return resourceStatus(entity);
 }
 
-function serviceText(summary: ResourceSummary) {
-  if (!summary.active) {
-    return "No endpoint pods observed";
-  }
-  if (summary.ready == null) {
-    return `${plural(summary.active, "endpoint pod")} · readiness unknown`;
-  }
-  return `${summary.ready}/${plural(summary.active, "endpoint pod")} ready`;
+// Without EndpointSlice access a Service's pods are matched by its selector:
+// configuration, not discovered serving membership.
+function memberNoun(selectorOnly = false) {
+  return selectorOnly ? "selector-matched pod" : "endpoint pod";
 }
 
-function workloadText(entity: Entity) {
+function serviceText(summary: ResourceSummary, selectorOnly = false) {
+  if (!summary.active) {
+    return selectorOnly
+      ? "No selector-matched pods · endpoints not observed"
+      : "No endpoint pods observed";
+  }
+  const noun = memberNoun(selectorOnly);
+  if (summary.ready == null) {
+    return `${plural(summary.active, noun)} · readiness unknown`;
+  }
+  return `${summary.ready}/${plural(summary.active, noun)} ready`;
+}
+
+function workloadText(entity: Entity, pods: Entity[], failing: Entity[]) {
   if (entity.ready == null || entity.desired == null) {
     return "Readiness not reported";
   }
   if (entity.desired === 0) {
     return "Scaled to zero";
   }
-  return `Healthy · ${entity.ready}/${entity.desired} ready`;
+  const readiness = `${entity.ready}/${entity.desired} ready`;
+  if (failing.length) {
+    return `${readiness} · ${leadingStatus(failing)} · ${failing.length} of ${plural(pods.length, "pod")}`;
+  }
+  return `Healthy · ${readiness}`;
 }
 
-function steadyText(entity: Entity, summary: ResourceSummary) {
+function steadyText(
+  entity: Entity,
+  summary: ResourceSummary,
+  context: CardContext,
+  failing: Entity[]
+) {
   if (entity.kind === "Ingress") {
     return "Configured route · traffic not measured";
   }
   if (entity.kind === "Service") {
-    return serviceText(summary);
+    return serviceText(summary, context.selectorOnly);
   }
   if (workloadKinds.has(entity.kind)) {
-    return workloadText(entity);
+    return workloadText(entity, summary.pods, failing);
   }
   const status = resourceStatus(entity);
   return status === "Unknown" ? "Status unknown" : status;
@@ -183,7 +226,8 @@ export function cardStatus(
   summary: ResourceSummary,
   context: CardContext
 ): StatusLine {
-  const tone = toneOf(entity, context.problem, context.stale);
+  const failing = failingMembers(entity, summary.pods, context.now);
+  const tone = toneOf(entity, context.problem, context.stale, failing.length);
   if (context.problem) {
     const text = problemText(entity, summary, context.now);
     return { tone, text: context.stale ? `${text} · stale` : text };
@@ -191,7 +235,7 @@ export function cardStatus(
   if (context.stale) {
     return { tone, text: staleText(context.sourceTime, context.now) };
   }
-  return { tone, text: steadyText(entity, summary) };
+  return { tone, text: steadyText(entity, summary, context, failing) };
 }
 
 // "Deployment · shop", "Service · shop · :8080, :8443",
@@ -243,15 +287,20 @@ export function usageValue(
   return { value: "—", title: `No fresh ${name} measurement` };
 }
 
-// The attached pods sub-card: "3 pods", "2 endpoint pods" or "12 pods
-// scheduled" on a Node.
-export function podsLabel(entity: Entity, summary: ResourceSummary) {
+// The attached pods sub-card: "3 pods", "2 endpoint pods" (or "2
+// selector-matched pods" without endpoint discovery) or "12 pods scheduled"
+// on a Node.
+export function podsLabel(
+  entity: Entity,
+  summary: ResourceSummary,
+  selectorOnly = false
+) {
   const count = summary.pods.length;
   if (entity.kind === "Node") {
     return `${plural(count, "pod")} scheduled`;
   }
   if (entity.kind === "Service") {
-    return plural(count, "endpoint pod");
+    return plural(count, memberNoun(selectorOnly));
   }
   return plural(count, "pod");
 }

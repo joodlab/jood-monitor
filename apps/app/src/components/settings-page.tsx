@@ -24,7 +24,7 @@ import {
   Server,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { fetchWorkspaces } from "../hooks/api/clusters";
 import { type Theme, useDisplay } from "../hooks/display";
 import { freshness } from "../lib/metrics";
@@ -119,6 +119,7 @@ function SectionList({
 }) {
   const { now } = useDisplay();
   const staged = useStagedState();
+  const list = useRef<HTMLDivElement>(null);
   const counts = new Map(
     (now ? stagedClusters(staged, views, now) : []).map((cluster) => [
       cluster.view.cluster.id,
@@ -126,8 +127,17 @@ function SectionList({
     ])
   );
   return (
-    <div className="space-y-3 lg:sticky lg:top-28 lg:self-start">
-      <StagedChangesBar className="max-lg:fixed max-lg:right-4 max-lg:bottom-4 max-lg:z-30 lg:w-full" />
+    <div className="space-y-3 lg:sticky lg:top-28 lg:self-start" ref={list}>
+      <StagedChangesBar
+        className="max-lg:fixed max-lg:right-4 max-lg:bottom-4 max-lg:z-30 lg:w-full"
+        // The selected section is a visible place to land once the last
+        // staged change is discarded with focus inside the card.
+        focusFallback={() =>
+          list.current?.querySelector<HTMLElement>(
+            '[role="tab"][aria-selected="true"]'
+          )
+        }
+      />
       <TabsList
         aria-label="Settings sections"
         className="h-auto w-full items-stretch gap-0.5 bg-transparent p-0 lg:max-h-[calc(100svh-20rem)] lg:overflow-y-auto"
@@ -379,7 +389,12 @@ function FrozenSettings({ onResumeLive }: { onResumeLive: () => void }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button onClick={onResumeLive}>Resume live</Button>
+          <Button
+            className="focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onResumeLive}
+          >
+            Resume live
+          </Button>
         </CardContent>
       </Card>
       <StagedChangesBar />

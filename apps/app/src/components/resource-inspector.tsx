@@ -20,10 +20,10 @@ import {
   inspectionKey,
   inspectorTabs,
   isCohort,
+  panelLinks,
   podCoverage,
   podGroups,
   readyText,
-  relationships,
   type UsageReading,
   usageReading,
 } from "./inspector-model";
@@ -73,7 +73,18 @@ export function ResourceInspector({
   const cpu = useHistory(inspected, "cpu", live);
   const memory = useHistory(inspected, "memory", live);
   return (
-    <PanelShell onClose={onClose} open={!!inspected}>
+    <PanelShell
+      onClose={onClose}
+      open={!!inspected}
+      resource={
+        inspected
+          ? {
+              key: inspectionKey(inspected.view, inspected.entity),
+              label: `${inspected.entity.kind} ${inspected.entity.name}`,
+            }
+          : undefined
+      }
+    >
       {inspected && (
         <InspectorBody
           cpu={cpu}
@@ -132,14 +143,14 @@ function InspectorBody({
 }) {
   const summary = summarize(view, entity, referenceTime);
   const coverage = podCoverage(summary);
-  const links = relationships(view, entity);
+  const links = panelLinks(view, entity);
   const stale =
     inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
   const profile = frozen ? undefined : view.profile.name;
   // The operator's tab choice; each kind shows it when it has that tab.
   const [chosen, setChosen] = useState<string>();
-  const tabs = inspectorTabs(entity.kind);
-  const tab = activeTab(chosen, entity.kind);
+  const tabs = inspectorTabs(entity.kind, links.length > 0);
+  const tab = activeTab(chosen, entity.kind, links.length > 0);
   const scroller = useRef<HTMLDivElement>(null);
   const key = inspectionKey(view, entity);
   useEffect(() => {

@@ -46,6 +46,29 @@ export function activityRows(
   return rows;
 }
 
+// Rollout steps the panel leaves out. They were still observed, so the panel
+// counts them instead of reporting that nothing changed.
+export function hiddenRolloutSteps(events: Lifecycle[]) {
+  return events.filter((event) => describeEvent(event).rolloutStep).length;
+}
+
+function rolloutStepCount(steps: number) {
+  return `${steps} Deployment rollout step${steps === 1 ? "" : "s"}`;
+}
+
+// The empty Recent changes line for a range such as "last hour".
+export function quietChangesText(steps: number, range: string) {
+  if (steps === 0) {
+    return `No node, scaling or resource changes observed in the ${range}.`;
+  }
+  return `No node, scaling or resource changes besides ${rolloutStepCount(steps)} observed in the ${range}. Rollout steps are on the Activity page.`;
+}
+
+// Notes rollout steps left out of a non-empty list.
+export function hiddenStepsText(steps: number) {
+  return `${rolloutStepCount(steps)} not shown; see the Activity page.`;
+}
+
 const replicaChange = /replicas (\S+ → \S+)$/;
 
 // The short "what changed" after the verb: the first before → after pair, or

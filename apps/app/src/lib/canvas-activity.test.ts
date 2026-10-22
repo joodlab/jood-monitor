@@ -4,7 +4,10 @@ import type { Attention } from "./attention";
 import {
   activityRows,
   changeDetail,
+  hiddenRolloutSteps,
+  hiddenStepsText,
   liveAttention,
+  quietChangesText,
   subjectName,
 } from "./canvas-activity";
 import { describeEvent } from "./events";
@@ -70,6 +73,26 @@ describe("activity panel", () => {
     // A node that left the inventory cannot be opened.
     expect(rows[1].subject).toBeUndefined();
     expect(subjectName(rows[0])).toBe("shop/web");
+  });
+
+  it("counts hidden rollout steps instead of reporting no change", () => {
+    const rs = { uid: "r", kind: "ReplicaSet", name: "web-7c9" };
+    const old = { uid: "q", kind: "ReplicaSet", name: "web-5f1" };
+    const events = [
+      event("1", "workload_horizontal", { ...rs, desired: 0 }, rs),
+      event("2", "workload_horizontal", { ...old, desired: 1 }, old),
+    ];
+    expect(activityRows(events, [view], 8)).toEqual([]);
+    expect(hiddenRolloutSteps(events)).toBe(2);
+    expect(quietChangesText(2, "last hour")).toBe(
+      "No node, scaling or resource changes besides 2 Deployment rollout steps observed in the last hour. Rollout steps are on the Activity page."
+    );
+    expect(quietChangesText(0, "last hour")).toBe(
+      "No node, scaling or resource changes observed in the last hour."
+    );
+    expect(hiddenStepsText(1)).toBe(
+      "1 Deployment rollout step not shown; see the Activity page."
+    );
   });
 
   it("names what changed after the verb", () => {

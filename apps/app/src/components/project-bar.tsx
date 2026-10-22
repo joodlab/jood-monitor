@@ -16,7 +16,6 @@ import {
   Activity,
   BookOpen,
   CalendarClock,
-  Check,
   ChevronsUpDown,
   Moon,
   Pause,
@@ -91,6 +90,16 @@ function Crumb({
       <DropdownMenuContent className="w-64">{children}</DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+// Heartbeat state in words, so it never depends on the dot's colour.
+function heartbeatState(view: ClusterView, now: number) {
+  if (!view.cluster.heartbeatAt) {
+    return "no heartbeat yet";
+  }
+  return freshness(view.cluster.heartbeatAt, now) === "fresh"
+    ? "heartbeat fresh"
+    : "heartbeat stale";
 }
 
 function clusterDot(view: ClusterView, now: number) {
@@ -282,19 +291,23 @@ export function ProjectBar({
           <Crumb label="Workspace" value={workspaceName}>
             <DropdownMenuGroup>
               <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => onWorkspace("global")}>
-                <span className="flex-1">All workspaces</span>
-                {workspace === "global" && <Check />}
-              </DropdownMenuItem>
-              {workspaces.map((item) => (
-                <DropdownMenuItem
-                  key={item.id}
-                  onClick={() => onWorkspace(item.id)}
-                >
-                  <span className="flex-1 truncate">{item.name}</span>
-                  {workspace === item.id && <Check />}
-                </DropdownMenuItem>
-              ))}
+              <DropdownMenuRadioGroup
+                onValueChange={(value) => onWorkspace(String(value))}
+                value={workspace}
+              >
+                <DropdownMenuRadioItem closeOnClick value="global">
+                  All workspaces
+                </DropdownMenuRadioItem>
+                {workspaces.map((item) => (
+                  <DropdownMenuRadioItem
+                    closeOnClick
+                    key={item.id}
+                    value={item.id}
+                  >
+                    <span className="truncate">{item.name}</span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onNewWorkspace}>
@@ -308,31 +321,39 @@ export function ProjectBar({
           <Crumb label="Cluster" value={clusterName}>
             <DropdownMenuGroup>
               <DropdownMenuLabel>Clusters</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => onCluster(undefined)}>
-                <span className="flex-1">All clusters</span>
-                {!cluster && <Check />}
-              </DropdownMenuItem>
-              {clusters.map((item) => (
-                <DropdownMenuItem
-                  key={item.cluster.id}
-                  onClick={() => onCluster(item.cluster.id)}
-                >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "size-2 shrink-0 rounded-full",
-                      clusterDot(item, now)
-                    )}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{item.cluster.name}</span>
-                    <span className="block truncate text-muted-foreground text-xs">
-                      {item.cluster.environment}
+              <DropdownMenuRadioGroup
+                onValueChange={(value) =>
+                  onCluster(value === "all" ? undefined : String(value))
+                }
+                value={cluster ?? "all"}
+              >
+                <DropdownMenuRadioItem closeOnClick value="all">
+                  All clusters
+                </DropdownMenuRadioItem>
+                {clusters.map((item) => (
+                  <DropdownMenuRadioItem
+                    closeOnClick
+                    key={item.cluster.id}
+                    value={item.cluster.id}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "size-2 shrink-0 rounded-full",
+                        clusterDot(item, now)
+                      )}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">
+                        {item.cluster.name}
+                      </span>
+                      <span className="block truncate text-muted-foreground text-xs">
+                        {item.cluster.environment} · {heartbeatState(item, now)}
+                      </span>
                     </span>
-                  </span>
-                  {cluster === item.cluster.id && <Check />}
-                </DropdownMenuItem>
-              ))}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
           </Crumb>
         </nav>
@@ -415,7 +436,7 @@ export function ProjectBar({
             historically.
           </span>
           <Button
-            className="h-7 text-xs"
+            className="h-9 text-xs sm:h-8"
             onClick={() => onFreeze(undefined)}
             size="sm"
             variant="outline"

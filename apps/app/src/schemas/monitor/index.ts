@@ -70,11 +70,21 @@ function viewFor(raw: Record<string, unknown>) {
 }
 
 function resourceTab(raw: Record<string, unknown>) {
+  // Old Infrastructure links always carried the default tab=workloads, so
+  // their mode decides the tab.
+  if (raw.view === "infrastructure") {
+    if (raw.mode === "servers") {
+      return "servers";
+    }
+    if (raw.mode === "list") {
+      return "all";
+    }
+  }
   const tab = String(raw.tab);
   if ((resourceTabs as readonly string[]).includes(tab)) {
     return tab;
   }
-  if (raw.view === "infrastructure" || raw.view === "resources") {
+  if (raw.view === "resources") {
     return raw.mode === "servers" ? "servers" : "all";
   }
   return "workloads";

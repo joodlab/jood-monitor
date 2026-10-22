@@ -49,6 +49,8 @@ function NamespacePill({
         <DropdownMenuTrigger
           aria-label={`Namespace: ${label}`}
           className="flex h-8 min-w-0 max-w-56 items-center gap-1.5 rounded-md px-2 font-medium text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-muted"
+          // Where focus returns after a namespace change remounts the canvas.
+          data-canvas-focus="namespace"
         >
           <FolderTree
             aria-hidden="true"

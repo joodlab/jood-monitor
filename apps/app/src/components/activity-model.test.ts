@@ -5,6 +5,8 @@ import {
   activityEntries,
   filterActivity,
   groupByDay,
+  hiddenStepsText,
+  quietActivityText,
   receivedLate,
   recentActivity,
   rolloutSteps,
@@ -117,6 +119,35 @@ describe("activity filters", () => {
     expect(recentActivity(entries, 2).map((entry) => entry.event.kind)).toEqual(
       ["workload_horizontal", "node_join"]
     );
+  });
+  it("counts hidden rollout steps instead of claiming no changes", () => {
+    const rollout = activityEntries([
+      event(
+        "workload_horizontal",
+        { ...rs, desired: 0 },
+        { ...rs, desired: 1 }
+      ),
+      event(
+        "workload_horizontal",
+        { ...rs, name: "web-5d1", desired: 1 },
+        { ...rs, name: "web-5d1", desired: 0 }
+      ),
+    ]);
+    expect(recentActivity(rollout, 6)).toHaveLength(0);
+    expect(rolloutSteps(rollout)).toBe(2);
+    expect(quietActivityText(rolloutSteps(rollout))).toBe(
+      "No node, scaling or resource changes besides 2 Deployment rollout steps were observed in the selected range. Rollout steps are on the Activity page."
+    );
+    expect(quietActivityText(1)).toContain(
+      "besides 1 Deployment rollout step "
+    );
+    expect(quietActivityText(0)).toBe(
+      "No node, scaling or resource changes were observed in the selected range."
+    );
+    expect(hiddenStepsText(1)).toBe(
+      "1 Deployment rollout step not shown; see the Activity page."
+    );
+    expect(hiddenStepsText(3)).toContain("3 Deployment rollout steps");
   });
 });
 

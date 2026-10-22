@@ -1,7 +1,12 @@
 import { Button } from "@jood-monitor/ui/button";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo } from "react";
-import { cardSubtitle, staleText, toneOf } from "../lib/canvas-cards";
+import {
+  cardSubtitle,
+  failingMembers,
+  staleText,
+  toneOf,
+} from "../lib/canvas-cards";
 import { findEntity, relatedPods, resourceStatus } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
@@ -59,10 +64,16 @@ function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
   const { item } = entry;
   const { view, entity } = item;
   const problem = itemProblem(item, props.now);
-  const tone = toneOf(entity, problem, staleView(item, props.now));
-  const pods = ["Pod", "Namespace"].includes(entity.kind)
-    ? 0
-    : relatedPods(view, entity).length;
+  const members = ["Pod", "Namespace"].includes(entity.kind)
+    ? []
+    : relatedPods(view, entity);
+  const tone = toneOf(
+    entity,
+    problem,
+    staleView(item, props.now),
+    failingMembers(entity, members, props.now).length
+  );
+  const pods = members.length;
   const open = props.expanded.includes(item.id);
   return (
     <li>

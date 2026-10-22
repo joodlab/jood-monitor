@@ -25,15 +25,18 @@ export function isCohort(kind: string) {
 }
 
 // Railway's service tabs, with member pods in the role of its Deployments
-// list. A Pod has no members; a Node's only links are the pods scheduled on
-// it, which its Pods tab already lists; kinds without member pods have no
-// usage to chart.
-export function inspectorTabs(kind: string): InspectorTab[] {
+// list. A Pod has no members; kinds without member pods have no usage to
+// chart. A Node's Links tab shows only its links other than pod placement
+// (see panelLinks), such as EndpointSlice targets of the kubelet Service,
+// so it appears only when the Node has such a link.
+export function inspectorTabs(kind: string, hasLinks = false): InspectorTab[] {
   if (kind === "Pod") {
     return ["metrics", "details", "links"];
   }
   if (kind === "Node") {
-    return ["pods", "metrics", "details"];
+    return hasLinks
+      ? ["pods", "metrics", "details", "links"]
+      : ["pods", "metrics", "details"];
   }
   if (cohortKinds.has(kind)) {
     return ["pods", "metrics", "details", "links"];
@@ -44,8 +47,12 @@ export function inspectorTabs(kind: string): InspectorTab[] {
 // The chosen tab follows the operator to the next resource when that kind
 // has it; otherwise the panel opens on the kind's first tab. The choice
 // itself is kept, so returning to the earlier kind restores it.
-export function activeTab(chosen: string | undefined, kind: string) {
-  const tabs = inspectorTabs(kind);
+export function activeTab(
+  chosen: string | undefined,
+  kind: string,
+  hasLinks = false
+) {
+  const tabs = inspectorTabs(kind, hasLinks);
   return tabs.find((tab) => tab === chosen) ?? tabs[0];
 }
 
@@ -307,6 +314,16 @@ export function relationships(view: ClusterView, entity: Entity) {
     });
   }
   return result;
+}
+
+// The links the panel lists. A Node's pod placement (scheduled_on) already
+// fills its Pods tab, so only its other links remain, such as a Service
+// whose EndpointSlice targets the Node.
+export function panelLinks(view: ClusterView, entity: Entity) {
+  const links = relationships(view, entity);
+  return entity.kind === "Node"
+    ? links.filter((link) => link.edge.relation !== "scheduled_on")
+    : links;
 }
 
 // ReplicaSets scaled to zero are previous Deployment revisions; a ReplicaSet

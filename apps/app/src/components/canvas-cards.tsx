@@ -236,10 +236,16 @@ function stop(action: () => void) {
   };
 }
 
+// Without EndpointSlice access, Service membership is selector configuration.
+function selectorOnly(view: ClusterView) {
+  return view.inventory.capabilities.includes("endpointslices_unavailable");
+}
+
 function context(data: CardData): CardContext {
   return {
     now: data.now,
     problem: data.problem,
+    selectorOnly: selectorOnly(data.item.view),
     stale: data.stale,
     sourceTime: data.item.view.inventory.sourceTime,
   };
@@ -357,7 +363,11 @@ function PodsSubCard({
   detail: Detail;
 }) {
   const { item, expanded, onExpand } = data;
-  const label = podsLabel(item.entity, summary);
+  const selector = item.entity.kind === "Service" && selectorOnly(item.view);
+  const label = podsLabel(item.entity, summary, selector);
+  const title = selector
+    ? "Endpoint discovery is unavailable; counts selector-matched pods (configuration only)"
+    : undefined;
   const frame =
     "-mt-3 mx-2 flex h-12 items-end rounded-b-xl border border-t-0 bg-muted/40";
   if (detail !== "full") {
@@ -368,6 +378,7 @@ function PodsSubCard({
           "px-4 pb-1 text-muted-foreground",
           detail === "distant" ? "text-2xl" : "text-lg"
         )}
+        title={title}
       >
         <span className="truncate">{label}</span>
       </div>
@@ -381,6 +392,7 @@ function PodsSubCard({
         className="nodrag h-8 shrink-0 gap-1.5 px-1.5 text-muted-foreground text-xs tabular-nums hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         onClick={stop(() => onExpand(item.id))}
         size="sm"
+        title={title}
         variant="ghost"
       >
         <Boxes aria-hidden="true" className="size-3.5" />

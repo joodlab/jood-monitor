@@ -26,7 +26,10 @@ import {
   type ActivityRow,
   activityRows,
   changeDetail,
+  hiddenRolloutSteps,
+  hiddenStepsText,
   liveAttention,
+  quietChangesText,
   subjectName,
 } from "../lib/canvas-activity";
 import type { EventCategory } from "../lib/events";
@@ -229,10 +232,13 @@ function RecentChanges({
   range: string;
   onInspect: AttentionActions["onInspect"];
 }) {
-  const rows = useMemo(
-    () => activityRows(events.data ?? [], views, changeLimit),
-    [events.data, views]
-  );
+  const { rows, steps } = useMemo(() => {
+    const data = events.data ?? [];
+    return {
+      rows: activityRows(data, views, changeLimit),
+      steps: hiddenRolloutSteps(data),
+    };
+  }, [events.data, views]);
   const multiple = views.length > 1;
   return (
     <section>
@@ -260,8 +266,7 @@ function RecentChanges({
       )}
       {events.isSuccess && rows.length === 0 && (
         <p className="px-3.5 py-2 text-muted-foreground text-sm">
-          No node, scaling or resource changes observed in the{" "}
-          {rangeNames[range] ?? "selected range"}.
+          {quietChangesText(steps, rangeNames[range] ?? "selected range")}
         </p>
       )}
       <ul>
@@ -287,6 +292,11 @@ function RecentChanges({
           );
         })}
       </ul>
+      {rows.length > 0 && steps > 0 && (
+        <p className="px-3.5 pt-1 pb-2 text-muted-foreground text-xs">
+          {hiddenStepsText(steps)}
+        </p>
+      )}
     </section>
   );
 }
@@ -326,12 +336,15 @@ export function ActivityPanel({
   events,
   range,
   className,
+  id,
   ...props
 }: PanelProps & {
   className?: string;
   // Where the panel covers the canvas, Escape closes it.
   dismissible?: boolean;
   events: UseQueryResult<Lifecycle[], Error>;
+  // Lets the button that opens the panel point at it with aria-controls.
+  id?: string;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   range: string;
@@ -346,8 +359,12 @@ export function ActivityPanel({
         "pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-card/95 shadow-lg backdrop-blur",
         className
       )}
+      id={id}
       onKeyDown={(event) => {
         if (dismissible && event.key === "Escape") {
+          // preventDefault tells the docked service panel to ignore this
+          // Escape; both listen on document, so stopPropagation alone cannot.
+          event.preventDefault();
           event.stopPropagation();
           onOpenChange(false);
         }

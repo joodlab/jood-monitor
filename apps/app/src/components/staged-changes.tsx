@@ -43,15 +43,21 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { updateProfileFn } from "../functions/clusters";
 import { fetchSnapshot } from "../hooks/api/clusters";
 import { useDisplay } from "../hooks/display";
-import { requestError } from "../lib/install-errors";
 import {
-  applyFailed,
-  applySucceeded,
+  applyStagedCluster,
   discardStaged,
+  dismissRequests,
   markApplying,
   pausingClusters,
   pruneStaged,
@@ -60,19 +66,20 @@ import {
   revertField,
   type StagedCluster,
   type StagedRow,
+  type StagedState,
+  settleRequests,
   stageDraft,
   stagedClusters,
   stagedCount,
+  stagedInScope,
   useStagedState,
 } from "../lib/staged-changes";
-import { profileSchema } from "../schemas/clusters";
 import type { AckRequest, DraftField } from "./collection-model";
 import {
+  ackPatienceMs,
   ackPollDelay,
   latestPendingRequest,
-  profileRequest,
   progressSummary,
-  validationText,
 } from "./collection-model";
 
 // Railway-style staged changes: collection edits wait as a floating
@@ -88,9 +95,25 @@ function plural(count: number, noun: string) {
 const cardBase =
   "w-72 max-w-[calc(100vw-2rem)] space-y-1 rounded-xl border bg-popover/95 p-3 text-popover-foreground shadow-lg backdrop-blur-sm";
 
+// Full-strength focus ring; it replaces the Button primitive's softer halo.
+const focusRing = "focus-visible:ring-2 focus-visible:ring-ring";
+
+// Apply keeps focus while it is disabled during the request, so keyboard
+// users are not dropped to the page; it still looks and acts disabled.
+const keepFocus = cn(
+  focusRing,
+  "aria-disabled:pointer-events-none aria-disabled:opacity-50"
+);
+
+// A card heading that takes focus when the control that held it unmounts.
+const headingFocus = cn("rounded-sm outline-none", focusRing);
+
+const noViews: ClusterView[] = [];
+
 // The live snapshot the dashboard already keeps fresh. This reader adds no
-// schedule of its own; it fetches only when nothing is cached yet.
-function useLiveViews(scope: string, frozen: boolean) {
+// schedule of its own; it fetches only when nothing is cached yet. While
+// frozen the query is disabled but keeps what it cached.
+function useLiveSnapshot(scope: string, frozen: boolean) {
   const snapshot = useQuery({
     queryKey: ["snapshot", scope, "live"],
     queryFn: () => fetchSnapshot(scope),
@@ -99,17 +122,15 @@ function useLiveViews(scope: string, frozen: boolean) {
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   });
-  return useMemo<ClusterView[]>(
-    () => (frozen ? [] : (snapshot.data?.clusters ?? [])),
-    [frozen, snapshot.data]
-  );
+  return snapshot.data?.clusters;
 }
 
-// While any request awaits acknowledgment, the live snapshot is refreshed on
-// a capped backoff (10 s, 20 s, then every 30 s) from the latest request
-// until the patience window ends. Hidden tabs skip refreshes; the query
-// refetches on focus. A slow scope-wide fetch is not cancelled by the next
-// tick.
+// While any request awaits acknowledgment, the live snapshot is refreshed at
+// fixed marks after the latest request (10 s, 30 s, then every 30 s) until
+// the patience window ends. The schedule depends only on the time since the
+// request, so remounting (a namespace drill, a tab switch) keeps it. Hidden
+// tabs skip refreshes; the query refetches on focus. A slow scope-wide fetch
+// is not cancelled by the next tick.
 function useAcknowledgmentPolling(
   views: ClusterView[],
   requests: Partial<Record<string, AckRequest>>,
@@ -123,14 +144,12 @@ function useAcknowledgmentPolling(
     if (since === undefined) {
       return;
     }
-    let attempt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
-      const delay = ackPollDelay(attempt, Date.now() - since);
+      const delay = ackPollDelay(Date.now() - since);
       timer = delay === undefined ? undefined : setTimeout(tick, delay);
     };
     const tick = () => {
-      attempt += 1;
       if (document.visibilityState === "visible") {
         client.invalidateQueries(
           { queryKey: ["snapshot", scope, "live"] },
@@ -144,45 +163,52 @@ function useAcknowledgmentPolling(
   }, [client, scope, since]);
 }
 
-async function applyCluster(target: StagedCluster) {
-  const id = target.view.cluster.id;
-  const parsed = profileSchema.safeParse(
-    profileRequest(target.draft, target.view.profile, Date.now())
-  );
-  if (!parsed.success) {
-    applyFailed(id, validationText(parsed.error));
-    return;
-  }
-  try {
-    const result = await updateProfileFn({
-      headers: { "X-Jood-CSRF": "1" },
-      data: { clusterId: id, profile: parsed.data },
-    });
-    applySucceeded(id, { revision: result.revision, at: Date.now() });
-  } catch (error) {
-    applyFailed(id, requestError(error).message);
-  }
-}
+type ProfileSend = Parameters<typeof applyStagedCluster>[1];
+
+const sendProfile: ProfileSend = (clusterId, profile) =>
+  updateProfileFn({
+    headers: { "X-Jood-CSRF": "1" },
+    data: { clusterId, profile },
+  });
 
 // Sends each staged cluster's profile. A failure keeps that cluster's
-// changes staged with the reason; the others still apply.
+// changes staged with the reason; the others still apply. Each accepted
+// cluster refreshes the snapshot right away, so its settings unlock when its
+// own revision lands rather than after the slowest cluster.
 function useApplyStaged() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: async (targets: StagedCluster[]) => {
       markApplying(targets.map((target) => target.view.cluster.id));
-      await Promise.all(targets.map(applyCluster));
+      await Promise.all(
+        targets.map(async (target) => {
+          if (await applyStagedCluster(target, sendProfile)) {
+            client.invalidateQueries(
+              { queryKey: ["snapshot"] },
+              { cancelRefetch: false }
+            );
+          }
+        })
+      );
     },
-    onSettled: () => client.invalidateQueries({ queryKey: ["snapshot"] }),
+    onSettled: () =>
+      client.invalidateQueries(
+        { queryKey: ["snapshot"] },
+        { cancelRefetch: false }
+      ),
   });
 }
 
+type FinalFocus = () => HTMLElement | boolean;
+
 function PauseConfirm({
   targets,
+  finalFocus,
   onCancel,
   onConfirm,
 }: {
   targets: StagedCluster[];
+  finalFocus: FinalFocus;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -197,7 +223,7 @@ function PauseConfirm({
       }}
       open={pausing.length > 0}
     >
-      <DialogContent>
+      <DialogContent finalFocus={finalFocus}>
         <DialogHeader>
           <DialogTitle>
             {only
@@ -219,10 +245,10 @@ function PauseConfirm({
           </ul>
         )}
         <DialogFooter>
-          <Button onClick={onCancel} variant="outline">
+          <Button className={focusRing} onClick={onCancel} variant="outline">
             Keep collecting
           </Button>
-          <Button onClick={onConfirm} variant="warning">
+          <Button className={focusRing} onClick={onConfirm} variant="warning">
             Pause and apply
           </Button>
         </DialogFooter>
@@ -270,6 +296,7 @@ function ChangeRow({
       <TableCell className="w-10 align-top">
         <Button
           aria-label={`Discard the ${row.label.toLowerCase()} change for ${view.cluster.name}`}
+          className={focusRing}
           disabled={disabled}
           onClick={() =>
             stageDraft(
@@ -355,6 +382,7 @@ function ClusterGroup({
         </span>
         <Button
           aria-label={`Discard staged changes for ${name}`}
+          className={focusRing}
           disabled={disabled}
           onClick={() => discardStaged([view.cluster.id])}
           size="sm"
@@ -430,12 +458,14 @@ function StagedDetails({
   open,
   clusters,
   applying,
+  finalFocus,
   onOpenChange,
   onApply,
 }: {
   open: boolean;
   clusters: StagedCluster[];
   applying: boolean;
+  finalFocus: FinalFocus;
   onOpenChange: (open: boolean) => void;
   onApply: () => void;
 }) {
@@ -443,7 +473,7 @@ function StagedDetails({
   const blocked = clusters.filter((cluster) => cluster.problems.length > 0);
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="gap-0 p-0 sm:max-w-3xl">
+      <DialogContent className="gap-0 p-0 sm:max-w-3xl" finalFocus={finalFocus}>
         <DialogHeader className="border-b px-6 py-4 pr-14">
           <DialogTitle className="font-semibold text-lg">
             {plural(count, "change")} to apply
@@ -465,7 +495,12 @@ function StagedDetails({
         <DialogFooter className="items-start gap-3 border-t px-6 py-4 sm:items-center sm:justify-between">
           <Consequences clusters={clusters} />
           <div className="flex shrink-0 flex-col items-end gap-1">
-            <Button disabled={applying || blocked.length > 0} onClick={onApply}>
+            <Button
+              className={keepFocus}
+              disabled={applying || blocked.length > 0}
+              focusableWhenDisabled
+              onClick={onApply}
+            >
               <Check />
               {applying ? "Applying…" : "Apply changes"}
             </Button>
@@ -515,154 +550,202 @@ function StagedStatus({ clusters }: { clusters: StagedCluster[] }) {
   );
 }
 
+type HeadingRef = RefObject<HTMLParagraphElement | null>;
+
 function StagedCard({
   className,
   clusters,
+  applying,
+  heading,
+  onApply,
+  onDetails,
   onDiscardAll,
 }: {
   className?: string;
   clusters: StagedCluster[];
+  applying: boolean;
+  heading: HeadingRef;
+  onApply: () => void;
+  onDetails: () => void;
   onDiscardAll: () => void;
 }) {
-  const apply = useApplyStaged();
-  const [details, setDetails] = useState(false);
-  // Clusters waiting for the pause confirmation, re-read on confirm so the
-  // latest drafts are sent.
-  const [confirming, setConfirming] = useState<string[]>();
   const count = stagedCount(clusters);
-  const applying =
-    apply.isPending || clusters.some((cluster) => cluster.applying);
-  const ids = clusters.map((cluster) => cluster.view.cluster.id);
-  const confirmTargets = confirming
-    ? clusters.filter((cluster) => confirming.includes(cluster.view.cluster.id))
-    : [];
-  function start() {
-    if (clusters.some((cluster) => cluster.problems.length > 0)) {
-      setDetails(true);
-      return;
-    }
-    if (pausingClusters(clusters).length > 0) {
-      // One modal at a time: the confirmation replaces Details.
-      setDetails(false);
-      setConfirming(ids);
-      return;
-    }
-    apply.mutate(clusters);
-  }
   return (
-    <>
-      <section
-        aria-label="Staged changes"
-        className={cn(cardBase, "border-staged/40", className)}
+    <section
+      aria-label="Staged changes"
+      className={cn(cardBase, "border-staged/40", className)}
+    >
+      <p
+        className={cn("font-medium text-sm text-staged-text", headingFocus)}
+        ref={heading}
+        tabIndex={-1}
       >
-        <p className="font-medium text-sm text-staged-text" role="status">
-          {applying
-            ? `Applying ${plural(count, "change")}…`
-            : `Apply ${plural(count, "change")}`}
-        </p>
-        <StagedStatus clusters={clusters} />
-        <div className="flex items-center gap-2 pt-2">
-          <Button onClick={() => setDetails(true)} size="sm" variant="outline">
-            Details
-          </Button>
-          <Button disabled={applying} onClick={start} size="sm">
-            Apply
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  aria-label="More staged change actions"
-                  className="ml-auto"
-                  size="icon-sm"
-                  variant="ghost"
-                />
-              }
+        {applying
+          ? `Applying ${plural(count, "change")}…`
+          : `Apply ${plural(count, "change")}`}
+      </p>
+      <StagedStatus clusters={clusters} />
+      <div className="flex items-center gap-2 pt-2">
+        <Button
+          className={focusRing}
+          onClick={onDetails}
+          size="sm"
+          variant="outline"
+        >
+          Details
+        </Button>
+        <Button
+          className={keepFocus}
+          disabled={applying}
+          focusableWhenDisabled
+          onClick={onApply}
+          size="sm"
+        >
+          Apply
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                aria-label="More staged change actions"
+                className={cn("ml-auto", focusRing)}
+                size="icon-sm"
+                variant="ghost"
+              />
+            }
+          >
+            <EllipsisVertical />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              disabled={applying}
+              onClick={onDiscardAll}
+              variant="destructive"
             >
-              <EllipsisVertical />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                disabled={applying}
-                onClick={onDiscardAll}
-                variant="destructive"
-              >
-                <Trash2 />
-                Discard all changes
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </section>
-      <StagedDetails
-        applying={applying}
-        clusters={clusters}
-        onApply={start}
-        onOpenChange={setDetails}
-        open={details}
-      />
-      <PauseConfirm
-        onCancel={() => setConfirming(undefined)}
-        onConfirm={() => {
-          setConfirming(undefined);
-          apply.mutate(confirmTargets);
-        }}
-        targets={confirmTargets}
-      />
-    </>
+              <Trash2 />
+              Discard all changes
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </section>
   );
+}
+
+const patienceText = `${ackPatienceMs / 60_000} minutes`;
+
+// The card heading: an unconfirmed request outranks the others, and success
+// is only claimed when every request is fully acknowledged.
+function progressHeading(recent: RecentRequest[]) {
+  if (recent.some((item) => item.timedOut)) {
+    return {
+      Icon: TriangleAlert,
+      tone: "text-warning-text",
+      text: `Not all nodes acknowledged after ${patienceText}`,
+    };
+  }
+  if (recent.every((item) => item.progress?.phase === "complete")) {
+    return {
+      Icon: CircleCheck,
+      tone: "text-success-text",
+      text: "Collection changes applied",
+    };
+  }
+  return {
+    Icon: Clock,
+    tone: "text-info-text",
+    text: "Applying collection changes",
+  };
+}
+
+function recentSummary(item: RecentRequest) {
+  if (!item.progress) {
+    return "Sending to the hub…";
+  }
+  const summary = progressSummary(item.progress);
+  // The stale-observer summary already says it is unconfirmed.
+  return item.timedOut && item.progress.phase !== "observer-stale"
+    ? `${summary} (unconfirmed)`
+    : summary;
 }
 
 function ProgressCard({
   className,
   recent,
+  heading,
   onSettings,
 }: {
   className?: string;
   recent: RecentRequest[];
+  heading: HeadingRef;
   onSettings?: (clusterId?: string) => void;
 }) {
-  const done = recent.every((item) => item.progress?.phase === "complete");
+  const { Icon, tone, text } = progressHeading(recent);
+  const timedOut = recent.filter((item) => item.timedOut);
   return (
     <section
       aria-label="Collection changes"
-      className={cn(cardBase, className)}
+      className={cn(
+        cardBase,
+        timedOut.length > 0 && "border-warning/40",
+        className
+      )}
     >
-      <p className="flex items-center gap-1.5 font-medium text-sm">
-        {done ? (
-          <CircleCheck aria-hidden className="size-4 text-success-text" />
-        ) : (
-          <Clock aria-hidden className="size-4 text-info-text" />
+      <p
+        className={cn(
+          "flex items-center gap-1.5 font-medium text-sm",
+          headingFocus
         )}
-        {done ? "Collection changes applied" : "Applying collection changes"}
+        ref={heading}
+        tabIndex={-1}
+      >
+        <Icon aria-hidden className={cn("size-4 shrink-0", tone)} />
+        {text}
       </p>
-      <ul className="space-y-0.5 text-xs" role="status">
+      <ul className="space-y-0.5 text-xs">
         {recent.map((item) => (
           <li key={item.view.cluster.id}>
             <span className="font-medium">{item.view.cluster.name}</span>
             <span className="text-muted-foreground">
               {" "}
-              ·{" "}
-              {item.progress
-                ? progressSummary(item.progress)
-                : "Sending to the hub…"}
+              · {recentSummary(item)}
             </span>
           </li>
         ))}
       </ul>
-      {onSettings && (
-        <div className="pt-2">
-          <Button
-            onClick={() =>
-              onSettings(
-                recent.length === 1 ? recent[0]?.view.cluster.id : undefined
-              )
-            }
-            size="sm"
-            variant="outline"
-          >
-            View acknowledgments
-          </Button>
+      {(onSettings || timedOut.length > 0) && (
+        <div className="flex flex-wrap items-center gap-2 pt-2">
+          {onSettings && (
+            <Button
+              className={focusRing}
+              onClick={() =>
+                onSettings(
+                  recent.length === 1 ? recent[0]?.view.cluster.id : undefined
+                )
+              }
+              size="sm"
+              variant="outline"
+            >
+              View acknowledgments
+            </Button>
+          )}
+          {timedOut.length > 0 && (
+            <Button
+              aria-label={
+                timedOut.length === 1
+                  ? `Dismiss the unconfirmed change for ${timedOut[0]?.view.cluster.name}`
+                  : `Dismiss ${timedOut.length} unconfirmed changes`
+              }
+              className={focusRing}
+              onClick={() =>
+                dismissRequests(timedOut.map((item) => item.view.cluster.id))
+              }
+              size="sm"
+              variant="ghost"
+            >
+              Dismiss
+            </Button>
+          )}
         </div>
       )}
     </section>
@@ -671,9 +754,11 @@ function ProgressCard({
 
 function FrozenCard({
   className,
+  heading,
   onLive,
 }: {
   className?: string;
+  heading: HeadingRef;
   onLive: () => void;
 }) {
   return (
@@ -681,7 +766,11 @@ function FrozenCard({
       aria-label="Staged changes"
       className={cn(cardBase, "border-staged/40", className)}
     >
-      <p className="font-medium text-sm text-staged-text">
+      <p
+        className={cn("font-medium text-sm text-staged-text", headingFocus)}
+        ref={heading}
+        tabIndex={-1}
+      >
         Staged changes are waiting
       </p>
       <p className="text-muted-foreground text-xs">
@@ -689,7 +778,12 @@ function FrozenCard({
         stay staged for this browser session.
       </p>
       <div className="pt-2">
-        <Button onClick={onLive} size="sm" variant="outline">
+        <Button
+          className={focusRing}
+          onClick={onLive}
+          size="sm"
+          variant="outline"
+        >
           Return to live
         </Button>
       </div>
@@ -697,19 +791,179 @@ function FrozenCard({
   );
 }
 
-// The floating "Apply N changes" card. Shows staged changes for the clusters
-// in the current workspace scope, then acknowledgment progress once applied.
-export function StagedChangesBar({ className }: { className?: string }) {
+type BarKind = "frozen" | "staged" | "progress" | "none";
+
+// Whether frozen views have staged drafts waiting in this scope. A cached
+// live snapshot also drops drafts whose profile changed since; without one
+// the workspace recorded at staging decides.
+function frozenWaiting(
+  staged: StagedState,
+  scope: string,
+  cached: ClusterView[] | undefined,
+  now: number
+) {
+  return cached && now
+    ? stagedClusters(staged, cached, now).length > 0
+    : stagedInScope(staged, scope);
+}
+
+function barKind(
+  frozen: boolean,
+  waiting: boolean,
+  clusters: StagedCluster[],
+  recent: RecentRequest[]
+): BarKind {
+  if (frozen) {
+    return waiting ? "frozen" : "none";
+  }
+  if (clusters.length > 0) {
+    return "staged";
+  }
+  return recent.length > 0 ? "progress" : "none";
+}
+
+// One short summary for the bar's single live region. It exists before any
+// card mounts, so staging the first change and starting an apply are
+// announced; the cards themselves are not live regions.
+function announcement(
+  kind: BarKind,
+  clusters: StagedCluster[],
+  recent: RecentRequest[],
+  emptied: boolean
+) {
+  if (kind === "staged") {
+    const count = plural(stagedCount(clusters), "change");
+    return clusters.some((cluster) => cluster.applying)
+      ? `Applying ${count}…`
+      : `${count} staged, not applied`;
+  }
+  if (kind === "progress") {
+    return progressHeading(recent).text;
+  }
+  return kind === "none" && emptied
+    ? "No staged changes left. Nothing waiting to apply."
+    : "";
+}
+
+// When the card holding focus unmounts (its last change discarded or
+// applied, a progress card dismissed, frozen view resumed), its buttons, menu
+// and dialogs go with it and focus would drop to the page body. Moves focus
+// to `target` then, unless it already landed somewhere real. Also reports
+// whether the bar just emptied after staged changes.
+function useFocusRecovery(kind: BarKind, target: () => HTMLElement | null) {
+  const last = useRef(kind);
+  const latestTarget = useRef(target);
+  latestTarget.current = target;
+  const [emptied, setEmptied] = useState(false);
+  useEffect(() => {
+    const was = last.current;
+    last.current = kind;
+    if (was === kind) {
+      return;
+    }
+    setEmptied(kind === "none" && was === "staged");
+    if (was === "none") {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body) {
+        latestTarget.current()?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [kind]);
+  return emptied;
+}
+
+function focusable(element: HTMLElement | null): element is HTMLElement {
+  return !!element?.isConnected && !element.matches(":disabled");
+}
+
+// Apply, Details and the pause confirmation live with the bar, not the card,
+// so they close normally (and hand focus back) when the card goes away.
+function useStagedControls(
+  clusters: StagedCluster[],
+  focusTarget: () => HTMLElement | null
+) {
+  const apply = useApplyStaged();
+  const [details, setDetails] = useState(false);
+  // Clusters waiting for the pause confirmation, re-read on confirm so the
+  // latest drafts are sent.
+  const [confirming, setConfirming] = useState<string[]>();
+  // The card control that opened a dialog, to return focus to it.
+  const opener = useRef<HTMLElement | null>(null);
+  const empty = clusters.length === 0;
+  useEffect(() => {
+    if (empty) {
+      setDetails(false);
+      setConfirming(undefined);
+    }
+  }, [empty]);
+  const remember = () => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !active.closest("[role=dialog]")) {
+      opener.current = active;
+    }
+  };
+  const confirmTargets = confirming
+    ? clusters.filter((cluster) => confirming.includes(cluster.view.cluster.id))
+    : [];
+  const blocked = (targets: StagedCluster[]) =>
+    targets.some((cluster) => cluster.problems.length > 0);
+  return {
+    applying: apply.isPending || clusters.some((cluster) => cluster.applying),
+    confirmTargets,
+    details: details && !empty,
+    finalFocus: (): HTMLElement | boolean => {
+      const element = opener.current;
+      return focusable(element) ? element : (focusTarget() ?? true);
+    },
+    openDetails: () => {
+      remember();
+      setDetails(true);
+    },
+    setDetails,
+    cancelConfirm: () => setConfirming(undefined),
+    confirm: () => {
+      setConfirming(undefined);
+      // The display clock moved on while the dialog was open: a diagnostic
+      // about to end blocks the apply, as it does from the card.
+      if (blocked(confirmTargets)) {
+        setDetails(true);
+        return;
+      }
+      apply.mutate(confirmTargets);
+    },
+    start: () => {
+      remember();
+      if (blocked(clusters)) {
+        setDetails(true);
+        return;
+      }
+      if (pausingClusters(clusters).length > 0) {
+        // One modal at a time: the confirmation replaces Details.
+        setDetails(false);
+        setConfirming(clusters.map((cluster) => cluster.view.cluster.id));
+        return;
+      }
+      apply.mutate(clusters);
+    },
+  };
+}
+
+function useBarState() {
   const search = useSearch({ from: "/" });
-  const navigate = useNavigate({ from: "/" });
   const { frozen, now } = useDisplay();
   const staged = useStagedState();
   const live = !frozen;
-  const views = useLiveViews(search.workspace, frozen);
+  const cached = useLiveSnapshot(search.workspace, frozen);
+  const views = live ? (cached ?? noViews) : noViews;
   useAcknowledgmentPolling(views, staged.requests, search.workspace, live);
   useEffect(() => {
     if (live && now) {
       pruneStaged(views, now);
+      settleRequests(views, now);
     }
   }, [live, now, views]);
   const clusters = useMemo(
@@ -720,47 +974,112 @@ export function StagedChangesBar({ className }: { className?: string }) {
     () => (now ? recentRequests(staged, views, now) : []),
     [staged, views, now]
   );
-  if (frozen) {
-    return Object.keys(staged.entries).length > 0 ? (
-      <FrozenCard
-        className={className}
-        onLive={() =>
-          navigate({ search: (old) => ({ ...old, at: undefined }) })
-        }
-      />
-    ) : null;
-  }
-  if (clusters.length > 0) {
-    return (
-      <StagedCard
-        className={className}
+  const waiting =
+    frozen && frozenWaiting(staged, search.workspace, cached, now);
+  return {
+    clusters,
+    kind: barKind(frozen, waiting, clusters, recent),
+    recent,
+    views,
+  };
+}
+
+// The floating "Apply N changes" card. Shows staged changes for the clusters
+// in the current workspace scope, then acknowledgment progress once applied.
+// `focusFallback` names a visible element to focus when the card goes away
+// with focus inside it; otherwise a visually hidden note in the bar's place
+// takes it.
+export function StagedChangesBar({
+  className,
+  focusFallback,
+}: {
+  className?: string;
+  focusFallback?: () => HTMLElement | null | undefined;
+}) {
+  const search = useSearch({ from: "/" });
+  const navigate = useNavigate({ from: "/" });
+  const { clusters, kind, recent, views } = useBarState();
+  const heading = useRef<HTMLParagraphElement>(null);
+  const anchor = useRef<HTMLParagraphElement>(null);
+  const focusTarget = () =>
+    heading.current ?? focusFallback?.() ?? anchor.current;
+  const controls = useStagedControls(clusters, focusTarget);
+  const emptied = useFocusRecovery(kind, focusTarget);
+  const onSettings =
+    search.view === "settings"
+      ? undefined
+      : (cluster?: string) =>
+          navigate({
+            search: (old) => ({
+              ...old,
+              view: "settings",
+              cluster: cluster ?? old.cluster,
+              resource: undefined,
+              resourceCluster: undefined,
+              diagnosticNode: undefined,
+            }),
+          });
+  return (
+    <>
+      <p aria-atomic="true" className="sr-only" role="status">
+        {announcement(kind, clusters, recent, emptied)}
+      </p>
+      {kind === "none" && (
+        <p
+          className={cn(
+            "sr-only focus-visible:not-sr-only focus-visible:block focus-visible:rounded-md focus-visible:border focus-visible:bg-popover focus-visible:px-3 focus-visible:py-2 focus-visible:text-muted-foreground focus-visible:text-xs",
+            headingFocus
+          )}
+          ref={anchor}
+          tabIndex={-1}
+        >
+          No staged collection changes.
+        </p>
+      )}
+      {kind === "frozen" && (
+        <FrozenCard
+          className={className}
+          heading={heading}
+          onLive={() =>
+            navigate({ search: (old) => ({ ...old, at: undefined }) })
+          }
+        />
+      )}
+      {kind === "staged" && (
+        <StagedCard
+          applying={controls.applying}
+          className={className}
+          clusters={clusters}
+          heading={heading}
+          onApply={controls.start}
+          onDetails={controls.openDetails}
+          onDiscardAll={() =>
+            discardStaged(views.map((view) => view.cluster.id))
+          }
+        />
+      )}
+      {kind === "progress" && (
+        <ProgressCard
+          className={className}
+          heading={heading}
+          onSettings={onSettings}
+          recent={recent}
+        />
+      )}
+      <StagedDetails
+        applying={controls.applying}
         clusters={clusters}
-        onDiscardAll={() => discardStaged(views.map((view) => view.cluster.id))}
+        finalFocus={controls.finalFocus}
+        onApply={controls.start}
+        onOpenChange={controls.setDetails}
+        open={controls.details}
       />
-    );
-  }
-  if (recent.length > 0) {
-    return (
-      <ProgressCard
-        className={className}
-        onSettings={
-          search.view === "settings"
-            ? undefined
-            : (cluster) =>
-                navigate({
-                  search: (old) => ({
-                    ...old,
-                    view: "settings",
-                    cluster: cluster ?? old.cluster,
-                    resource: undefined,
-                    resourceCluster: undefined,
-                    diagnosticNode: undefined,
-                  }),
-                })
-        }
-        recent={recent}
+      <PauseConfirm
+        finalFocus={controls.finalFocus}
+        onCancel={controls.cancelConfirm}
+        onConfirm={controls.confirm}
+        targets={controls.confirmTargets}
       />
-    );
-  }
-  return null;
+    </>
+  );
 }

@@ -506,15 +506,25 @@ export function progressSummary(progress: RequestProgress) {
 // While a profile request awaits acknowledgment, the snapshot is refreshed on
 // a capped backoff that ends with the patience window.
 export const ackPatienceMs = 3 * 60_000;
-const ackPollStepsMs = [10_000, 20_000, 30_000];
+// Refresh marks after the request: 10 s, 30 s, then every 30 s to the end of
+// the patience window.
+const ackPollMarksMs = [
+  10_000, 30_000, 60_000, 90_000, 120_000, 150_000, 180_000,
+];
+// A timer can fire a few milliseconds early; that tick still counts as its
+// mark rather than scheduling the same mark again.
+const ackPollToleranceMs = 500;
 
-// Delay before refresh `attempt` (0-based) when `elapsedMs` have passed since
-// the request, or undefined once that refresh would fall outside the window.
-export function ackPollDelay(attempt: number, elapsedMs: number) {
-  const delay =
-    ackPollStepsMs[Math.min(attempt, ackPollStepsMs.length - 1)] ??
-    ackPatienceMs;
-  return elapsedMs + delay > ackPatienceMs ? undefined : delay;
+// Delay until the next refresh mark when `elapsedMs` have passed since the
+// request, or undefined when no mark is left in the patience window. It
+// depends only on elapsed time, so a remounted poller keeps the schedule.
+export function ackPollDelay(elapsedMs: number) {
+  const mark = ackPollMarksMs.find(
+    (value) => value > elapsedMs + ackPollToleranceMs
+  );
+  return mark === undefined || mark > ackPatienceMs
+    ? undefined
+    : mark - elapsedMs;
 }
 
 // A profile request the hub accepted: its revision and when it was sent.

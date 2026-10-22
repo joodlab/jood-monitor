@@ -191,15 +191,27 @@ function graphProblem(entity: Entity, now: number) {
   return entity.kind === "Pod" ? podProblem(entity, now) : hasProblem(entity);
 }
 
+// A live failing member pod. Failed pods are retained history, which the
+// attention model lists on their own rather than against their workload.
+function liveMemberProblem(pod: Entity, now: number) {
+  return pod.status !== "Failed" && podProblem(pod, now);
+}
+
 // Namespace cards carry the problems of what they contain, so the namespace
-// map shows where to look first.
+// map shows where to look first. Workloads carry their live failing pods, as
+// the attention model does: during a surge rollout readyReplicas can equal
+// replicas while the new pod crashes.
 export function itemProblem(item: ResourceItem, now: number) {
-  if (item.entity.kind !== "Namespace") {
-    return graphProblem(item.entity, now);
+  const { view, entity } = item;
+  if (entity.kind === "Namespace") {
+    return view.inventory.entities.some(
+      (member) => member.namespace === entity.name && graphProblem(member, now)
+    );
   }
-  return item.view.inventory.entities.some(
-    (member) =>
-      member.namespace === item.entity.name && graphProblem(member, now)
+  return (
+    graphProblem(entity, now) ||
+    (workloadKinds.has(entity.kind) &&
+      relatedPods(view, entity).some((pod) => liveMemberProblem(pod, now)))
   );
 }
 
@@ -745,6 +757,17 @@ interface Rect {
   width: number;
   x: number;
   y: number;
+}
+
+// Whether two screen rectangles share any area, such as a focused control
+// and the Activity panel floating over the canvas.
+export function rectsOverlap(a: Rect, b: Rect) {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
 }
 
 // Whether a card, in screen pixels, sits wholly inside the canvas area that

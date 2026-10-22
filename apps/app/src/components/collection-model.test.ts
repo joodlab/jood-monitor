@@ -348,17 +348,27 @@ describe("acknowledgments", () => {
   it("backs off acknowledgment refreshes within the patience window", () => {
     const delays: number[] = [];
     let elapsed = 0;
-    let delay = ackPollDelay(0, elapsed);
+    let delay = ackPollDelay(elapsed);
     while (delay !== undefined) {
       delays.push(delay);
       elapsed += delay;
-      delay = ackPollDelay(delays.length, elapsed);
+      delay = ackPollDelay(elapsed);
     }
     expect(delays).toEqual([
       10_000, 20_000, 30_000, 30_000, 30_000, 30_000, 30_000,
     ]);
     expect(elapsed).toBeLessThanOrEqual(ackPatienceMs);
-    expect(ackPollDelay(0, ackPatienceMs)).toBeUndefined();
+    expect(ackPollDelay(ackPatienceMs)).toBeUndefined();
+  });
+
+  it("keeps the refresh schedule across remounts", () => {
+    // A poller mounted 12 s after the request waits for the 30 s mark, not
+    // another 10 s from its own start.
+    expect(ackPollDelay(12_000)).toBe(18_000);
+    // A tick that fires slightly early does not repeat its mark.
+    expect(ackPollDelay(29_800)).toBe(30_200);
+    expect(ackPollDelay(ackPatienceMs - 1000)).toBe(1000);
+    expect(ackPollDelay(ackPatienceMs - 200)).toBeUndefined();
   });
 
   it("keeps refreshing only while a request can still be acknowledged", () => {
