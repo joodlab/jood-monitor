@@ -372,7 +372,8 @@ describe("source-backed infrastructure", () => {
       metric("pod2", "memory", "200"),
     ];
     expect(summarize(view, workload, now).cpu).toBeCloseTo(0.3);
-    expect(summarize(view, workload, now + 100_000).memory).toBeUndefined();
+    // Past Standard's 105 s resource sample budget.
+    expect(summarize(view, workload, now + 106_000).memory).toBeUndefined();
   });
   it("projects only evidenced routes and endpoints with scope-safe identities", () => {
     const graph = serviceGraph([fixture("one"), fixture("two")], options);

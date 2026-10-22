@@ -66,6 +66,21 @@ export function inventoryFreshness(
   return freshness(at, now, INVENTORY_STALE_SECONDS);
 }
 
+// The observer samples resource usage every 60 s on Basic and every 30 s
+// otherwise. A sample stays current for two intervals plus 45 s of Metrics
+// API scrape age and delivery, so one late sample is not a gap. An expired
+// Diagnostic already samples at its return profile's interval.
+export function resourceSampleBudget(
+  profile: ClusterView["profile"],
+  now = Date.now()
+) {
+  const expired =
+    profile.name === "diagnostic" &&
+    (!profile.expiresAt || Date.parse(profile.expiresAt) <= now);
+  const name = expired ? profile.returnProfile || "basic" : profile.name;
+  return 2 * (name === "basic" ? 60 : 30) + 45;
+}
+
 export function nodeProfileOutcome(
   view: ClusterView,
   uid: string,
@@ -112,7 +127,11 @@ export function observedUsage(
     return;
   }
   const metric = latest(view.metrics, entity.uid, usageName(entity, field));
-  return freshness(metric?.sourceTime, now) === "fresh"
+  return freshness(
+    metric?.sourceTime,
+    now,
+    resourceSampleBudget(view.profile, now)
+  ) === "fresh"
     ? value(metric)
     : undefined;
 }
@@ -136,6 +155,7 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         )
         .map((metric) => Date.parse(metric.sourceTime))
     );
+    const budget = resourceSampleBudget(view.profile, now);
     for (const node of view.inventory.entities) {
       if (node.kind !== "Node") {
         continue;
@@ -152,8 +172,8 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         node.capacityCpu > 0 &&
         node.capacityMemory != null &&
         node.capacityMemory > 0 &&
-        freshness(cpu.sourceTime, now) === "fresh" &&
-        freshness(mem.sourceTime, now) === "fresh" &&
+        freshness(cpu.sourceTime, now, budget) === "fresh" &&
+        freshness(mem.sourceTime, now, budget) === "fresh" &&
         anchor - Date.parse(cpu.sourceTime) < 30_000 &&
         anchor - Date.parse(mem.sourceTime) < 30_000 &&
         Math.abs(Date.parse(cpu.sourceTime) - Date.parse(mem.sourceTime)) <
