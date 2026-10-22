@@ -13,9 +13,11 @@ import {
 } from "@xyflow/react";
 import { TriangleAlert, X } from "lucide-react";
 import {
+  type Dispatch,
   type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
+  type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -23,6 +25,12 @@ import {
   useState,
 } from "react";
 import { useDisplay } from "../hooks/display";
+import {
+  type CanvasViewport,
+  canvasViews,
+  centredViewport,
+  restoredCanvasView,
+} from "../lib/canvas-view-memory";
 import { inventoryFreshness } from "../lib/metrics";
 import {
   activatedCard,
@@ -45,7 +53,12 @@ import {
   type Inspect,
   nodeTypes,
 } from "./canvas-cards";
-import { inventoryCoverage, TopologyEmpty } from "./canvas-empty";
+import {
+  inventoryCoverage,
+  SilentClustersChip,
+  silentClusters,
+  TopologyEmpty,
+} from "./canvas-empty";
 import { phoneQuery, useLatestCallback, useMediaQuery } from "./canvas-hooks";
 import { TopologyList } from "./canvas-list";
 import { CanvasToolbar } from "./canvas-toolbar";
@@ -87,6 +100,25 @@ function paddingFor(right: number, extra = 0): Padding {
     right: pixels(right + 24 + extra),
   };
 }
+
+// While a card is selected, unrelated cards recede: their fills, borders
+// and icons fade but their text keeps full contrast. The faded colours are
+// mixed on the node wrapper from the theme and handed to the card inside,
+// so problem borders keep their hue.
+const cardClass = [
+  "data-dimmed:[--dim-card:color-mix(in_oklab,var(--card)_45%,transparent)]",
+  "data-dimmed:[--dim-muted:color-mix(in_oklab,var(--muted)_45%,transparent)]",
+  "data-dimmed:[--dim-border:color-mix(in_oklab,var(--border)_45%,transparent)]",
+  "data-dimmed:[--dim-destructive:color-mix(in_oklab,var(--destructive)_40%,transparent)]",
+  "data-dimmed:[--dim-warning:color-mix(in_oklab,var(--warning)_40%,transparent)]",
+  "data-dimmed:*:[--card:var(--dim-card)]",
+  "data-dimmed:*:[--muted:var(--dim-muted)]",
+  "data-dimmed:*:[--border:var(--dim-border)]",
+  "data-dimmed:*:[--destructive:var(--dim-destructive)]",
+  "data-dimmed:*:[--warning:var(--dim-warning)]",
+  "data-dimmed:[&_svg]:opacity-40",
+].join(" ");
+const dimmedAttributes = { "data-dimmed": "" } as CardNode["domAttributes"];
 
 const edgeDash: Record<string, string | undefined> = {
   route: "6 4",
@@ -196,41 +228,16 @@ interface FocusRequest {
   id: string;
 }
 
-function focusExpansion(
-  instance: ReactFlowInstance<CardNode>,
-  request: FocusRequest,
-  graph: ServiceGraph,
-  padding: Padding
-) {
-  if (request.expand) {
-    const ids = [request.id, ...podNeighbours(graph, request.id)];
-    instance.fitView({
-      nodes: ids.map((id) => ({ id })),
-      padding,
-      maxZoom: 1,
-      duration: 250,
-    });
-    return;
-  }
-  const node = instance.getInternalNode(request.id);
-  if (!node) {
-    return;
-  }
-  const { x, y } = node.internals.positionAbsolute;
-  instance.setCenter(
-    x + (node.measured.width ?? cardSize.width) / 2,
-    y + (node.measured.height ?? cardSize.height) / 2,
-    { zoom: instance.getZoom(), duration: 250 }
-  );
-}
-
 // Keyboard focus can land on a card outside the visible canvas or under a
-// floating overlay; bring it into the clear area at the current zoom.
+// floating overlay, and opening a card docks the service panel over the
+// right of the canvas; bring the card into the clear area. `centre` moves it
+// there even when it is already in view.
 function revealCard(
   instance: ReactFlowInstance<CardNode>,
   id: string,
   canvas: HTMLElement,
-  insetRight: number
+  insetRight: number,
+  centre = false
 ) {
   const node = instance.getInternalNode(id);
   if (!node) {
@@ -240,6 +247,8 @@ function revealCard(
   const width = node.measured.width ?? cardSize.width;
   const height = node.measured.height ?? cardSize.height;
   const { x: left, y: top } = node.internals.positionAbsolute;
+  const size = { width: canvas.clientWidth, height: canvas.clientHeight };
+  const clear = { ...overlayInset, right: insetRight + 24 };
   const visible = cardInView(
     {
       x: left * zoom + x,
@@ -247,19 +256,37 @@ function revealCard(
       width: width * zoom,
       height: height * zoom,
     },
-    { width: canvas.clientWidth, height: canvas.clientHeight },
-    { ...overlayInset, right: insetRight + 24 }
+    size,
+    clear
   );
-  if (!visible) {
+  if (centre || !visible) {
     // Centre the card in the clear area between the overlays, not the whole
-    // canvas, so an open Activity panel never covers it.
-    const shiftX = (insetRight + 24 - overlayInset.left) / 2 / zoom;
-    const shiftY = (overlayInset.bottom - overlayInset.top) / 2 / zoom;
-    instance.setCenter(left + width / 2 + shiftX, top + height / 2 + shiftY, {
-      zoom,
-      duration: 200,
-    });
+    // canvas, so an open panel never covers it.
+    instance.setViewport(
+      centredViewport({ x: left, y: top, width, height }, zoom, size, clear),
+      { duration: centre ? 250 : 200 }
+    );
   }
+}
+
+function focusExpansion(
+  instance: ReactFlowInstance<CardNode>,
+  request: FocusRequest,
+  graph: ServiceGraph,
+  canvas: HTMLElement,
+  insetRight: number
+) {
+  if (request.expand) {
+    const ids = [request.id, ...podNeighbours(graph, request.id)];
+    instance.fitView({
+      nodes: ids.map((id) => ({ id })),
+      padding: paddingFor(insetRight, 16),
+      maxZoom: 1,
+      duration: 250,
+    });
+    return;
+  }
+  revealCard(instance, request.id, canvas, insetRight, true);
 }
 
 // React Flow's default card description mentions deleting and moving nodes;
@@ -315,6 +342,7 @@ function cardNode(
     type: nodeType(item.entity.kind),
     position,
     data: { ...state, ...inputs.handlers },
+    className: cardClass,
     connectable: false,
     draggable: false,
     ariaLabel: `${item.entity.kind} ${item.entity.name}${state.problem ? ", has a problem" : ""}${state.stale ? ", stale inventory" : ""}`,
@@ -340,6 +368,12 @@ function keepSelectAndSize(changes: NodeChange<CardNode>[]) {
   );
 }
 
+function withoutSelection(nodes: CardNode[]) {
+  return nodes.some((node) => node.selected)
+    ? nodes.map((node) => (node.selected ? { ...node, selected: false } : node))
+    : nodes;
+}
+
 export interface TopologyOverlays {
   // Top-right actions, such as Connect cluster.
   actions?: ReactNode;
@@ -355,12 +389,17 @@ export interface TopologyProps {
   // Fills its parent as a full-bleed canvas when given; otherwise the
   // topology draws as a framed block of its own height.
   className?: string;
-  // Canvas width the right-hand panel covers, kept clear when fitting.
+  // Canvas width the right-hand panels cover, kept clear when fitting.
   insetRight?: number;
+  // The resource open in the service panel. Closing the panel clears the
+  // card selection, and with it the dimming of unrelated cards.
+  inspectedUid?: string;
   // A Graph/List choice owned by the parent so it survives remounts; when
   // absent the topology keeps its own choice and the screen default.
   layout?: TopologyLayout;
   namespace?: string;
+  // Opens a cluster's Settings, offered for clusters that never reported.
+  onCluster?: (view: ClusterView) => void;
   onInspect: Inspect;
   onLayout?: (layout: TopologyLayout) => void;
   onNamespace: (namespace: string) => void;
@@ -377,7 +416,19 @@ export interface TopologyProps {
   showSystem?: boolean;
   // System resources are forced on (a system namespace is selected).
   systemLocked?: boolean;
+  // Where the canvas view (zoom, pan, expanded pods) is remembered across
+  // remounts; without one every mount starts fresh.
+  viewKey?: string;
   views: ClusterView[];
+}
+
+function filterKeyOf({
+  search = "",
+  namespace = "all",
+  showSystem = false,
+  problems = false,
+}: TopologyProps) {
+  return `${namespace}:${search}:${showSystem}:${problems}`;
 }
 
 function useCardGraph(props: TopologyProps, expanded: string[]) {
@@ -404,10 +455,29 @@ function useCardGraph(props: TopologyProps, expanded: string[]) {
       }),
     [views, search, namespace, showSystem, problems, expanded, graphTime]
   );
-  return {
-    graph,
-    filterKey: `${namespace}:${search}:${showSystem}:${problems}`,
-  };
+  return { graph, filterKey: filterKeyOf(props) };
+}
+
+// The resource open in the service panel. Closing the panel clears the card
+// selection, so unrelated cards stop dimming; opening or switching it brings
+// its card clear of the docked panel.
+function useInspectedCard(
+  inspectedUid: string | undefined,
+  setNodes: Dispatch<SetStateAction<CardNode[]>>,
+  reveal: (uid: string) => void,
+  instance: ReactFlowInstance<CardNode> | undefined
+) {
+  const inspecting = inspectedUid !== undefined;
+  useEffect(() => {
+    if (!inspecting) {
+      setNodes(withoutSelection);
+    }
+  }, [inspecting, setNodes]);
+  useEffect(() => {
+    if (inspectedUid && instance) {
+      reveal(inspectedUid);
+    }
+  }, [inspectedUid, instance, reveal]);
 }
 
 export function Topology(props: TopologyProps) {
@@ -425,18 +495,30 @@ export function Topology(props: TopologyProps) {
     onLayout,
     overlays = {},
     insetRight = 16,
+    viewKey,
   } = props;
   const { theme, frozen } = useDisplay();
   const phone = useMediaQuery(phoneQuery);
   const [choice, setChoice] = useState<TopologyLayout>();
   const mode = topologyLayout(controlledLayout, choice, phone);
-  const [expanded, setExpanded] = useState<string[]>([]);
+  // A remount (a saved observation, Return to live, the loading state
+  // between them, Back to a namespace) reopens on the remembered view.
+  const [restored] = useState(() =>
+    restoredCanvasView(
+      viewKey ? canvasViews.recall(viewKey) : undefined,
+      filterKeyOf(props)
+    )
+  );
+  const [expanded, setExpanded] = useState<string[]>(restored.expanded);
   const [nodes, setNodes] = useState<CardNode[]>([]);
   const [instance, setInstance] = useState<ReactFlowInstance<CardNode>>();
   const [dimmed] = useState(() => new WeakMap<CardNode, CardNode>());
-  const layout = useRef<Record<string, Point>>({});
-  const layoutKey = useRef("");
+  const layout = useRef<Record<string, Point>>(restored.positions);
+  const layoutKey = useRef(filterKeyOf(props));
   const fitted = useRef(false);
+  // The next fit may restore the remembered viewport instead: true for each
+  // new Graph mount, false once the filter changes under it.
+  const restoring = useRef(true);
   const focusRequest = useRef<FocusRequest>(undefined);
   const section = useRef<HTMLElement>(null);
   // The toolbar has a different parent in each layout, so a switch remounts
@@ -444,7 +526,6 @@ export function Topology(props: TopologyProps) {
   const refocusMode = useRef<TopologyLayout>(undefined);
   const { graph, filterKey } = useCardGraph(props, expanded);
   const padding = useMemo(() => paddingFor(insetRight), [insetRight]);
-  const focusPadding = useMemo(() => paddingFor(insetRight, 16), [insetRight]);
   const toggle = useLatestCallback((id: string) => {
     const expand = !expanded.includes(id);
     if (mode === "graph") {
@@ -464,6 +545,7 @@ export function Topology(props: TopologyProps) {
     // Every Graph mount gets its own React Flow instance and initial fit,
     // whether the operator, the parent or the screen width changed the mode.
     fitted.current = false;
+    restoring.current = true;
     focusRequest.current = undefined;
     if (mode === "list") {
       setInstance(undefined);
@@ -483,9 +565,13 @@ export function Topology(props: TopologyProps) {
       layoutKey.current = filterKey;
       layout.current = {};
       fitted.current = false;
+      restoring.current = false;
     }
     const positions = stablePositions(graph.items, layout.current, graph.links);
     layout.current = positions;
+    if (viewKey) {
+      canvasViews.remember(viewKey, { filter: filterKey, positions });
+    }
     // Live ticks redraw cards that summarise usage freshness; a frozen view,
     // a refresh with no changes or a parent re-render keeps every node.
     setNodes((old) =>
@@ -496,9 +582,25 @@ export function Topology(props: TopologyProps) {
         positions,
       })
     );
-  }, [graph, filterKey, referenceTime, expanded, handlers]);
+  }, [graph, filterKey, referenceTime, expanded, handlers, viewKey]);
+  useEffect(() => {
+    if (viewKey) {
+      canvasViews.remember(viewKey, { expanded });
+    }
+  }, [viewKey, expanded]);
   useEffect(() => {
     if (!(instance && graph.items.length) || fitted.current) {
+      return;
+    }
+    // A remembered viewport replaces the initial fit.
+    const viewport =
+      restoring.current && viewKey
+        ? restoredCanvasView(canvasViews.recall(viewKey), filterKey).viewport
+        : undefined;
+    restoring.current = false;
+    if (viewport) {
+      fitted.current = true;
+      instance.setViewport(viewport);
       return;
     }
     const timer = setTimeout(() => {
@@ -506,18 +608,34 @@ export function Topology(props: TopologyProps) {
       fitInitial(instance, graph, layout.current, padding);
     }, 120);
     return () => clearTimeout(timer);
-  }, [instance, graph, padding]);
+  }, [instance, graph, padding, viewKey, filterKey]);
   useEffect(() => {
     const request = focusRequest.current;
-    if (!(request && instance && nodes.length)) {
+    const canvas = section.current;
+    if (!(request && instance && canvas && nodes.length)) {
       return;
     }
     const timer = setTimeout(() => {
       focusRequest.current = undefined;
-      focusExpansion(instance, request, graph, focusPadding);
+      focusExpansion(instance, request, graph, canvas, insetRight);
     }, 80);
     return () => clearTimeout(timer);
-  }, [instance, graph, nodes, focusPadding]);
+  }, [instance, graph, nodes, insetRight]);
+  const remember = useCallback(
+    (_: unknown, viewport: CanvasViewport) => {
+      if (viewKey) {
+        canvasViews.remember(viewKey, { filter: filterKey, viewport });
+      }
+    },
+    [viewKey, filterKey]
+  );
+  const revealInspected = useLatestCallback((uid: string) => {
+    const node = nodes.find((item) => item.data.item.entity.uid === uid);
+    if (instance && section.current && node) {
+      revealCard(instance, node.id, section.current, insetRight);
+    }
+  });
+  useInspectedCard(props.inspectedUid, setNodes, revealInspected, instance);
   const selectedId = nodes.find((node) => node.selected)?.id;
   const edges = useMemo(() => {
     const names = new Map(
@@ -535,7 +653,10 @@ export function Topology(props: TopologyProps) {
       if (related.has(node.id)) {
         return node;
       }
-      const faded = dimmed.get(node) ?? { ...node, className: "opacity-40" };
+      const faded = dimmed.get(node) ?? {
+        ...node,
+        domAttributes: dimmedAttributes,
+      };
       dimmed.set(node, faded);
       return faded;
     });
@@ -590,17 +711,25 @@ export function Topology(props: TopologyProps) {
       revealCard(instance, target.dataset.id, event.currentTarget, insetRight);
     }
   }
+  const silent = silentClusters(views, frozen);
   const empty = graph.items.length ? null : (
     <TopologyEmpty
-      coverage={inventoryCoverage(views, referenceTime)}
+      coverage={inventoryCoverage(views, referenceTime, frozen)}
       frozen={frozen}
       graph={graph}
       namespace={namespace}
+      onCluster={props.onCluster}
       onShowSystem={onShowSystem}
       problems={problems}
       search={search}
       showSystem={showSystem}
+      silent={silent}
     />
+  );
+  // Where other clusters fill the canvas, the empty state's list of silent
+  // clusters becomes a chip.
+  const silentChip = !empty && props.onCluster && (
+    <SilentClustersChip clusters={silent} onCluster={props.onCluster} />
   );
   const toolbar = {
     mode,
@@ -666,6 +795,7 @@ export function Topology(props: TopologyProps) {
                 </div>
               )}
               <Truncated graph={graph} />
+              {silentChip}
             </div>
             {overlays.actions && (
               <div className="ml-auto flex shrink-0 items-center gap-2 *:pointer-events-auto">
@@ -683,6 +813,7 @@ export function Topology(props: TopologyProps) {
           <ReactFlow<CardNode>
             ariaLabelConfig={ariaLabels}
             colorMode={theme}
+            defaultViewport={restored.viewport}
             deleteKeyCode={null}
             edges={edges}
             edgesFocusable={false}
@@ -696,6 +827,7 @@ export function Topology(props: TopologyProps) {
             onFocus={keyFocus}
             onInit={setInstance}
             onKeyDown={keyOpen}
+            onMoveEnd={remember}
             onNodeClick={open}
             onNodesChange={change}
           >
@@ -747,11 +879,17 @@ export function Topology(props: TopologyProps) {
             <div
               className="h-full space-y-3 overflow-y-auto p-3"
               style={{
-                paddingRight: overlays.panel ? insetRight + 24 : undefined,
+                // Rows keep clear of the Activity panel and the docked
+                // service panel, whichever covers more.
+                paddingRight:
+                  overlays.panel || insetRight > 16
+                    ? insetRight + 24
+                    : undefined,
               }}
             >
               {overlays.below}
               <Truncated graph={graph} />
+              {silentChip}
               {empty ?? (
                 <TopologyList
                   expanded={expanded}

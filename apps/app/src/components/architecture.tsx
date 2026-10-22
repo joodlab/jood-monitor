@@ -12,9 +12,11 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useDisplay } from "../hooks/display";
 import type { Attention } from "../lib/attention";
+import { canvasViewKey } from "../lib/canvas-view-memory";
 import { isSystemNamespace } from "../lib/infrastructure";
 import { rectsOverlap, type TopologyLayout } from "../lib/service-graph";
 import type { SearchState } from "../schemas/monitor";
@@ -24,6 +26,7 @@ import { ConnectClusterCard } from "./canvas-empty";
 import { panelQuery, useMediaQuery } from "./canvas-hooks";
 import { CanvasScope } from "./canvas-scope";
 import { EmptyState } from "./page";
+import { dockedInspectorWidth, dockedQuery } from "./panel-shell";
 import { StagedChangesBar } from "./staged-changes";
 
 // React Flow is only needed on this view, so it loads with it.
@@ -48,6 +51,31 @@ export interface ArchitectureProps {
 
 // Width the open Activity panel covers, kept clear when fitting the canvas.
 const panelWidth = 352;
+
+function subscribeResize(onChange: () => void) {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+
+function useViewportWidth() {
+  return useSyncExternalStore(
+    subscribeResize,
+    () => window.innerWidth,
+    () => 0
+  );
+}
+
+// Canvas width kept clear on the right: the open Activity panel, or the
+// docked service panel while a resource is open in it, whichever is wider.
+// The Resources view keeps its panel as an overlay.
+function useInsetRight(activityOpen: boolean, inspecting: boolean) {
+  const docked = useMediaQuery(dockedQuery);
+  const width = useViewportWidth();
+  const activity = activityOpen ? panelWidth : 16;
+  return inspecting && docked
+    ? Math.max(activity, dockedInspectorWidth(width) + 16)
+    : activity;
+}
 const dotted =
   "bg-[radial-gradient(color-mix(in_oklab,var(--muted-foreground)_45%,transparent)_1.2px,transparent_1.2px)] bg-size-[22px_22px]";
 
@@ -265,6 +293,7 @@ export function Architecture(props: ArchitectureProps) {
   const toggle = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const panelOpen = panelChoice ?? !narrow;
+  const insetRight = useInsetRight(panelOpen && !narrow, !!search.resource);
   const closePanel = useCallback(() => setPanelChoice(false), []);
   const canvasFocus = useCanvasFocus({
     closePanel,
@@ -277,6 +306,13 @@ export function Architecture(props: ArchitectureProps) {
     return <EmptyCanvas frozen={frozen} props={props} />;
   }
   const systemLocked = isSystemNamespace(search.namespace);
+  // Live and saved observations share one canvas, so Freeze and Return to
+  // live keep its zoom, pan and expanded pods.
+  const viewKey = canvasViewKey(
+    search.workspace,
+    search.cluster,
+    search.namespace
+  );
   const navigate = (view: string) => props.onNavigate(view);
   // Where the panel covers the canvas, closing it hands focus back to the
   // button that opened it.
@@ -321,10 +357,12 @@ export function Architecture(props: ArchitectureProps) {
       >
         <Topology
           className="absolute inset-0"
-          insetRight={panelOpen && !narrow ? panelWidth : 16}
-          key={`${search.workspace}:${search.cluster ?? "all"}:${search.namespace}:${search.at ? "frozen" : "live"}`}
+          insetRight={insetRight}
+          inspectedUid={search.resource}
+          key={viewKey}
           layout={search.layout}
           namespace={search.namespace}
+          onCluster={props.actions.onCluster}
           onInspect={props.inspect}
           onLayout={callbacks.onLayout}
           onNamespace={canvasFocus.change}
@@ -364,6 +402,7 @@ export function Architecture(props: ArchitectureProps) {
           search={search.q}
           showSystem={search.system || systemLocked}
           systemLocked={systemLocked}
+          viewKey={viewKey}
           views={views}
         />
       </Suspense>
