@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { livePodProblem, podProblem } from "./attention";
 import {
   compactCpu,
   compactMemory,
@@ -317,7 +317,10 @@ export interface NamespaceSummary {
   // Active pods whose readiness is known to be ready; absent when any active
   // pod has no readiness, so the count never overstates.
   activePods: number;
+  // Active pods with a live problem.
   failing: number;
+  // Retained failed pods: history, as on the attention list, never a warning.
+  finishedFailed: number;
   ingresses: number;
   pods: number;
   ready?: number;
@@ -354,7 +357,8 @@ function countPods(pods: Entity[], now: number) {
   return {
     pods: pods.length,
     activePods: active.length,
-    failing: pods.filter((pod) => podProblem(pod, now)).length,
+    failing: pods.filter((pod) => livePodProblem(pod, now)).length,
+    finishedFailed: pods.filter((pod) => pod.status === "Failed").length,
     ready: known
       ? active.filter((pod) => (pod.ready ?? 0) > 0).length
       : undefined,
@@ -385,7 +389,7 @@ export function namespaceSummary(
 
 function namespaceProblem(summary: NamespaceSummary) {
   if (summary.failing) {
-    return `${summary.failing} of ${plural(summary.pods, "pod")} need attention`;
+    return `${summary.failing} of ${plural(summary.activePods, "active pod")} need attention`;
   }
   if (summary.shortWorkloads) {
     return `${plural(summary.shortWorkloads, "workload")} not fully ready`;
@@ -394,8 +398,23 @@ function namespaceProblem(summary: NamespaceSummary) {
 }
 
 // The health line of a namespace card. Healthy needs fresh inventory and
-// every running pod reporting ready.
+// every running pod reporting ready. Retained failed pods are named, never
+// hidden, but do not make a namespace with no live problem look broken.
 export function namespaceStatus(
+  summary: NamespaceSummary,
+  context: CardContext
+): StatusLine {
+  const line = namespaceLine(summary, context);
+  if (context.problem || context.stale || !summary.finishedFailed) {
+    return line;
+  }
+  return {
+    ...line,
+    text: `${line.text} · ${summary.finishedFailed} finished with failures`,
+  };
+}
+
+function namespaceLine(
   summary: NamespaceSummary,
   context: CardContext
 ): StatusLine {

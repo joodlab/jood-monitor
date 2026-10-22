@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { livePodProblem, podProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
@@ -191,10 +191,12 @@ function graphProblem(entity: Entity, now: number) {
   return entity.kind === "Pod" ? podProblem(entity, now) : hasProblem(entity);
 }
 
-// A live failing member pod. Failed pods are retained history, which the
-// attention model lists on their own rather than against their workload.
-function liveMemberProblem(pod: Entity, now: number) {
-  return pod.status !== "Failed" && podProblem(pod, now);
+// What makes a namespace or workload need attention now: retained failed
+// pods are history, as on the attention list, so they never escalate it.
+function liveProblem(entity: Entity, now: number) {
+  return entity.kind === "Pod"
+    ? livePodProblem(entity, now)
+    : hasProblem(entity);
 }
 
 // Namespace cards carry the problems of what they contain, so the namespace
@@ -205,13 +207,13 @@ export function itemProblem(item: ResourceItem, now: number) {
   const { view, entity } = item;
   if (entity.kind === "Namespace") {
     return view.inventory.entities.some(
-      (member) => member.namespace === entity.name && graphProblem(member, now)
+      (member) => member.namespace === entity.name && liveProblem(member, now)
     );
   }
   return (
     graphProblem(entity, now) ||
     (workloadKinds.has(entity.kind) &&
-      relatedPods(view, entity).some((pod) => liveMemberProblem(pod, now)))
+      relatedPods(view, entity).some((pod) => livePodProblem(pod, now)))
   );
 }
 

@@ -332,6 +332,7 @@ describe("namespace cards", () => {
       pods: 3,
       activePods: 3,
       failing: 1,
+      finishedFailed: 0,
       ready: 2,
     });
   });
@@ -340,7 +341,22 @@ describe("namespace cards", () => {
     const summary = namespaceSummary(fixture(), "shop", now);
     expect(namespaceStatus(summary, { ...fresh, problem: true })).toEqual({
       tone: "warning",
-      text: "1 of 3 pods need attention",
+      text: "1 of 3 active pods need attention",
+    });
+  });
+
+  it("names retained failed pods without calling the namespace broken", () => {
+    const summary = {
+      ...namespaceSummary(fixture(), "shop", now),
+      failing: 0,
+      shortWorkloads: 0,
+      ready: 3,
+      pods: 5,
+      finishedFailed: 2,
+    };
+    expect(namespaceStatus(summary, fresh)).toEqual({
+      tone: "healthy",
+      text: "Healthy · 3/3 pods ready · 2 finished with failures",
     });
   });
 

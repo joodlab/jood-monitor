@@ -73,6 +73,12 @@ export function podProblem(pod: Entity, now: number) {
   );
 }
 
+// A pod problem happening now. Failed pods are retained history, which the
+// attention model lists on their own rather than as a live outage.
+export function livePodProblem(pod: Entity, now: number) {
+  return pod.status !== "Failed" && podProblem(pod, now);
+}
+
 function podReason(pods: Entity[]) {
   const counts = new Map<string, number>();
   for (const pod of pods) {

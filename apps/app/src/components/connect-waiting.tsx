@@ -267,7 +267,14 @@ function Connected({
             label="Heartbeat received by the hub"
             value={checks.firstHeartbeatAt ?? delivery.heartbeatAt}
           />
-          {delivery.version ? ` from observer ${delivery.version}` : ""}.
+          {delivery.version && (
+            <>
+              {" "}
+              from observer{" "}
+              <span className="break-all font-mono">{delivery.version}</span>
+            </>
+          )}
+          .
           {inventory
             ? " Node collectors acknowledge the collection profile separately."
             : " Inventory usually follows within a minute."}

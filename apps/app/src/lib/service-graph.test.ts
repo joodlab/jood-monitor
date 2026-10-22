@@ -209,6 +209,26 @@ describe("problems-only topology", () => {
     expect(itemProblem(graph.items[0], now)).toBe(true);
   });
 
+  it("does not mark a namespace for retained failed pods alone", () => {
+    // Finished debug or Job pods stay listed as history on the attention
+    // list; the namespace map must not contradict "nothing needs attention".
+    const view = fixture();
+    const crashing = view.inventory.entities.find(
+      (item) => item.uid === "checkout-2"
+    ) as Entity;
+    Object.assign(crashing, { status: "Running", ready: 1, restarts: 0 });
+    const checkout = view.inventory.entities.find(
+      (item) => item.uid === "checkout"
+    ) as Entity;
+    checkout.ready = 2;
+    view.inventory.entities.push(
+      pod("debugger", { status: "Failed", ready: 0 })
+    );
+    const graph = serviceGraph([view], { ...options, namespace: "all" });
+    expect(graph.items.map((item) => item.entity.name)).toEqual(["shop"]);
+    expect(itemProblem(graph.items[0], now)).toBe(false);
+  });
+
   it("marks a fully ready workload whose new rollout pod is crashing", () => {
     // A surge rollout: the old ReplicaSet keeps both replicas ready while
     // the new ReplicaSet's only pod crashes, so readiness alone looks complete.

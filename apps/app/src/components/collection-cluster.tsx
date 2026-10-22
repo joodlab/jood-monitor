@@ -215,9 +215,10 @@ function ObserverRail({ view }: { view: ClusterView }) {
       title="Observer"
     >
       <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
-        <div className="space-y-0.5">
+        <div className="min-w-0 space-y-0.5">
           <dt className="text-muted-foreground text-xs">Version</dt>
-          <dd className="font-mono text-xs">
+          {/* Builds report a full commit hash; wrap it rather than shorten it. */}
+          <dd className="break-all font-mono text-xs">
             {heartbeat.version || "Not reported"}
           </dd>
         </div>

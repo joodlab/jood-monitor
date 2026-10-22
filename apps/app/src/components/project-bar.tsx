@@ -25,7 +25,7 @@ import {
   Settings2,
   Sun,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
 import { freshness } from "../lib/metrics";
@@ -262,6 +262,22 @@ export function ProjectBar({
 }) {
   const { now, frozen, at, timeZone } = useDisplay();
   const [timeTravel, setTimeTravel] = useState(false);
+  const tabs = useRef<HTMLElement>(null);
+  // On phones the tab strip scrolls; keep the current tab in sight.
+  useEffect(() => {
+    const strip = tabs.current;
+    const tab = strip?.querySelector(`[data-tab="${view}"]`);
+    if (!(strip && tab)) {
+      return;
+    }
+    const box = strip.getBoundingClientRect();
+    const { left, right } = tab.getBoundingClientRect();
+    if (right > box.right) {
+      strip.scrollLeft += right - box.right + 12;
+    } else if (left < box.left) {
+      strip.scrollLeft -= box.left - left + 12;
+    }
+  }, [view]);
   const clusterName = cluster
     ? (clusters.find((item) => item.cluster.id === cluster)?.cluster.name ??
       cluster)
@@ -385,6 +401,7 @@ export function ProjectBar({
       <nav
         aria-label="Project"
         className="-mb-px flex gap-1 overflow-x-auto px-3 sm:px-4"
+        ref={tabs}
       >
         {projectTabs.map((tab) => {
           const active = view === tab.id;
@@ -397,6 +414,7 @@ export function ProjectBar({
                   ? "text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary"
                   : "text-muted-foreground hover:text-foreground"
               )}
+              data-tab={tab.id}
               key={tab.id}
               onClick={() => onNavigate(tab.id)}
               type="button"
