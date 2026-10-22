@@ -407,6 +407,8 @@ const clusters = [
     id: "synthetic-cluster",
     name: "Synthetic production",
     environment: "synthetic fixture",
+    // Pod CPU/memory needs Standard; the edge cluster stays on Basic.
+    profile: "standard",
   },
   {
     id: "synthetic-edge",
@@ -440,6 +442,11 @@ async function credentialFor(cluster) {
     enrollmentToken
   );
   writeFileSync(file, JSON.stringify({ credential }), { mode: 0o600 });
+  if (cluster.profile) {
+    await request(`/api/v1/clusters/${cluster.id}/profile`, {
+      name: cluster.profile,
+    });
+  }
   return credential;
 }
 
@@ -469,12 +476,29 @@ function usage(entity, step) {
   };
 }
 
-function samplesFor(clusterId, entities, steps, now) {
-  const measured = entities.filter(
-    (entity) =>
-      (entity.kind === "Node" && entity.status === "True") ||
-      (entity.kind === "Pod" && entity.status.startsWith("Running"))
-  );
+// Samples follow the collection profile as a real observer does: nothing
+// while paused, pod CPU/memory only outside Basic and only in the selected
+// namespaces when Standard names some.
+function samplesFor(clusterId, entities, steps, now, profile) {
+  const name =
+    profile.name === "diagnostic" &&
+    profile.expiresAt &&
+    Date.parse(profile.expiresAt) <= now
+      ? profile.returnProfile || "basic"
+      : profile.name;
+  const podSampled = (entity) =>
+    name !== "basic" &&
+    (!profile.namespaces.length ||
+      profile.namespaces.includes(entity.namespace));
+  const measured = profile.paused
+    ? []
+    : entities.filter(
+        (entity) =>
+          (entity.kind === "Node" && entity.status === "True") ||
+          (entity.kind === "Pod" &&
+            entity.status.startsWith("Running") &&
+            podSampled(entity))
+      );
   const samples = [];
   for (let step = 0; step < steps; step++) {
     const nano = BigInt(now - (steps - 1 - step) * 15_000) * 1_000_000n;
@@ -580,7 +604,7 @@ async function send(cluster, credential, { steps, scale }) {
     "POST",
     credential
   );
-  const samples = samplesFor(cluster.id, entities, steps, now);
+  const samples = samplesFor(cluster.id, entities, steps, now, profile);
   for (let index = 0; index < samples.length; index += 8000) {
     const response = await fetch(`${origin}/v1/metrics`, {
       method: "POST",
