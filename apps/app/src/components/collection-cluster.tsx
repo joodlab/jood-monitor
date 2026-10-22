@@ -69,6 +69,7 @@ import { NodeAcknowledgments } from "./collection-nodes";
 import { DocLink, Notice } from "./connect-parts";
 import { RenewalHint } from "./connect-recover";
 import { EnrollForm } from "./enroll-form";
+import { HubBuffer } from "./hub-buffer";
 import { DiagnosticOptions, PauseField, ProfileChoices } from "./profile-form";
 import { SettingsRail, StagedPill } from "./settings-rail";
 import { TimeText } from "./time";
@@ -256,6 +257,7 @@ function ObserverRail({ view }: { view: ClusterView }) {
         <p className="font-medium text-sm">Delivery health</p>
         <DeliveryHealth view={view} />
       </div>
+      <HubBuffer cluster={cluster} />
       <div className="space-y-1.5">
         <p className="font-medium text-sm">Reported sources</p>
         <Capabilities view={view} />

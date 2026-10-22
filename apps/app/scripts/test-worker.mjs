@@ -782,6 +782,171 @@ try {
     [200, 409],
     "optimistic profile revision must reject one concurrent update"
   );
+  // Freezing at the current time must use an inventory that is still awaiting
+  // archive, with the profile and heartbeat captured beside it.
+  await ok("/api/v1/workspaces", {
+    method: "POST",
+    body: JSON.stringify({ id: "freeze", name: "Freeze fixture" }),
+    expected: 201,
+  });
+  const freezeRegistration = await (
+    await ok("/api/v1/clusters", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "freeze",
+        workspaceId: "freeze",
+        name: "Freeze fixture",
+        environment: "fixture",
+      }),
+      expected: 201,
+    })
+  ).json();
+  const freezeCredential = (
+    await (
+      await ok("/machine/v1/enroll", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${freezeRegistration.enrollmentToken}`,
+        },
+        body: JSON.stringify({ clusterId: "freeze" }),
+      })
+    ).json()
+  ).credential;
+  const freezeMachine = { Authorization: `Bearer ${freezeCredential}` };
+  const freezeHeartbeat = (version) =>
+    ok("/machine/v1/heartbeat", {
+      method: "POST",
+      headers: freezeMachine,
+      body: JSON.stringify({
+        version,
+        appliedRevision: 1,
+        queueBytes: 0,
+        dropped: 0,
+        rejectedPoints: 0,
+        capabilities: [],
+        outcome: "connected",
+        nodes: [],
+      }),
+    });
+  const freezeInventory = (sourceTime) =>
+    ok("/machine/v1/inventory", {
+      method: "PUT",
+      headers: freezeMachine,
+      body: JSON.stringify({ ...inventory, sourceTime }),
+    });
+  const hubBuffer = async (workspace) =>
+    await (
+      await ok(`/__test/hub-buffer?workspace=${workspace}&cluster=freeze`)
+    ).json();
+  await freezeHeartbeat("freeze-fixture-archived");
+  const archivedSource = new Date(Date.now() - 5 * 60_000).toISOString();
+  await freezeInventory(archivedSource);
+  await ok("/__test/flush?cluster=freeze");
+  assert.equal((await hubBuffer("freeze")).pendingInventories, 0);
+  await freezeHeartbeat("freeze-fixture-pending");
+  const pendingSource = new Date().toISOString();
+  await freezeInventory(pendingSource);
+  const freezeProfile = await (
+    await ok("/api/v1/clusters/freeze/profile", {
+      method: "POST",
+      body: JSON.stringify({ ...profileInput, revision: 1 }),
+    })
+  ).json();
+  assert.equal(freezeProfile.revision, 2);
+  const frozenView = async (at) =>
+    (
+      await (
+        await ok(
+          `/api/v1/snapshot?workspace=freeze&at=${encodeURIComponent(at)}`
+        )
+      ).json()
+    ).clusters[0];
+  const freezeAt = new Date().toISOString();
+  const beforeArchive = await frozenView(freezeAt);
+  assert.equal(
+    Date.parse(beforeArchive.inventory.sourceTime),
+    Date.parse(pendingSource),
+    "freezing at now must not fall back to the older archived inventory"
+  );
+  const frozenAge =
+    Date.parse(freezeAt) - Date.parse(beforeArchive.inventory.sourceTime);
+  assert.ok(
+    frozenAge >= 0 && frozenAge <= 240_000,
+    "a just-received inventory is within the stale budget at the frozen instant"
+  );
+  assert.equal(
+    beforeArchive.profile.revision,
+    1,
+    "the pending observation keeps the profile captured with it"
+  );
+  assert.equal(beforeArchive.profile.name, "basic");
+  assert.equal(beforeArchive.heartbeat.version, "freeze-fixture-pending");
+  assert.deepEqual(beforeArchive.observationMetadataAvailable, {
+    profile: true,
+    heartbeat: true,
+  });
+  const between = await frozenView(
+    new Date(Date.parse(archivedSource) + 60_000).toISOString()
+  );
+  assert.equal(
+    Date.parse(between.inventory.sourceTime),
+    Date.parse(archivedSource),
+    "a pending inventory after the instant must not be chosen"
+  );
+  assert.equal(between.heartbeat.version, "freeze-fixture-archived");
+  const pendingBuffer = await hubBuffer("freeze");
+  assert.deepEqual(
+    Object.keys(pendingBuffer).sort(),
+    [
+      "archiveError",
+      "bytes",
+      "dirtyPartitions",
+      "pendingInventories",
+      "quotaBytes",
+    ],
+    "the hub buffer read returns only the archival backlog subset"
+  );
+  assert.equal(
+    pendingBuffer.pendingInventories,
+    1,
+    "frozen reads must not consume the inventory outbox"
+  );
+  assert.equal(pendingBuffer.archiveError, null);
+  assert.equal(pendingBuffer.quotaBytes, 448 * 1024 * 1024);
+  assert.ok(pendingBuffer.bytes > 0);
+  assert.equal((await hubBuffer("global")).pendingInventories, 1);
+  assert.equal(
+    (await call("/__test/hub-buffer?workspace=fixture&cluster=freeze")).status,
+    403,
+    "the hub buffer read rejects a cluster outside the workspace"
+  );
+  assert.equal(
+    (await call("/__test/hub-buffer?workspace=freeze&cluster=Freeze")).status,
+    400
+  );
+  await mf.setOptions(options("1"));
+  assert.equal((await call("/__test/flush?cluster=freeze")).status, 503);
+  const failingBuffer = await hubBuffer("freeze");
+  assert.equal(failingBuffer.pendingInventories, 1);
+  assert.deepEqual(Object.keys(failingBuffer.archiveError).sort(), [
+    "at",
+    "error",
+  ]);
+  assert.equal(
+    failingBuffer.archiveError.error,
+    "archival pending; durable buffer retained"
+  );
+  assert.ok(Number.isFinite(Date.parse(failingBuffer.archiveError.at)));
+  await mf.setOptions(options());
+  await ok("/__test/flush?cluster=freeze");
+  const drainedBuffer = await hubBuffer("freeze");
+  assert.equal(drainedBuffer.pendingInventories, 0);
+  assert.equal(drainedBuffer.archiveError, null);
+  assert.deepEqual(
+    await frozenView(freezeAt),
+    beforeArchive,
+    "the same frozen instant resolves to the same observation after archival"
+  );
   const sourceRegistry = {
     workspaces: [{ id: "migrated", name: "Private migration fixture" }],
     clusters: [

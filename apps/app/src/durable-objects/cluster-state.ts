@@ -223,6 +223,9 @@ export class ClusterState extends DurableObject<Env> {
       if (kind === "snapshot") {
         return { ok: true, value: this.snapshot(cluster) };
       }
+      if (kind === "pendingInventory") {
+        return { ok: true, value: this.pendingInventory(String(input)) };
+      }
       if (kind === "status") {
         return {
           ok: true,
@@ -953,6 +956,21 @@ export class ClusterState extends DurableObject<Env> {
       profile: this.profile(),
       metrics,
       revision: this.db.revision,
+    };
+  }
+
+  // The newest observation at or before an instant that the archival writer has
+  // not published yet, with the profile and heartbeat captured beside it.
+  private pendingInventory(at: string): Observation | null {
+    const saved = this.db.pendingInventory<Observation>(normalizeTime(at));
+    if (!saved) {
+      return null;
+    }
+    return {
+      inventory: saved.inventory,
+      profile: saved.profile ?? null,
+      heartbeat: saved.heartbeat ?? null,
+      times: saved.times,
     };
   }
 
