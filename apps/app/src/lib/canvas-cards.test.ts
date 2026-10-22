@@ -341,23 +341,24 @@ describe("namespace cards", () => {
     const summary = namespaceSummary(fixture(), "shop", now);
     expect(namespaceStatus(summary, { ...fresh, problem: true })).toEqual({
       tone: "warning",
-      text: "1 of 3 active pods need attention",
+      text: "1 of 3 pods need attention",
     });
   });
 
-  it("names retained failed pods without calling the namespace broken", () => {
-    const summary = {
-      ...namespaceSummary(fixture(), "shop", now),
-      failing: 0,
-      shortWorkloads: 0,
-      ready: 3,
-      pods: 5,
-      finishedFailed: 2,
-    };
-    expect(namespaceStatus(summary, fresh)).toEqual({
-      tone: "healthy",
-      text: "Healthy · 3/3 pods ready · 2 finished with failures",
+  it("counts retained failed pods as history, not as needing attention", () => {
+    const view = fixture();
+    view.inventory.entities.push({
+      ...find(view, "web-1"),
+      uid: "debugger",
+      name: "debugger",
+      status: "Failed",
+      ready: 0,
     });
+    const summary = namespaceSummary(view, "shop", now);
+    expect(summary).toMatchObject({ failing: 1, finishedFailed: 1, pods: 4 });
+    expect(namespaceStatus(summary, { ...fresh, problem: true }).text).toBe(
+      "1 of 3 pods need attention"
+    );
   });
 
   it("is healthy only with every running pod ready and fresh inventory", () => {

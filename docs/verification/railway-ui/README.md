@@ -33,7 +33,7 @@ is not measured. Logs are not collected, so there is no Logs tab.
 
 ## Checks
 
-- `pnpm lint`, `pnpm knip`, type check, 276 unit tests, `pnpm build`,
+- `pnpm lint`, `pnpm knip`, type check, 278 unit tests, `pnpm build`,
   `pnpm test:start` and `pnpm test:worker` pass.
 - No hydration errors on any view with browser time zones Asia/Riyadh,
   America/Los_Angeles and UTC.
@@ -43,3 +43,9 @@ is not measured. Logs are not collected, so there is no Logs tab.
   correctness, truthfulness and staged-change safety, accessibility and
   mobile, performance) were run with a skeptic verifying each finding before
   it was fixed.
+- A read-only production check (every non-GET request blocked) found two
+  issues the synthetic fleet did not show, both fixed here. Namespace cards
+  warned about finished, failed debug and Job pods while the attention list
+  correctly reported nothing live; those pods are now counted on the card as
+  "finished with failures" without a warning. A full build hash as the
+  observer version overflowed on phones; it now wraps.

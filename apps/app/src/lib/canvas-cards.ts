@@ -389,7 +389,7 @@ export function namespaceSummary(
 
 function namespaceProblem(summary: NamespaceSummary) {
   if (summary.failing) {
-    return `${summary.failing} of ${plural(summary.activePods, "active pod")} need attention`;
+    return `${summary.failing} of ${plural(summary.activePods, "pod")} need attention`;
   }
   if (summary.shortWorkloads) {
     return `${plural(summary.shortWorkloads, "workload")} not fully ready`;
@@ -398,23 +398,9 @@ function namespaceProblem(summary: NamespaceSummary) {
 }
 
 // The health line of a namespace card. Healthy needs fresh inventory and
-// every running pod reporting ready. Retained failed pods are named, never
-// hidden, but do not make a namespace with no live problem look broken.
+// every running pod reporting ready. Retained failed pods are counted on the
+// card, never hidden, but do not make a namespace look broken.
 export function namespaceStatus(
-  summary: NamespaceSummary,
-  context: CardContext
-): StatusLine {
-  const line = namespaceLine(summary, context);
-  if (context.problem || context.stale || !summary.finishedFailed) {
-    return line;
-  }
-  return {
-    ...line,
-    text: `${line.text} · ${summary.finishedFailed} finished with failures`,
-  };
-}
-
-function namespaceLine(
   summary: NamespaceSummary,
   context: CardContext
 ): StatusLine {

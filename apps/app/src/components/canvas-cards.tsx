@@ -27,6 +27,7 @@ import {
   FolderTree,
   Gauge,
   Globe,
+  History,
   Layers,
   ListChecks,
   type LucideIcon,
@@ -534,12 +535,16 @@ const ResourceCard = memo(function ResourceCard({
 function NamespaceCounts({
   counts,
 }: {
-  counts: { icon: LucideIcon; one: string; many: string; value: number }[];
+  counts: {
+    always?: boolean;
+    icon: LucideIcon;
+    one: string;
+    many: string;
+    value: number;
+  }[];
 }) {
   // Kinds the namespace does not contain are left out; pods always show.
-  const shown = counts.filter(
-    (count, index) => count.value > 0 || index === counts.length - 1
-  );
+  const shown = counts.filter((count) => count.value > 0 || count.always);
   return (
     <ul className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground text-xs tabular-nums">
       {shown.map(({ icon: Icon, one, many, value }) => (
@@ -578,7 +583,21 @@ const NamespaceCard = memo(function NamespaceCard({
       value: summary.services,
     },
     { icon: Box, one: "workload", many: "workloads", value: summary.workloads },
-    { icon: Container, one: "pod", many: "pods", value: summary.pods },
+    {
+      always: true,
+      icon: Container,
+      one: "pod",
+      many: "pods",
+      value: summary.pods,
+    },
+    // Retained failed pods are history, as on the attention list: named here
+    // so the counts add up, without a warning tone.
+    {
+      icon: History,
+      one: "finished with failures",
+      many: "finished with failures",
+      value: summary.finishedFailed,
+    },
   ];
   return (
     <div style={{ width: cardSize.width }}>
