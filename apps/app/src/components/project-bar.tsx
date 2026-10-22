@@ -29,6 +29,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
 import { freshness } from "../lib/metrics";
+import { stagedBadge, useStagedState } from "../lib/staged-changes";
 import {
   formatDateTime,
   type TimeZonePreference,
@@ -36,6 +37,7 @@ import {
   timeZoneOptions,
 } from "../lib/time";
 import { ObservationTime } from "./observation-time";
+import { StagedPill } from "./settings-rail";
 
 // Railway-style project bar: logo / workspace / cluster on the left, project
 // tabs on the right. Workspaces play Railway's "project" role and clusters
@@ -100,6 +102,15 @@ function heartbeatState(view: ClusterView, now: number) {
   return freshness(view.cluster.heartbeatAt, now) === "fresh"
     ? "heartbeat fresh"
     : "heartbeat stale";
+}
+
+// The Settings tab names its staged changes, so they stay in sight from any
+// tab; frozen views only know that some are waiting.
+function settingsLabel(staged: number | "waiting") {
+  if (staged === "waiting") {
+    return "Settings, staged changes waiting";
+  }
+  return `Settings, ${staged} staged change${staged === 1 ? "" : "s"}`;
 }
 
 function clusterDot(view: ClusterView, now: number) {
@@ -261,6 +272,9 @@ export function ProjectBar({
   onSearch: () => void;
 }) {
   const { now, frozen, at, timeZone } = useDisplay();
+  const stagedState = useStagedState();
+  // Every cluster in the workspace scope, whatever the cluster filter hides.
+  const staged = stagedBadge(stagedState, workspace, clusters, now, !frozen);
   const [timeTravel, setTimeTravel] = useState(false);
   const tabs = useRef<HTMLElement>(null);
   // On phones the tab strip scrolls; keep the current tab in sight.
@@ -405,9 +419,13 @@ export function ProjectBar({
       >
         {projectTabs.map((tab) => {
           const active = view === tab.id;
+          const pending = tab.id === "settings" ? staged : undefined;
           return (
             <button
               aria-current={active ? "page" : undefined}
+              aria-label={
+                pending === undefined ? undefined : settingsLabel(pending)
+              }
               className={cn(
                 "relative flex h-10 shrink-0 items-center gap-1.5 px-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 active
@@ -435,6 +453,11 @@ export function ProjectBar({
                     <span aria-hidden>{attention.count}</span>
                   </span>
                 )}
+              {pending !== undefined && (
+                <StagedPill className="tabular-nums">
+                  {pending === "waiting" ? "Staged" : `${pending} staged`}
+                </StagedPill>
+              )}
             </button>
           );
         })}

@@ -55,10 +55,9 @@ import { updateProfileFn } from "../functions/clusters";
 import { fetchSnapshot } from "../hooks/api/clusters";
 import { useDisplay } from "../hooks/display";
 import {
-  applyStagedCluster,
+  applyStagedClusters,
   discardStaged,
   dismissRequests,
-  markApplying,
   pausingClusters,
   pruneStaged,
   type RecentRequest,
@@ -72,6 +71,7 @@ import {
   stagedClusters,
   stagedCount,
   stagedInScope,
+  stagedScope,
   useStagedState,
 } from "../lib/staged-changes";
 import type { AckRequest, DraftField } from "./collection-model";
@@ -163,7 +163,7 @@ function useAcknowledgmentPolling(
   }, [client, scope, since]);
 }
 
-type ProfileSend = Parameters<typeof applyStagedCluster>[1];
+type ProfileSend = Parameters<typeof applyStagedClusters>[1];
 
 const sendProfile: ProfileSend = (clusterId, profile) =>
   updateProfileFn({
@@ -178,19 +178,13 @@ const sendProfile: ProfileSend = (clusterId, profile) =>
 function useApplyStaged() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (targets: StagedCluster[]) => {
-      markApplying(targets.map((target) => target.view.cluster.id));
-      await Promise.all(
-        targets.map(async (target) => {
-          if (await applyStagedCluster(target, sendProfile)) {
-            client.invalidateQueries(
-              { queryKey: ["snapshot"] },
-              { cancelRefetch: false }
-            );
-          }
-        })
-      );
-    },
+    mutationFn: (targets: StagedCluster[]) =>
+      applyStagedClusters(targets, sendProfile, () =>
+        client.invalidateQueries(
+          { queryKey: ["snapshot"] },
+          { cancelRefetch: false }
+        )
+      ),
     onSettled: () =>
       client.invalidateQueries(
         { queryKey: ["snapshot"] },
@@ -552,24 +546,75 @@ function StagedStatus({ clusters }: { clusters: StagedCluster[] }) {
 
 type HeadingRef = RefObject<HTMLParagraphElement | null>;
 
+// Drafts the top bar's cluster filter hides. The card never applies or
+// discards them out of sight, so it says they exist and offers the way back.
+// Without a card of its own to head, the line takes focus as the heading.
+function OtherClusters({
+  count,
+  heading,
+  onShowAll,
+}: {
+  count: number;
+  heading?: HeadingRef;
+  onShowAll: () => void;
+}) {
+  if (!count) {
+    return null;
+  }
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-x-2 gap-y-1",
+        !heading && "mt-2 border-t pt-2"
+      )}
+    >
+      <p
+        className={cn("text-muted-foreground text-xs", heading && headingFocus)}
+        ref={heading}
+        tabIndex={heading ? -1 : undefined}
+      >
+        {plural(count, "change")} staged for other clusters
+      </p>
+      <Button
+        className={focusRing}
+        onClick={onShowAll}
+        size="sm"
+        variant="ghost"
+      >
+        Show all clusters
+      </Button>
+    </div>
+  );
+}
+
 function StagedCard({
   className,
   clusters,
   applying,
+  elsewhere,
   heading,
   onApply,
   onDetails,
   onDiscardAll,
+  onShowAll,
 }: {
   className?: string;
   clusters: StagedCluster[];
   applying: boolean;
+  elsewhere: number;
   heading: HeadingRef;
   onApply: () => void;
   onDetails: () => void;
   onDiscardAll: () => void;
+  onShowAll: () => void;
 }) {
   const count = stagedCount(clusters);
+  // Discarding never reaches the hidden clusters, so the menu names the one
+  // it does.
+  const shownOnly =
+    elsewhere > 0 && clusters.length === 1
+      ? clusters[0]?.view.cluster.name
+      : undefined;
   return (
     <section
       aria-label="Staged changes"
@@ -623,11 +668,33 @@ function StagedCard({
               variant="destructive"
             >
               <Trash2 />
-              Discard all changes
+              {shownOnly
+                ? `Discard changes for ${shownOnly}`
+                : "Discard all changes"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      <OtherClusters count={elsewhere} onShowAll={onShowAll} />
+    </section>
+  );
+}
+
+// Nothing staged for the filtered cluster, but drafts wait for others.
+function ElsewhereCard({
+  className,
+  count,
+  heading,
+  onShowAll,
+}: {
+  className?: string;
+  count: number;
+  heading: HeadingRef;
+  onShowAll: () => void;
+}) {
+  return (
+    <section aria-label="Staged changes" className={cn(cardBase, className)}>
+      <OtherClusters count={count} heading={heading} onShowAll={onShowAll} />
     </section>
   );
 }
@@ -671,14 +738,18 @@ function recentSummary(item: RecentRequest) {
 
 function ProgressCard({
   className,
+  elsewhere,
   recent,
   heading,
   onSettings,
+  onShowAll,
 }: {
   className?: string;
+  elsewhere: number;
   recent: RecentRequest[];
   heading: HeadingRef;
   onSettings?: (clusterId?: string) => void;
+  onShowAll: () => void;
 }) {
   const { Icon, tone, text } = progressHeading(recent);
   const timedOut = recent.filter((item) => item.timedOut);
@@ -748,6 +819,7 @@ function ProgressCard({
           )}
         </div>
       )}
+      <OtherClusters count={elsewhere} onShowAll={onShowAll} />
     </section>
   );
 }
@@ -775,7 +847,7 @@ function FrozenCard({
       </p>
       <p className="text-muted-foreground text-xs">
         Reviewing and applying collection changes is only available live. They
-        stay staged for this browser session.
+        stay staged in this tab until you reload or close it.
       </p>
       <div className="pt-2">
         <Button
@@ -791,7 +863,7 @@ function FrozenCard({
   );
 }
 
-type BarKind = "frozen" | "staged" | "progress" | "none";
+type BarKind = "frozen" | "staged" | "progress" | "elsewhere" | "none";
 
 // Whether frozen views have staged drafts waiting in this scope. A cached
 // live snapshot also drops drafts whose profile changed since; without one
@@ -811,7 +883,8 @@ function barKind(
   frozen: boolean,
   waiting: boolean,
   clusters: StagedCluster[],
-  recent: RecentRequest[]
+  recent: RecentRequest[],
+  elsewhere: number
 ): BarKind {
   if (frozen) {
     return waiting ? "frozen" : "none";
@@ -819,7 +892,10 @@ function barKind(
   if (clusters.length > 0) {
     return "staged";
   }
-  return recent.length > 0 ? "progress" : "none";
+  if (recent.length > 0) {
+    return "progress";
+  }
+  return elsewhere > 0 ? "elsewhere" : "none";
 }
 
 // One short summary for the bar's single live region. It exists before any
@@ -829,6 +905,7 @@ function announcement(
   kind: BarKind,
   clusters: StagedCluster[],
   recent: RecentRequest[],
+  elsewhere: number,
   emptied: boolean
 ) {
   if (kind === "staged") {
@@ -839,6 +916,9 @@ function announcement(
   }
   if (kind === "progress") {
     return progressHeading(recent).text;
+  }
+  if (kind === "elsewhere") {
+    return `${plural(elsewhere, "change")} staged for other clusters, not applied`;
   }
   return kind === "none" && emptied
     ? "No staged changes left. Nothing waiting to apply."
@@ -959,6 +1039,8 @@ function useBarState() {
   const live = !frozen;
   const cached = useLiveSnapshot(search.workspace, frozen);
   const views = live ? (cached ?? noViews) : noViews;
+  // Polling, pruning and settling keep every cluster in the workspace scope
+  // current; only what the card shows and acts on follows the cluster filter.
   useAcknowledgmentPolling(views, staged.requests, search.workspace, live);
   useEffect(() => {
     if (live && now) {
@@ -966,29 +1048,31 @@ function useBarState() {
       settleRequests(views, now);
     }
   }, [live, now, views]);
-  const clusters = useMemo(
-    () => (now ? stagedClusters(staged, views, now) : []),
-    [staged, views, now]
+  const scope = useMemo(
+    () =>
+      now
+        ? stagedScope(staged, views, search.cluster, now)
+        : { clusters: [], elsewhere: 0, views: noViews },
+    [staged, views, search.cluster, now]
   );
   const recent = useMemo(
-    () => (now ? recentRequests(staged, views, now) : []),
-    [staged, views, now]
+    () => (now ? recentRequests(staged, scope.views, now) : []),
+    [staged, scope.views, now]
   );
   const waiting =
     frozen && frozenWaiting(staged, search.workspace, cached, now);
   return {
-    clusters,
-    kind: barKind(frozen, waiting, clusters, recent),
+    ...scope,
+    kind: barKind(frozen, waiting, scope.clusters, recent, scope.elsewhere),
     recent,
-    views,
   };
 }
 
 // The floating "Apply N changes" card. Shows staged changes for the clusters
-// in the current workspace scope, then acknowledgment progress once applied.
-// `focusFallback` names a visible element to focus when the card goes away
-// with focus inside it; otherwise a visually hidden note in the bar's place
-// takes it.
+// in the current workspace scope (only the filtered cluster when the top bar
+// picks one), then acknowledgment progress once applied. `focusFallback`
+// names a visible element to focus when the card goes away with focus inside
+// it; otherwise a visually hidden note in the bar's place takes it.
 export function StagedChangesBar({
   className,
   focusFallback,
@@ -998,7 +1082,7 @@ export function StagedChangesBar({
 }) {
   const search = useSearch({ from: "/" });
   const navigate = useNavigate({ from: "/" });
-  const { clusters, kind, recent, views } = useBarState();
+  const { clusters, elsewhere, kind, recent, views } = useBarState();
   const heading = useRef<HTMLParagraphElement>(null);
   const anchor = useRef<HTMLParagraphElement>(null);
   const focusTarget = () =>
@@ -1019,10 +1103,21 @@ export function StagedChangesBar({
               diagnosticNode: undefined,
             }),
           });
+  // As choosing All clusters in the top bar does: a namespace or search from
+  // the single cluster cannot hide the others' resources.
+  const showAll = () =>
+    navigate({
+      search: (old) => ({
+        ...old,
+        namespace: "all",
+        q: "",
+        cluster: undefined,
+      }),
+    });
   return (
     <>
       <p aria-atomic="true" className="sr-only" role="status">
-        {announcement(kind, clusters, recent, emptied)}
+        {announcement(kind, clusters, recent, elsewhere, emptied)}
       </p>
       {kind === "none" && (
         <p
@@ -1050,20 +1145,32 @@ export function StagedChangesBar({
           applying={controls.applying}
           className={className}
           clusters={clusters}
+          elsewhere={elsewhere}
           heading={heading}
           onApply={controls.start}
           onDetails={controls.openDetails}
           onDiscardAll={() =>
             discardStaged(views.map((view) => view.cluster.id))
           }
+          onShowAll={showAll}
         />
       )}
       {kind === "progress" && (
         <ProgressCard
           className={className}
+          elsewhere={elsewhere}
           heading={heading}
           onSettings={onSettings}
+          onShowAll={showAll}
           recent={recent}
+        />
+      )}
+      {kind === "elsewhere" && (
+        <ElsewhereCard
+          className={className}
+          count={elsewhere}
+          heading={heading}
+          onShowAll={showAll}
         />
       )}
       <StagedDetails

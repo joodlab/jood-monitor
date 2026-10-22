@@ -4,12 +4,14 @@ import { draftFromProfile } from "../components/collection-model";
 import {
   applyFailed,
   applyStagedCluster,
+  applyStagedClusters,
   applySucceeded,
   awaitingSnapshot,
   discardStaged,
   dismissCleared,
   dismissRequests,
   draftFor,
+  guardUnload,
   isPristine,
   markApplying,
   pausingClusters,
@@ -20,6 +22,7 @@ import {
   revertField,
   settleRequests,
   stageDraft,
+  stagedBadge,
   stagedClusters,
   stagedCount,
   stagedDraftFor,
@@ -27,6 +30,7 @@ import {
   stagedInScope,
   stagedNotes,
   stagedRows,
+  stagedScope,
   stagedSnapshot,
   subscribeStaged,
 } from "./staged-changes";
@@ -345,6 +349,34 @@ describe("applying", () => {
     );
   });
 
+  it("keeps every node of a running diagnostic when applying other changes", async () => {
+    const view = runningDiagnostic(fixture());
+    view.profile = { ...view.profile, nodeUids: ["n1", "n2"] };
+    // A deep link to the second node leaves the running diagnostic as is.
+    const draft = {
+      ...draftFor(stagedSnapshot(), view, now, "n2"),
+      scope: "selected" as const,
+      namespaces: ["shop"],
+    };
+    stageDraft(view, draft, now);
+    const [cluster] = stagedClusters(stagedSnapshot(), [view], now);
+    expect(cluster?.rows.map((row) => row.field)).toEqual(["namespaces"]);
+    expect(cluster?.notes[0]).toContain(
+      "The diagnostic on node-b, node-a keeps its current end time"
+    );
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    await applyStagedClusters([{ view, draft }], send, undefined, () => now);
+    expect(send).toHaveBeenCalledWith(
+      view.cluster.id,
+      expect.objectContaining({
+        name: "diagnostic",
+        nodeUids: ["n1", "n2"],
+        expiresAt: view.profile.expiresAt,
+        namespaces: ["shop"],
+      })
+    );
+  });
+
   it("refuses to keep a diagnostic end time about to lapse", async () => {
     const view = runningDiagnostic(fixture(), 1);
     const draft = {
@@ -546,6 +578,159 @@ describe("staged clusters", () => {
     view.profile = { ...view.profile, revision: 6, appliedRevision: 6 };
     acknowledge(view, 6, now + 200_000, 1);
     expect(recentRequests(stagedSnapshot(), [view], now + 200_000)).toEqual([]);
+  });
+});
+
+describe("cluster filter", () => {
+  // Cluster a has one staged change, cluster b two.
+  function stageBoth() {
+    const a = fixture("a");
+    const b = fixture("b");
+    stageDraft(a, { ...draftFromProfile(a.profile), paused: true }, now);
+    stageDraft(
+      b,
+      { ...draftFromProfile(b.profile), name: "basic", paused: true },
+      now
+    );
+    return [a, b];
+  }
+
+  it("covers every cluster without a filter", () => {
+    const views = stageBoth();
+    const scope = stagedScope(stagedSnapshot(), views, undefined, now);
+    expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(scope.elsewhere).toBe(0);
+    expect(scope.views).toBe(views);
+  });
+
+  it("applies the filtered cluster and leaves hidden drafts staged", async () => {
+    const views = stageBoth();
+    const scope = stagedScope(stagedSnapshot(), views, "a", now);
+    expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual(["a"]);
+    expect(scope.elsewhere).toBe(2);
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    const accepted = vi.fn();
+    await applyStagedClusters(scope.clusters, send, accepted, () => now);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("a", expect.anything());
+    expect(accepted).toHaveBeenCalledTimes(1);
+    const state = stagedSnapshot();
+    expect(state.applying).toEqual({});
+    expect(Object.keys(state.entries)).toEqual(["b"]);
+    expect(Object.keys(state.requests)).toEqual(["a"]);
+  });
+
+  it("discards the filtered cluster and leaves hidden drafts staged", () => {
+    const views = stageBoth();
+    const scope = stagedScope(stagedSnapshot(), views, "a", now);
+    discardStaged(scope.views.map((view) => view.cluster.id));
+    expect(Object.keys(stagedSnapshot().entries)).toEqual(["b"]);
+    // Nothing left to show here, but the hidden drafts are still counted.
+    expect(stagedScope(stagedSnapshot(), views, "a", now)).toMatchObject({
+      clusters: [],
+      elsewhere: 2,
+    });
+  });
+
+  it("counts every draft as hidden for a cluster outside the scope", () => {
+    const views = stageBoth();
+    expect(stagedScope(stagedSnapshot(), views, "gone", now)).toEqual({
+      clusters: [],
+      elsewhere: 3,
+      views: [],
+    });
+  });
+});
+
+describe("settings tab badge", () => {
+  it("counts live changes and only says drafts wait while frozen", () => {
+    const a = fixture("a");
+    const b = fixture("b");
+    expect(stagedBadge(stagedSnapshot(), "synthetic", [a, b], now, true)).toBe(
+      undefined
+    );
+    stageDraft(
+      a,
+      { ...draftFromProfile(a.profile), name: "basic", paused: true },
+      now
+    );
+    expect(stagedBadge(stagedSnapshot(), "synthetic", [a, b], now, true)).toBe(
+      2
+    );
+    // Before the display clock starts nothing is compared.
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", [a, b], 0, true)
+    ).toBeUndefined();
+    // A frozen snapshot's past profile cannot be compared with the draft.
+    expect(stagedBadge(stagedSnapshot(), "synthetic", [], now, false)).toBe(
+      "waiting"
+    );
+    expect(
+      stagedBadge(stagedSnapshot(), "other", [], now, false)
+    ).toBeUndefined();
+    discardStaged(["a"]);
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", [], now, false)
+    ).toBeUndefined();
+  });
+});
+
+describe("unload guard", () => {
+  type Listener = (event: BeforeUnloadEvent) => void;
+
+  // Records beforeunload listeners like a window would.
+  function fakeWindow() {
+    const listeners = new Set<Listener>();
+    return {
+      listeners,
+      addEventListener: vi.fn((_type: "beforeunload", listener: Listener) => {
+        listeners.add(listener);
+      }),
+      removeEventListener: vi.fn(
+        (_type: "beforeunload", listener: Listener) => {
+          listeners.delete(listener);
+        }
+      ),
+    };
+  }
+
+  it("asks before unloading only while drafts or applies wait", () => {
+    const target = fakeWindow();
+    const stop = guardUnload(target);
+    expect(target.listeners.size).toBe(0);
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(target.listeners.size).toBe(1);
+    // A second draft keeps the one listener.
+    const other = fixture("b");
+    stageDraft(
+      other,
+      { ...draftFromProfile(other.profile), paused: true },
+      now
+    );
+    expect(target.addEventListener).toHaveBeenCalledTimes(1);
+    const event = { preventDefault: vi.fn(), returnValue: undefined };
+    for (const listener of target.listeners) {
+      listener(event as unknown as BeforeUnloadEvent);
+    }
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    discardStaged([view.cluster.id, other.cluster.id]);
+    expect(target.listeners.size).toBe(0);
+    // An apply on its way to the hub is guarded with no draft left.
+    markApplying([view.cluster.id]);
+    expect(target.listeners.size).toBe(1);
+    applySucceeded(view.cluster.id, { revision: 5, at: now });
+    expect(target.listeners.size).toBe(0);
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(target.listeners.size).toBe(1);
+    stop();
+    expect(target.listeners.size).toBe(0);
+    discardStaged([view.cluster.id]);
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(target.listeners.size).toBe(0);
   });
 });
 

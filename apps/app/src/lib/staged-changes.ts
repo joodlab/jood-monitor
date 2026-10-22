@@ -8,6 +8,7 @@ import {
   continuesDiagnostic,
   type DraftField,
   diagnosticMinutes,
+  diagnosticNodes,
   draftFieldChanges,
   draftFromProfile,
   draftNamespaces,
@@ -30,9 +31,10 @@ import { requestError } from "./install-errors";
 // Railway-style staged changes for collection settings. Edits wait here, per
 // cluster, until the operator applies or discards them. The store lives in
 // this tab's memory only: it survives switching project tabs, is never
-// written to storage, and is gone on reload. The hub profile stays the
-// source of truth; a staged draft only counts while the profile it was
-// staged against is still the one in effect.
+// written to storage, and is gone on reload, so the browser asks before the
+// tab unloads with drafts. The hub profile stays the source of truth; a
+// staged draft only counts while the profile it was staged against is still
+// the one in effect.
 
 type Profile = ClusterView["profile"];
 
@@ -110,6 +112,62 @@ export function useStagedState() {
     stagedSnapshot,
     () => emptyState
   );
+}
+
+// Unloading the tab now would lose a draft or cut off an apply on its way to
+// the hub.
+function unloadLoses(current: StagedState) {
+  return (
+    Object.keys(current.entries).length > 0 ||
+    Object.keys(current.applying).length > 0
+  );
+}
+
+function confirmUnload(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  // Older Chromium shows the prompt only when returnValue is set too.
+  event.returnValue = true;
+}
+
+type UnloadListener = (event: BeforeUnloadEvent) => void;
+
+interface UnloadTarget {
+  addEventListener(type: "beforeunload", listener: UnloadListener): void;
+  removeEventListener(type: "beforeunload", listener: UnloadListener): void;
+}
+
+// Keeps a beforeunload prompt on `target` only while something would be
+// lost, so a tab with nothing staged unloads without asking (and stays
+// eligible for the back/forward cache). Returns a function that stops it.
+export function guardUnload(target: UnloadTarget) {
+  let armed = false;
+  const sync = () => {
+    const needed = unloadLoses(state);
+    if (needed === armed) {
+      return;
+    }
+    armed = needed;
+    if (armed) {
+      target.addEventListener("beforeunload", confirmUnload);
+    } else {
+      target.removeEventListener("beforeunload", confirmUnload);
+    }
+  };
+  const unsubscribe = subscribeStaged(sync);
+  sync();
+  return () => {
+    unsubscribe();
+    if (armed) {
+      armed = false;
+      target.removeEventListener("beforeunload", confirmUnload);
+    }
+  };
+}
+
+// Guarded from module load rather than by the Apply card, which only the
+// canvas and Settings mount. The server has no window and nothing staged.
+if (typeof window !== "undefined") {
+  guardUnload(window);
 }
 
 // The profile state a draft is staged against. A new revision or an ended
@@ -206,6 +264,11 @@ const endedNotice =
 
 type ProfileInput = ReturnType<typeof profileSchema.parse>;
 
+type ProfileSend = (
+  clusterId: string,
+  profile: ProfileInput
+) => Promise<{ revision: number }>;
+
 // Sends one cluster's staged profile through `send`. Validity is checked
 // again on the real clock, with the same `now` the request is built from:
 // the display clock ticks every 15 s, so a diagnostic can end between the
@@ -213,10 +276,7 @@ type ProfileInput = ReturnType<typeof profileSchema.parse>;
 // Resolves true when the hub accepted the request.
 export async function applyStagedCluster(
   target: { draft: ProfileDraft; view: ClusterView },
-  send: (
-    clusterId: string,
-    profile: ProfileInput
-  ) => Promise<{ revision: number }>,
+  send: ProfileSend,
   clock: () => number = Date.now
 ) {
   const { view, draft } = target;
@@ -247,6 +307,26 @@ export async function applyStagedCluster(
     applyFailed(id, requestError(error).message);
     return false;
   }
+}
+
+// Sends the targets' staged profiles side by side. Only the targets are
+// marked applying or sent; drafts for other clusters stay staged. A failure
+// keeps that cluster staged with the reason while the others still apply,
+// and `accepted` runs as each request is accepted.
+export async function applyStagedClusters(
+  targets: { draft: ProfileDraft; view: ClusterView }[],
+  send: ProfileSend,
+  accepted: () => void = () => undefined,
+  clock: () => number = Date.now
+) {
+  markApplying(targets.map((target) => target.view.cluster.id));
+  await Promise.all(
+    targets.map(async (target) => {
+      if (await applyStagedCluster(target, send, clock)) {
+        accepted();
+      }
+    })
+  );
 }
 
 // Records when each request is first seen fully acknowledged, so compact
@@ -441,7 +521,8 @@ function nextProfileValue(
   if (draft.name !== "diagnostic") {
     return profileChoices[draft.name].label;
   }
-  const node = draft.node ? nodeName(draft.node) : "a node";
+  const node =
+    diagnosticNodes(draft, profile, now).map(nodeName).join(", ") || "a node";
   const returnTo = profileChoices[returnProfile(profile)].label;
   const restart = continuesDiagnostic(draft, profile, now) ? "restarted " : "";
   return `Diagnostic on ${node}, ${restart}for ${diagnosticMinutes} min after applying, then ${returnTo}`;
@@ -533,12 +614,13 @@ function diagnosticNote(
   if (draft.name !== "diagnostic") {
     return;
   }
-  const node = draft.node ? nodeNamer(view)(draft.node) : "the node";
+  const nodes = diagnosticNodes(draft, view.profile, now).map(nodeNamer(view));
+  const node = nodes.join(", ") || "the node";
   const returnTo = profileChoices[returnProfile(view.profile)].label;
   if (continuesDiagnostic(draft, view.profile, now) && !draft.extend) {
     return `The diagnostic on ${node} keeps its current end time, then returns to ${returnTo}.`;
   }
-  return `The diagnostic on ${node} expires ${diagnosticMinutes} minutes after applying, then returns to ${returnTo}. The node enforces the expiry itself.`;
+  return `The diagnostic on ${node} expires ${diagnosticMinutes} minutes after applying, then returns to ${returnTo}. Each node enforces the expiry itself.`;
 }
 
 // What applying the draft will do beyond the values themselves.
@@ -607,6 +689,58 @@ export function stagedClusters(
 
 export function stagedCount(clusters: StagedCluster[]) {
   return clusters.reduce((total, cluster) => total + cluster.rows.length, 0);
+}
+
+interface StagedScope {
+  // Staged clusters the card lists, applies and discards.
+  clusters: StagedCluster[];
+  // Changes staged for clusters the cluster filter hides.
+  elsewhere: number;
+  // The views the card covers.
+  views: ClusterView[];
+}
+
+// What the Apply card covers. With a cluster filter it lists, applies and
+// discards that cluster only; drafts for the others are counted, never
+// applied or discarded out of sight.
+export function stagedScope(
+  current: StagedState,
+  views: ClusterView[],
+  cluster: string | undefined,
+  now: number
+): StagedScope {
+  if (!cluster) {
+    return {
+      clusters: stagedClusters(current, views, now),
+      elsewhere: 0,
+      views,
+    };
+  }
+  const shown = views.filter((view) => view.cluster.id === cluster);
+  const hidden = views.filter((view) => view.cluster.id !== cluster);
+  return {
+    clusters: stagedClusters(current, shown, now),
+    elsewhere: stagedCount(stagedClusters(current, hidden, now)),
+    views: shown,
+  };
+}
+
+// The Settings tab badge for a workspace scope ("global" is every
+// workspace): the number of staged changes, counted as the Apply card counts
+// them. A frozen dashboard shows a past profile that drafts cannot be
+// compared with, so it only says drafts are waiting, never a guessed count.
+export function stagedBadge(
+  current: StagedState,
+  scope: string,
+  views: ClusterView[],
+  now: number,
+  live: boolean
+): number | "waiting" | undefined {
+  if (!live) {
+    return stagedInScope(current, scope) ? "waiting" : undefined;
+  }
+  const count = now ? stagedCount(stagedClusters(current, views, now)) : 0;
+  return count > 0 ? count : undefined;
 }
 
 // Clusters the apply would pause, which needs explicit confirmation.
