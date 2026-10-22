@@ -10,7 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { observationCoverage } from "../lib/attention";
-import { inventoryFreshness } from "../lib/metrics";
+import { freshness, inventoryFreshness } from "../lib/metrics";
 import {
   emptyTopology,
   type InventoryCoverage,
@@ -26,16 +26,35 @@ function counted(count: number, noun: string) {
 }
 
 // What the inventory in scope can vouch for: clusters with none at all, and
-// clusters whose last inventory is no longer fresh.
+// clusters whose last inventory is no longer fresh. Live, a heartbeat that
+// is not fresh ages the inventory too: the observer may have stopped before
+// its last inventory went stale, so it cannot vouch for an all clear beside
+// the stale-observer problem.
 export function inventoryCoverage(
   views: ClusterView[],
-  now: number
+  now: number,
+  frozen = false
 ): InventoryCoverage {
   const coverage = observationCoverage(views, now);
-  const notFresh = views.filter(
-    (view) => inventoryFreshness(view.inventory.sourceTime, now) !== "fresh"
-  ).length;
-  return { ...coverage, aged: notFresh - coverage.missing };
+  const aged = views.filter((view) => {
+    const inventory = inventoryFreshness(view.inventory.sourceTime, now);
+    if (inventory === "unknown") {
+      return false;
+    }
+    return (
+      inventory !== "fresh" ||
+      (!frozen && freshness(view.cluster.heartbeatAt, now) !== "fresh")
+    );
+  }).length;
+  return { ...coverage, aged };
+}
+
+// Registered clusters whose observer has never sent a heartbeat. Saved
+// observations keep no heartbeats, so only the live view can name them.
+export function silentClusters(views: ClusterView[], frozen: boolean) {
+  return frozen
+    ? []
+    : views.filter((view) => freshness(view.cluster.heartbeatAt) === "unknown");
 }
 
 interface EmptyProps {
@@ -43,10 +62,15 @@ interface EmptyProps {
   frozen: boolean;
   graph: ServiceGraph;
   namespace: string;
+  // Opens a cluster's Settings, where its observer is installed or its
+  // enrollment renewed.
+  onCluster?: (view: ClusterView) => void;
   onShowSystem?: () => void;
   problems: boolean;
   search: string;
   showSystem: boolean;
+  // Registered clusters that have never reported (see silentClusters).
+  silent?: ClusterView[];
 }
 interface EmptyCopy {
   description: string;
@@ -193,7 +217,88 @@ export function TopologyEmpty(props: EmptyProps) {
           Include system resources
         </Button>
       )}
+      {props.onCluster && props.silent?.length ? (
+        <SilentList clusters={props.silent} onCluster={props.onCluster} />
+      ) : null}
     </EmptyState>
+  );
+}
+
+function silentText(view: ClusterView) {
+  return `${view.cluster.name} has not reported since registration`;
+}
+
+function SetUpButton({
+  view,
+  onCluster,
+}: {
+  view: ClusterView;
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <Button
+      aria-label={`Install or renew the observer on ${view.cluster.name}`}
+      className="h-9 shrink-0 focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
+      onClick={() => onCluster(view)}
+      size="sm"
+      variant="outline"
+    >
+      Install or renew
+    </Button>
+  );
+}
+
+// A registered cluster that never reported draws nothing, so the empty
+// canvas names it and offers the way back to its install or enrollment.
+function SilentList({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <ul
+      aria-label="Clusters that have not reported"
+      className="w-full space-y-1.5 text-left"
+    >
+      {clusters.map((view) => (
+        <li
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3 text-sm"
+          key={view.cluster.id}
+        >
+          <span className="min-w-0 break-words">{silentText(view)}</span>
+          <SetUpButton onCluster={onCluster} view={view} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Where other clusters fill the canvas, silent ones get a small chip
+// instead; it opens the first one's Settings.
+export function SilentClustersChip({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  const [first] = clusters;
+  if (!first) {
+    return null;
+  }
+  const more = clusters.length - 1;
+  return (
+    <p className="pointer-events-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-muted-foreground/50 border-dashed bg-card/95 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur">
+      <Clock aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="min-w-0 truncate">
+        {more
+          ? `${first.cluster.name} and ${counted(more, "other cluster")} have not reported since registration`
+          : silentText(first)}
+      </span>
+      <SetUpButton onCluster={onCluster} view={first} />
+    </p>
   );
 }
 
