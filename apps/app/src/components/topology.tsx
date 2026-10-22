@@ -1,620 +1,92 @@
-import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { Badge } from "@jood-monitor/ui/badge";
-import { Button } from "@jood-monitor/ui/button";
+import type { ClusterView } from "@jood-monitor/api-client";
 import { cn } from "@jood-monitor/ui/utils";
 import {
   applyNodeChanges,
   Background,
-  Controls,
+  BackgroundVariant,
   type Edge,
-  Handle,
   MarkerType,
   MiniMap,
-  type Node,
   type NodeChange,
-  type NodeProps,
-  Position,
   ReactFlow,
   type ReactFlowInstance,
-  type ReactFlowState,
-  useStore,
 } from "@xyflow/react";
+import { TriangleAlert, X } from "lucide-react";
 import {
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Circle,
-  CircleAlert,
-  CircleCheck,
-  Clock,
-  Gauge,
-  ListTree,
-  type LucideIcon,
-  Maximize,
-  Network,
-  TriangleAlert,
-} from "lucide-react";
-import {
+  type FocusEvent,
   type KeyboardEvent,
-  memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { useDisplay } from "../hooks/display";
-import { observationCoverage } from "../lib/attention";
-import {
-  compactCpu,
-  compactMemory,
-  type ResourceSummary,
-  relatedPods,
-  resourceStatus,
-  summarize,
-} from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
   activatedCard,
   type CardState,
+  cardInView,
   cardSize,
-  chipSize,
-  emptyTopology,
   type GraphItem,
   type GraphLink,
-  type InventoryCoverage,
   itemProblem,
-  kindSymbol,
   type ServiceGraph,
   serviceGraph,
   stablePositions,
   type TopologyLayout,
-  type TreeEntry,
   topologyLayout,
-  topologyTree,
   unchangedCard,
 } from "../lib/service-graph";
-import { EmptyState } from "./page";
-import { StatusBadge } from "./resource-status";
+import {
+  type CardHandlers,
+  type CardNode,
+  type Inspect,
+  nodeTypes,
+} from "./canvas-cards";
+import { inventoryCoverage, TopologyEmpty } from "./canvas-empty";
+import { phoneQuery, useLatestCallback, useMediaQuery } from "./canvas-hooks";
+import { TopologyList } from "./canvas-list";
+import { CanvasToolbar } from "./canvas-toolbar";
 
 // Configured and discovered structure only: routes, endpoints, ownership and
 // placement. Nothing here measures or implies traffic between resources.
 
-type Inspect = (view: ClusterView, entity: Entity) => void;
-interface CardHandlers {
-  onExpand: (id: string) => void;
-  onInspect: Inspect;
-  onNamespace: (namespace: string) => void;
-}
-type CardData = CardState & CardHandlers & Record<string, unknown>;
-type CardNode = Node<CardData, "resource" | "pod">;
 interface Point {
   x: number;
   y: number;
 }
-type Tone = "critical" | "warning" | "stale" | "healthy" | "neutral";
 
-// Below `compactZoom`, cards show only a large name and status instead of
-// shrinking their text to an unreadable size; below `distantZoom` the name
-// grows again so it stays legible from further out.
-const compactZoom = 0.65;
-const distantZoom = 0.4;
-type Detail = "full" | "compact" | "distant";
 // Graphs this small are fitted whole on first view (so an overview map would
 // only cover cards); larger ones open on the top-left chains at a readable zoom.
 const fullFitLimit = 40;
 const focusWindow = { width: 1100, height: 600 };
-// Fit margins keep cards clear of the zoom controls on the left.
-const fitPadding = {
-  top: "24px",
-  bottom: "24px",
-  left: "64px",
-  right: "32px",
-} as const;
-const focusPadding = {
-  top: "40px",
-  bottom: "40px",
-  left: "72px",
-  right: "40px",
-} as const;
-const finishedStatuses = new Set(["Succeeded", "Completed", "Failed"]);
+// Space the floating overlays take: the toolbar on the left, the scope row
+// on top and the legend at the bottom. The right edge follows the Activity
+// panel when it is open.
+const overlayInset = { top: 72, left: 72, bottom: 64 };
 
-const toneIcons: Record<Tone, LucideIcon> = {
-  critical: CircleAlert,
-  warning: TriangleAlert,
-  stale: Clock,
-  healthy: CircleCheck,
-  neutral: Circle,
-};
-const toneText: Record<Tone, string> = {
-  critical: "text-destructive-text",
-  warning: "text-warning-text",
-  stale: "text-muted-foreground",
-  healthy: "text-success-text",
-  neutral: "text-muted-foreground",
-};
-const toneBorder: Record<Tone, string> = {
-  critical: "border-destructive/60",
-  warning: "border-warning/60",
-  stale: "border-dashed border-muted-foreground/50",
-  healthy: "border-border",
-  neutral: "border-border",
-};
-const toneLabels: Record<Tone, string> = {
-  critical: "Critical problem",
-  warning: "Problem",
-  stale: "Stale observation",
-  healthy: "Healthy",
-  neutral: "No health signal",
-};
-const selectedBorder = "border-primary ring-2 ring-primary/40";
-
-function critical(entity: Entity) {
-  if (entity.kind === "Node") {
-    return entity.status !== "True";
-  }
-  if (entity.kind === "Pod") {
-    return false;
-  }
-  return entity.ready === 0 && (entity.desired ?? 0) > 0;
+type Pixels = `${number}px`;
+interface Padding {
+  bottom: Pixels;
+  left: Pixels;
+  right: Pixels;
+  top: Pixels;
 }
 
-function neutral(entity: Entity) {
-  const status = resourceStatus(entity);
-  return (
-    ["Unknown", "Observed"].includes(status) ||
-    ["Service", "Ingress", "Namespace"].includes(entity.kind) ||
-    (entity.kind === "Pod" && entity.ready == null && status === "Running")
-  );
+function pixels(value: number): Pixels {
+  return `${value}px`;
 }
 
-function toneOf(entity: Entity, problem: boolean, stale: boolean): Tone {
-  if (problem) {
-    return critical(entity) ? "critical" : "warning";
-  }
-  if (stale) {
-    return "stale";
-  }
-  return neutral(entity) ? "neutral" : "healthy";
-}
-
-function StatusIcon({ tone, className }: { tone: Tone; className?: string }) {
-  const Icon = toneIcons[tone];
-  return (
-    <Icon
-      aria-label={toneLabels[tone]}
-      className={cn("size-3.5 shrink-0", toneText[tone], className)}
-      role="img"
-    />
-  );
-}
-
-function KindBadge({ kind }: { kind: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted/40 font-mono text-[11px] text-muted-foreground"
-      title={kind}
-    >
-      {kindSymbol(kind)}
-    </span>
-  );
-}
-
-function nodeName(view: ClusterView, uid?: string) {
-  return uid
-    ? view.inventory.entities.find((item) => item.uid === uid)?.name
-    : undefined;
-}
-
-function cardMeta({ entity, replicaSets }: GraphItem) {
-  const parts = [entity.namespace, entity.kind];
-  if (entity.kind === "Node") {
-    parts.push(entity.roles?.join(", "), entity.zone);
-  }
-  if (entity.ports?.length) {
-    parts.push(`:${entity.ports.map((port) => port.port).join(",")}`);
-  }
-  if ((replicaSets?.length ?? 0) > 1) {
-    parts.push(`rollout · ${replicaSets?.length} ReplicaSets`);
-  }
-  return parts.filter(Boolean).join(" · ");
-}
-
-function readyText(summary: ResourceSummary) {
-  return summary.ready == null
-    ? "—"
-    : `${summary.ready}/${summary.desired ?? "—"}`;
-}
-
-function activePods(summary: ResourceSummary) {
-  return summary.pods.filter((pod) => !finishedStatuses.has(pod.status)).length;
-}
-
-// Usage totals need a fresh sample from every running pod; anything less is
-// labelled partial, and nothing measured stays a dash, never a zero.
-function usage(
-  entity: Entity,
-  summary: ResourceSummary,
-  field: "cpu" | "memory"
-) {
-  const value = summary[field];
-  if (value != null) {
-    return {
-      value: field === "cpu" ? compactCpu(value) : compactMemory(value),
-    };
-  }
-  const active = activePods(summary);
-  if (entity.kind !== "Node" && summary.measured > 0 && active > 0) {
-    return {
-      value: "partial",
-      partial: true,
-      title: `Fresh ${field === "cpu" ? "CPU" : "memory"} for ${Math.min(summary.measured, active)} of ${active} running pods; a total needs every pod`,
-    };
-  }
-  return { value: "—", title: "No fresh measurement" };
-}
-
-function Metric({
-  label,
-  value,
-  title,
-  partial = false,
-}: {
-  label: string;
-  value: string;
-  title?: string;
-  partial?: boolean;
-}) {
-  return (
-    <div className="min-w-0" title={title}>
-      <p
-        className={cn(
-          "truncate font-mono text-[13px] tabular-nums leading-[18px]",
-          partial && "text-warning-text"
-        )}
-      >
-        {value}
-      </p>
-      <p className="truncate text-muted-foreground text-xs">{label}</p>
-    </div>
-  );
-}
-
-function CardMetrics({
-  entity,
-  summary,
-}: {
-  entity: Entity;
-  summary: ResourceSummary;
-}) {
-  if (entity.kind === "Ingress") {
-    return (
-      <div className="border-b px-3 py-1.5">
-        <p className="truncate font-mono text-[13px] leading-[18px]">
-          {entity.hosts?.join(", ") || "No host rule observed"}
-        </p>
-        <p className="text-muted-foreground text-xs">Configured hosts</p>
-      </div>
-    );
-  }
-  return (
-    <div className="grid grid-cols-4 gap-2 border-b px-3 py-1.5">
-      <Metric
-        label="Ready"
-        title="Ready / desired"
-        value={readyText(summary)}
-      />
-      <Metric label="CPU" {...usage(entity, summary, "cpu")} />
-      <Metric label="Memory" {...usage(entity, summary, "memory")} />
-      <Metric
-        label="Restarts"
-        value={summary.restarts == null ? "—" : String(summary.restarts)}
-      />
-    </div>
-  );
-}
-
-function stop(action: () => void) {
-  return (event: { stopPropagation: () => void }) => {
-    event.stopPropagation();
-    action();
+function paddingFor(right: number, extra = 0): Padding {
+  return {
+    top: pixels(overlayInset.top + extra),
+    bottom: pixels(overlayInset.bottom + extra),
+    left: pixels(overlayInset.left + extra),
+    right: pixels(right + 24 + extra),
   };
 }
-
-function CardPlacement({
-  data,
-  summary,
-}: {
-  data: CardData;
-  summary: ResourceSummary;
-}) {
-  const { view, entity } = data.item;
-  const row =
-    "flex h-9 items-center gap-1.5 overflow-hidden border-b px-3 text-muted-foreground text-xs";
-  if (entity.kind === "Ingress") {
-    return <div className={row}>Configured entry · traffic not measured</div>;
-  }
-  if (entity.kind === "Node") {
-    return (
-      <div className={row}>
-        {summary.pods.length} pod{summary.pods.length === 1 ? "" : "s"}{" "}
-        scheduled
-      </div>
-    );
-  }
-  if (!summary.nodes.length) {
-    return <div className={row}>No observed placement</div>;
-  }
-  const extra = summary.nodes.length - 1;
-  return (
-    <div className={row}>
-      <span>on</span>
-      {summary.nodes.slice(0, 1).map((node) => (
-        <Button
-          className="nodrag h-8 min-w-0 max-w-[168px] px-2 font-mono text-xs"
-          key={node.uid}
-          onClick={stop(() => data.onInspect(view, node))}
-          size="sm"
-          title={`Inspect node ${node.name}`}
-          variant="outline"
-        >
-          <span className="truncate">{node.name}</span>
-        </Button>
-      ))}
-      {extra > 0 && (
-        <Button
-          aria-label={`${extra} more node${extra === 1 ? "" : "s"}: inspect ${entity.name}`}
-          className="nodrag h-8 px-2 text-xs tabular-nums"
-          onClick={stop(() => data.onInspect(view, entity))}
-          size="sm"
-          variant="ghost"
-        >
-          +{extra}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-function CardFooter({
-  data,
-  summary,
-}: {
-  data: CardData;
-  summary: ResourceSummary;
-}) {
-  const { item, expanded, onExpand, onNamespace, stale } = data;
-  const { entity } = item;
-  const expandable =
-    summary.pods.length > 0 && !["Pod", "Namespace"].includes(entity.kind);
-  return (
-    <div className="flex h-9 min-w-0 items-center gap-1.5 px-3">
-      <StatusBadge entity={entity} stale={stale} />
-      {!!item.autoscalers?.length && (
-        <Badge
-          className="min-w-0"
-          title={`${item.autoscalers.map((policy) => `${policy.kind} ${policy.name}`).join(", ")} · scaling policy (configuration only)`}
-          variant="info"
-        >
-          <Gauge aria-hidden="true" />
-          Autoscaled
-        </Badge>
-      )}
-      <div className="ml-auto flex items-center">
-        {entity.kind === "Namespace" && (
-          <Button
-            className="nodrag h-8 px-2 text-xs"
-            onClick={stop(() => onNamespace(entity.name))}
-            size="sm"
-            variant="ghost"
-          >
-            Open <ChevronRight aria-hidden="true" />
-          </Button>
-        )}
-        {expandable && (
-          <Button
-            aria-expanded={expanded}
-            aria-label={`${expanded ? "Hide" : "Show"} ${summary.pods.length} pods for ${entity.name}`}
-            className="nodrag h-8 px-2 text-xs tabular-nums"
-            onClick={stop(() => onExpand(item.id))}
-            size="sm"
-            variant="ghost"
-          >
-            {summary.pods.length} pod{summary.pods.length === 1 ? "" : "s"}
-            {expanded ? (
-              <ChevronUp aria-hidden="true" />
-            ) : (
-              <ChevronDown aria-hidden="true" />
-            )}
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Keyboard users reach each card once and open it with Enter or Space, so the
-// name stays out of the tab order. It is still a button for screen reader
-// browse mode; its click bubbles to the card, which selects and opens it.
-function NameButton({ name, className }: { name: string; className: string }) {
-  return (
-    <button
-      className={cn(
-        "min-w-0 truncate rounded-sm text-left font-medium font-mono hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        className
-      )}
-      tabIndex={-1}
-      title={name}
-      type="button"
-    >
-      {name}
-    </button>
-  );
-}
-
-function FullCard({ data, tone }: { data: CardData; tone: Tone }) {
-  const { item, now } = data;
-  const { view, entity } = item;
-  const summary = summarize(view, entity, now);
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-start gap-2.5 border-b px-3 py-2">
-        <KindBadge kind={entity.kind} />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <StatusIcon tone={tone} />
-            <NameButton className="text-[15px] leading-5" name={entity.name} />
-          </div>
-          <p className="truncate text-muted-foreground text-xs">
-            {cardMeta(item)}
-          </p>
-        </div>
-      </div>
-      <CardMetrics entity={entity} summary={summary} />
-      <CardPlacement data={data} summary={summary} />
-      <CardFooter data={data} summary={summary} />
-    </div>
-  );
-}
-
-function compactStatus(data: CardData) {
-  const { entity } = data.item;
-  if (data.stale && !data.problem) {
-    return "Stale";
-  }
-  const ready =
-    entity.ready != null && entity.desired != null && entity.kind !== "Pod"
-      ? ` · ${entity.ready}/${entity.desired}`
-      : "";
-  return `${resourceStatus(entity)}${ready}`;
-}
-
-function CompactCard({
-  data,
-  tone,
-  distant,
-}: {
-  data: CardData;
-  tone: Tone;
-  distant: boolean;
-}) {
-  const { entity } = data.item;
-  return (
-    <div className="flex h-full flex-col justify-center gap-2 px-5">
-      <div className="flex min-w-0 items-center gap-3">
-        <StatusIcon className={distant ? "size-8" : "size-6"} tone={tone} />
-        <NameButton
-          className={cn(
-            "leading-tight",
-            distant ? "text-[32px]" : "text-[22px]"
-          )}
-          name={entity.name}
-        />
-      </div>
-      <p
-        className={cn(
-          "truncate text-muted-foreground",
-          distant ? "text-[26px]" : "text-lg"
-        )}
-      >
-        {entity.kind} · {compactStatus(data)}
-      </p>
-    </div>
-  );
-}
-
-// Re-renders cards only when the zoom crosses a detail threshold.
-function detailSelector(state: ReactFlowState): Detail {
-  const zoom = state.transform[2];
-  if (zoom >= compactZoom) {
-    return "full";
-  }
-  return zoom >= distantZoom ? "compact" : "distant";
-}
-
-const ResourceCard = memo(function ResourceCard({
-  data,
-  selected,
-}: NodeProps<CardNode>) {
-  const detail = useStore(detailSelector);
-  const tone = toneOf(data.item.entity, data.problem, data.stale);
-  return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm",
-        selected ? selectedBorder : toneBorder[tone],
-        detail !== "full" && "border-2"
-      )}
-      style={cardSize}
-    >
-      <Handle isConnectable={false} position={Position.Left} type="target" />
-      {detail === "full" ? (
-        <FullCard data={data} tone={tone} />
-      ) : (
-        <CompactCard data={data} distant={detail === "distant"} tone={tone} />
-      )}
-      <Handle isConnectable={false} position={Position.Right} type="source" />
-    </div>
-  );
-});
-
-const chipIconSize: Record<Detail, string | undefined> = {
-  full: undefined,
-  compact: "size-5",
-  distant: "size-7",
-};
-const chipNameSize: Record<Detail, string> = {
-  full: "text-[13px]",
-  compact: "text-xl",
-  distant: "text-[28px]",
-};
-
-function podDetail(pod: Entity) {
-  const ready =
-    pod.ready == null
-      ? "readiness unknown"
-      : `${pod.ready}/${pod.desired ?? "—"} ready`;
-  const restarts = pod.restarts ?? 0;
-  return `${resourceStatus(pod)} · ${ready} · ${restarts} restart${restarts === 1 ? "" : "s"}`;
-}
-
-const PodChip = memo(function PodChip({ data, selected }: NodeProps<CardNode>) {
-  const detail = useStore(detailSelector);
-  const compact = detail !== "full";
-  const { view, entity: pod } = data.item;
-  const tone = toneOf(pod, data.problem, data.stale);
-  const node = nodeName(view, pod.nodeUid);
-  return (
-    <div
-      className={cn(
-        "flex flex-col justify-center gap-0.5 overflow-hidden rounded-md border bg-card px-2.5 text-card-foreground shadow-sm",
-        selected ? selectedBorder : toneBorder[tone]
-      )}
-      style={chipSize}
-    >
-      <Handle isConnectable={false} position={Position.Left} type="target" />
-      <div className="flex min-w-0 items-center gap-1.5">
-        <StatusIcon className={chipIconSize[detail]} tone={tone} />
-        <NameButton className={chipNameSize[detail]} name={pod.name} />
-      </div>
-      {!compact && (
-        <>
-          <p className="truncate text-muted-foreground text-xs tabular-nums">
-            {podDetail(pod)}
-          </p>
-          <p className="truncate font-mono text-muted-foreground text-xs">
-            {node ? `on ${node}` : "No observed placement"}
-          </p>
-        </>
-      )}
-      <Handle isConnectable={false} position={Position.Right} type="source" />
-    </div>
-  );
-});
-
-const nodeTypes = { resource: ResourceCard, pod: PodChip };
 
 const edgeDash: Record<string, string | undefined> = {
   route: "6 4",
@@ -625,7 +97,7 @@ const edgeDash: Record<string, string | undefined> = {
 
 function edgeOpacity(selected: string | undefined, active: boolean) {
   if (!selected) {
-    return 0.6;
+    return 0.7;
   }
   return active ? 1 : 0.12;
 }
@@ -696,15 +168,16 @@ function initialFocus(items: GraphItem[], positions: Record<string, Point>) {
 function fitInitial(
   instance: ReactFlowInstance<CardNode>,
   graph: ServiceGraph,
-  positions: Record<string, Point>
+  positions: Record<string, Point>,
+  padding: Padding
 ) {
   if (graph.items.length <= fullFitLimit) {
-    instance.fitView({ padding: fitPadding, minZoom: 0.15, maxZoom: 1 });
+    instance.fitView({ padding, minZoom: 0.15, maxZoom: 1 });
     return;
   }
   const focus = initialFocus(graph.items, positions);
   instance
-    .fitView({ nodes: focus, padding: fitPadding, minZoom: 0.7, maxZoom: 1 })
+    .fitView({ nodes: focus, padding, minZoom: 0.7, maxZoom: 1 })
     .then(() => {
       // Open on the top-left chains even when they overflow the canvas.
       const viewport = instance.getViewport();
@@ -712,8 +185,8 @@ function fitInitial(
       const top = Math.min(...focus.map(({ id }) => positions[id]?.y ?? 0));
       instance.setViewport({
         ...viewport,
-        x: 64 - left * viewport.zoom,
-        y: 24 - top * viewport.zoom,
+        x: overlayInset.left - left * viewport.zoom,
+        y: overlayInset.top - top * viewport.zoom,
       });
     });
 }
@@ -726,13 +199,14 @@ interface FocusRequest {
 function focusExpansion(
   instance: ReactFlowInstance<CardNode>,
   request: FocusRequest,
-  graph: ServiceGraph
+  graph: ServiceGraph,
+  padding: Padding
 ) {
   if (request.expand) {
     const ids = [request.id, ...podNeighbours(graph, request.id)];
     instance.fitView({
       nodes: ids.map((id) => ({ id })),
-      padding: focusPadding,
+      padding,
       maxZoom: 1,
       duration: 250,
     });
@@ -750,18 +224,38 @@ function focusExpansion(
   );
 }
 
-const narrowQuery = "(max-width: 639px)";
-function subscribeNarrow(callback: () => void) {
-  const query = window.matchMedia(narrowQuery);
-  query.addEventListener("change", callback);
-  return () => query.removeEventListener("change", callback);
-}
-function useNarrowScreen() {
-  return useSyncExternalStore(
-    subscribeNarrow,
-    () => window.matchMedia(narrowQuery).matches,
-    () => false
+// Keyboard focus can land on a card outside the visible canvas or under a
+// floating overlay; bring it into the clear area at the current zoom.
+function revealCard(
+  instance: ReactFlowInstance<CardNode>,
+  id: string,
+  canvas: HTMLElement,
+  insetRight: number
+) {
+  const node = instance.getInternalNode(id);
+  if (!node) {
+    return;
+  }
+  const { x, y, zoom } = instance.getViewport();
+  const width = node.measured.width ?? cardSize.width;
+  const height = node.measured.height ?? cardSize.height;
+  const { x: left, y: top } = node.internals.positionAbsolute;
+  const visible = cardInView(
+    {
+      x: left * zoom + x,
+      y: top * zoom + y,
+      width: width * zoom,
+      height: height * zoom,
+    },
+    { width: canvas.clientWidth, height: canvas.clientHeight },
+    { ...overlayInset, right: insetRight + 24 }
   );
+  if (!visible) {
+    instance.setCenter(left + width / 2, top + height / 2, {
+      zoom,
+      duration: 200,
+    });
+  }
 }
 
 // React Flow's default card description mentions deleting and moving nodes;
@@ -781,23 +275,18 @@ function staleView(view: ClusterView, now: number) {
   return inventoryFreshness(view.inventory.sourceTime, now) !== "fresh";
 }
 
-// One callback identity for the component's life that always calls the
-// latest prop or closure, so a parent re-render never rebuilds every card.
-function useLatestCallback<A extends unknown[]>(
-  callback: (...args: A) => void
-) {
-  const latest = useRef(callback);
-  useEffect(() => {
-    latest.current = callback;
-  }, [callback]);
-  return useCallback((...args: A) => latest.current(...args), []);
-}
-
 interface CardInputs {
   expanded: string[];
   handlers: CardHandlers;
   now: number;
   positions: Record<string, Point>;
+}
+
+function nodeType(kind: string): CardNode["type"] {
+  if (kind === "Pod") {
+    return "pod";
+  }
+  return kind === "Namespace" ? "namespace" : "resource";
 }
 
 function cardNode(
@@ -819,12 +308,12 @@ function cardNode(
   return {
     ...before,
     id: item.id,
-    type: item.entity.kind === "Pod" ? "pod" : "resource",
+    type: nodeType(item.entity.kind),
     position,
     data: { ...state, ...inputs.handlers },
     connectable: false,
     draggable: false,
-    ariaLabel: `${item.entity.kind} ${item.entity.name}${state.problem ? ", has a problem" : ""}`,
+    ariaLabel: `${item.entity.kind} ${item.entity.name}${state.problem ? ", has a problem" : ""}${state.stale ? ", stale inventory" : ""}`,
   };
 }
 
@@ -847,47 +336,55 @@ function keepSelectAndSize(changes: NodeChange<CardNode>[]) {
   );
 }
 
-export function Topology({
-  views,
-  onInspect,
-  referenceTime,
-  search = "",
-  namespace = "all",
-  showSystem = false,
-  problems = false,
-  onNamespace,
-  onShowSystem,
-  layout: controlledLayout,
-  onLayout,
-}: {
-  views: ClusterView[];
-  onInspect: Inspect;
-  referenceTime: number;
-  search?: string;
-  namespace?: string;
-  showSystem?: boolean;
-  problems?: boolean;
-  onNamespace: (namespace: string) => void;
-  // Offered when the empty state finds matches or problems only in hidden
-  // system namespaces.
-  onShowSystem?: () => void;
+export interface TopologyOverlays {
+  // Top-right actions, such as Connect cluster.
+  actions?: ReactNode;
+  // Under the scope row, such as pending changes.
+  below?: ReactNode;
+  // A floating side panel on the right, such as Activity.
+  panel?: ReactNode;
+  // The scope row, top left: namespace and search.
+  scope?: ReactNode;
+}
+
+export interface TopologyProps {
+  // Fills its parent as a full-bleed canvas when given; otherwise the
+  // topology draws as a framed block of its own height.
+  className?: string;
+  // Canvas width the right-hand panel covers, kept clear when fitting.
+  insetRight?: number;
   // A Graph/List choice owned by the parent so it survives remounts; when
   // absent the topology keeps its own choice and the screen default.
   layout?: TopologyLayout;
+  namespace?: string;
+  onInspect: Inspect;
   onLayout?: (layout: TopologyLayout) => void;
-}) {
-  const { theme, frozen } = useDisplay();
-  const narrow = useNarrowScreen();
-  const [choice, setChoice] = useState<TopologyLayout>();
-  const mode = topologyLayout(controlledLayout, choice, narrow);
-  const [expanded, setExpanded] = useState<string[]>([]);
-  const [nodes, setNodes] = useState<CardNode[]>([]);
-  const [instance, setInstance] = useState<ReactFlowInstance<CardNode>>();
-  const [dimmed] = useState(() => new WeakMap<CardNode, CardNode>());
-  const layout = useRef<Record<string, Point>>({});
-  const layoutKey = useRef("");
-  const fitted = useRef(false);
-  const focusRequest = useRef<FocusRequest>(undefined);
+  onNamespace: (namespace: string) => void;
+  // Toolbar filters; each toggle shows only when its handler is given.
+  onProblems?: (problems: boolean) => void;
+  // Offered when the empty state finds matches or problems only in hidden
+  // system namespaces.
+  onShowSystem?: () => void;
+  onSystem?: (system: boolean) => void;
+  overlays?: TopologyOverlays;
+  problems?: boolean;
+  referenceTime: number;
+  search?: string;
+  showSystem?: boolean;
+  // System resources are forced on (a system namespace is selected).
+  systemLocked?: boolean;
+  views: ClusterView[];
+}
+
+function useCardGraph(props: TopologyProps, expanded: string[]) {
+  const {
+    views,
+    search = "",
+    namespace = "all",
+    showSystem = false,
+    problems = false,
+    referenceTime,
+  } = props;
   // Only the problems filter reads the clock (pod start-up grace), so other
   // graphs are not rebuilt on every tick.
   const graphTime = problems ? referenceTime : undefined;
@@ -903,7 +400,43 @@ export function Topology({
       }),
     [views, search, namespace, showSystem, problems, expanded, graphTime]
   );
-  const filterKey = `${namespace}:${search}:${showSystem}:${problems}`;
+  return {
+    graph,
+    filterKey: `${namespace}:${search}:${showSystem}:${problems}`,
+  };
+}
+
+export function Topology(props: TopologyProps) {
+  const {
+    views,
+    onInspect,
+    referenceTime,
+    search = "",
+    namespace = "all",
+    showSystem = false,
+    problems = false,
+    onNamespace,
+    onShowSystem,
+    layout: controlledLayout,
+    onLayout,
+    overlays = {},
+    insetRight = 16,
+  } = props;
+  const { theme, frozen } = useDisplay();
+  const phone = useMediaQuery(phoneQuery);
+  const [choice, setChoice] = useState<TopologyLayout>();
+  const mode = topologyLayout(controlledLayout, choice, phone);
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [nodes, setNodes] = useState<CardNode[]>([]);
+  const [instance, setInstance] = useState<ReactFlowInstance<CardNode>>();
+  const [dimmed] = useState(() => new WeakMap<CardNode, CardNode>());
+  const layout = useRef<Record<string, Point>>({});
+  const layoutKey = useRef("");
+  const fitted = useRef(false);
+  const focusRequest = useRef<FocusRequest>(undefined);
+  const { graph, filterKey } = useCardGraph(props, expanded);
+  const padding = useMemo(() => paddingFor(insetRight), [insetRight]);
+  const focusPadding = useMemo(() => paddingFor(insetRight, 16), [insetRight]);
   const toggle = useLatestCallback((id: string) => {
     const expand = !expanded.includes(id);
     if (mode === "graph") {
@@ -955,10 +488,10 @@ export function Topology({
     }
     const timer = setTimeout(() => {
       fitted.current = true;
-      fitInitial(instance, graph, layout.current);
+      fitInitial(instance, graph, layout.current, padding);
     }, 120);
     return () => clearTimeout(timer);
-  }, [instance, graph]);
+  }, [instance, graph, padding]);
   useEffect(() => {
     const request = focusRequest.current;
     if (!(request && instance && nodes.length)) {
@@ -966,10 +499,10 @@ export function Topology({
     }
     const timer = setTimeout(() => {
       focusRequest.current = undefined;
-      focusExpansion(instance, request, graph);
+      focusExpansion(instance, request, graph, focusPadding);
     }, 80);
     return () => clearTimeout(timer);
-  }, [instance, graph, nodes]);
+  }, [instance, graph, nodes, focusPadding]);
   const selectedId = nodes.find((node) => node.selected)?.id;
   const edges = useMemo(() => {
     const names = new Map(
@@ -1030,6 +563,17 @@ export function Topology({
       open(event, node);
     }
   }
+  function keyFocus(event: FocusEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (
+      instance &&
+      target.classList.contains("react-flow__node") &&
+      target.matches(":focus-visible") &&
+      target.dataset.id
+    ) {
+      revealCard(instance, target.dataset.id, event.currentTarget, insetRight);
+    }
+  }
   const empty = graph.items.length ? null : (
     <TopologyEmpty
       coverage={inventoryCoverage(views, referenceTime)}
@@ -1042,22 +586,65 @@ export function Topology({
       showSystem={showSystem}
     />
   );
+  const toolbar = {
+    mode,
+    onMode: switchMode,
+    onProblems: props.onProblems,
+    onSystem: props.onSystem,
+    problems,
+    system: showSystem,
+    systemLocked: props.systemLocked ?? false,
+  };
+  const scopeRow = (
+    <>
+      {overlays.scope}
+      <FilterChips
+        onProblems={props.onProblems}
+        onSystem={props.systemLocked ? undefined : props.onSystem}
+        problems={problems}
+        system={showSystem}
+      />
+    </>
+  );
   return (
     <section
       aria-label="Service topology"
-      className="overflow-hidden rounded-lg border bg-background"
+      className={cn(
+        "relative isolate overflow-hidden bg-background",
+        props.className ??
+          "h-[calc(100svh-16rem)] min-h-[480px] rounded-lg border"
+      )}
       data-testid="service-topology"
     >
-      <TopologyToolbar
-        graph={graph}
-        mode={mode}
-        onFit={() =>
-          instance?.fitView({ padding: fitPadding, maxZoom: 1, duration: 250 })
-        }
-        onMode={switchMode}
-      />
       {mode === "graph" ? (
-        <div className="relative h-[calc(100svh-24rem)] min-h-[420px]">
+        <>
+          <div className="pointer-events-none absolute top-3 left-3 z-10">
+            <CanvasToolbar
+              {...toolbar}
+              onFit={() =>
+                instance?.fitView({ padding, maxZoom: 1, duration: 250 })
+              }
+              onZoomIn={() => instance?.zoomIn({ duration: 200 })}
+              onZoomOut={() => instance?.zoomOut({ duration: 200 })}
+              orientation="vertical"
+            />
+          </div>
+          <div className="pointer-events-none absolute top-3 left-16 z-10 flex max-w-[calc(100%-9rem)] flex-col items-start gap-2 sm:max-w-[calc(100%-17rem)]">
+            <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+              {scopeRow}
+            </div>
+            {overlays.below && (
+              <div className="pointer-events-auto empty:hidden">
+                {overlays.below}
+              </div>
+            )}
+            <Truncated graph={graph} />
+          </div>
+          {overlays.actions && (
+            <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center gap-2 *:pointer-events-auto">
+              {overlays.actions}
+            </div>
+          )}
           <ReactFlow<CardNode>
             ariaLabelConfig={ariaLabels}
             colorMode={theme}
@@ -1071,108 +658,143 @@ export function Topology({
             nodesConnectable={false}
             nodesDraggable={false}
             nodeTypes={nodeTypes}
+            onFocus={keyFocus}
             onInit={setInstance}
             onKeyDown={keyOpen}
             onNodeClick={open}
             onNodesChange={change}
           >
-            <Background color="var(--border)" gap={24} size={1} />
-            <Controls showInteractive={false} />
+            <Background
+              color="color-mix(in oklab, var(--muted-foreground) 45%, transparent)"
+              gap={22}
+              size={1.2}
+              variant={BackgroundVariant.Dots}
+            />
             {graph.items.length > fullFitLimit && (
               <MiniMap<CardNode>
-                ariaLabel="Topology overview"
+                ariaLabel="Canvas overview"
                 className="hidden sm:block"
-                maskColor="var(--background)"
+                maskColor="color-mix(in oklab, var(--background) 70%, transparent)"
                 nodeColor={minimapColor}
                 pannable
-                style={{ width: 168, height: 112 }}
+                position="bottom-left"
+                style={{ width: 168, height: 112, marginBottom: 60 }}
                 zoomable
               />
             )}
           </ReactFlow>
-          {empty && (
-            <div className="absolute inset-0 flex items-center justify-center p-4">
-              {empty}
+          {overlays.panel && (
+            <div className="pointer-events-none absolute top-15 right-3 bottom-16 z-20 flex flex-col items-end">
+              {overlays.panel}
             </div>
           )}
-        </div>
-      ) : (
-        <div className="p-2 sm:p-3">
-          {empty ?? (
-            <TopologyList
-              expanded={expanded}
-              graph={graph}
-              now={referenceTime}
-              onExpand={toggle}
-              onInspect={inspect}
-              onNamespace={drill}
-            />
+          <CanvasLegend floating graph={graph} />
+          {empty && (
+            <div className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center p-4 pt-20">
+              <div className="pointer-events-auto">{empty}</div>
+            </div>
           )}
+        </>
+      ) : (
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="flex flex-wrap items-center gap-2 border-b bg-background/95 p-3">
+            <CanvasToolbar {...toolbar} orientation="horizontal" />
+            {scopeRow}
+            {overlays.actions && (
+              <div className="ml-auto flex items-center gap-2">
+                {overlays.actions}
+              </div>
+            )}
+          </div>
+          <div className="relative min-h-0 flex-1">
+            <div
+              className="h-full space-y-3 overflow-y-auto p-3"
+              style={{
+                paddingRight: overlays.panel ? insetRight + 24 : undefined,
+              }}
+            >
+              {overlays.below}
+              <Truncated graph={graph} />
+              {empty ?? (
+                <TopologyList
+                  expanded={expanded}
+                  graph={graph}
+                  now={referenceTime}
+                  onExpand={toggle}
+                  onInspect={inspect}
+                  onNamespace={drill}
+                />
+              )}
+            </div>
+            {overlays.panel && (
+              <div className="pointer-events-none absolute top-3 right-3 bottom-3 z-20 flex flex-col items-end">
+                {overlays.panel}
+              </div>
+            )}
+          </div>
+          <CanvasLegend graph={graph} />
         </div>
       )}
-      <TopologyLegend grouped={graph.grouped} mode={mode} />
     </section>
   );
 }
 
-function TopologyToolbar({
-  graph,
-  mode,
-  onMode,
-  onFit,
+function FilterChips({
+  problems,
+  system,
+  onProblems,
+  onSystem,
 }: {
-  graph: ServiceGraph;
-  mode: TopologyLayout;
-  onMode: (mode: TopologyLayout) => void;
-  onFit: () => void;
+  problems: boolean;
+  system: boolean;
+  onProblems?: (problems: boolean) => void;
+  onSystem?: (system: boolean) => void;
 }) {
-  const modes: { value: TopologyLayout; label: string; icon: LucideIcon }[] = [
-    { value: "graph", label: "Graph", icon: Network },
-    { value: "list", label: "List", icon: ListTree },
-  ];
+  const chip =
+    "flex h-9 items-center gap-1.5 rounded-lg border border-primary/40 bg-card/95 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur";
+  const clear =
+    "flex size-7 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b bg-card px-3 py-1.5">
-      <p className="text-muted-foreground text-xs tabular-nums">
-        {graph.items.length} {graph.grouped ? "namespaces" : "resources"}
-        {!graph.grouped &&
-          ` · ${graph.links.length} configured relationship${graph.links.length === 1 ? "" : "s"}`}
-      </p>
-      {graph.total > graph.items.length && (
-        <Badge variant="warning">
-          <TriangleAlert aria-hidden="true" />
-          Showing {graph.items.length} of {graph.total} · narrow the filters
-        </Badge>
-      )}
-      <div className="ml-auto flex items-center gap-1">
-        <fieldset className="flex rounded-md border bg-background p-0.5">
-          <legend className="sr-only">Topology layout</legend>
-          {modes.map(({ value, label, icon: Icon }) => (
-            <Button
-              aria-pressed={mode === value}
-              className="h-8 gap-1.5 text-xs"
-              key={value}
-              onClick={() => onMode(value)}
-              size="sm"
-              variant={mode === value ? "secondary" : "ghost"}
-            >
-              <Icon aria-hidden="true" />
-              {label}
-            </Button>
-          ))}
-        </fieldset>
-        {mode === "graph" && (
-          <Button
-            aria-label="Fit the whole topology"
-            onClick={onFit}
-            size="icon-sm"
-            title="Fit the whole topology"
-            variant="outline"
+    <>
+      {problems && onProblems && (
+        <span className={chip}>
+          Problems only
+          <button
+            aria-label="Clear the Problems only filter"
+            className={clear}
+            onClick={() => onProblems(false)}
+            type="button"
           >
-            <Maximize />
-          </Button>
-        )}
-      </div>
-    </div>
+            <X aria-hidden="true" className="size-3.5" />
+          </button>
+        </span>
+      )}
+      {system && onSystem && (
+        <span className={chip}>
+          System resources shown
+          <button
+            aria-label="Hide system resources"
+            className={clear}
+            onClick={() => onSystem(false)}
+            type="button"
+          >
+            <X aria-hidden="true" className="size-3.5" />
+          </button>
+        </span>
+      )}
+    </>
+  );
+}
+
+function Truncated({ graph }: { graph: ServiceGraph }) {
+  if (graph.total <= graph.items.length) {
+    return null;
+  }
+  return (
+    <p className="pointer-events-auto flex w-fit items-center gap-1.5 rounded-lg border border-warning/40 bg-card/95 px-2.5 py-1.5 text-warning-text text-xs shadow-sm backdrop-blur">
+      <TriangleAlert aria-hidden="true" className="size-3.5" />
+      Showing {graph.items.length} of {graph.total} · narrow the filters
+    </p>
   );
 }
 
@@ -1195,311 +817,54 @@ function LegendItem({ dash, label }: { dash?: string; label: string }) {
   );
 }
 
-function legendHint(grouped: boolean, mode: TopologyLayout) {
-  if (grouped) {
-    return mode === "graph"
-      ? "Click a namespace to open it · search to find any resource"
-      : "Open a namespace · search to find any resource";
+function counts(graph: ServiceGraph) {
+  const items = graph.items.length;
+  if (graph.grouped) {
+    return `${items} namespace${items === 1 ? "" : "s"}`;
   }
-  return mode === "graph"
-    ? "Click a card to inspect · Expand to show pods"
-    : "Select a row to inspect · Show pods to expand";
+  const links = graph.links.length;
+  return `${items} resource${items === 1 ? "" : "s"} · ${links} relationship${links === 1 ? "" : "s"}`;
 }
 
-function TopologyLegend({
-  grouped,
-  mode,
+// The canvas's standing caveat: it draws configured and discovered
+// structure, and nothing on it measures traffic.
+function CanvasLegend({
+  graph,
+  floating = false,
 }: {
-  grouped: boolean;
-  mode: TopologyLayout;
+  graph: ServiceGraph;
+  floating?: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t bg-card px-3 py-1.5 text-muted-foreground text-xs">
-      {!grouped && (
-        <ul
-          aria-label="Relationship legend"
-          className="flex flex-wrap items-center gap-x-3 gap-y-1"
-        >
-          <LegendItem dash="6 4" label="configured routes" />
-          <LegendItem label="endpoints" />
-          <LegendItem dash="2 4" label="ownership · placement" />
-          <li className="font-medium text-foreground">traffic not measured</li>
-        </ul>
-      )}
-      <span className="ml-auto rounded-full border bg-card px-2.5 py-0.5">
-        {legendHint(grouped, mode)}
-      </span>
-    </div>
-  );
-}
-
-function counted(count: number, noun: string) {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-// What the inventory in scope can vouch for: clusters with none at all, and
-// clusters whose last inventory is no longer fresh.
-function inventoryCoverage(
-  views: ClusterView[],
-  now: number
-): InventoryCoverage {
-  const coverage = observationCoverage(views, now);
-  const notFresh = views.filter((view) => staleView(view, now)).length;
-  return { ...coverage, aged: notFresh - coverage.missing };
-}
-
-interface EmptyProps {
-  coverage: InventoryCoverage;
-  frozen: boolean;
-  graph: ServiceGraph;
-  namespace: string;
-  onShowSystem?: () => void;
-  problems: boolean;
-  search: string;
-  showSystem: boolean;
-}
-interface EmptyCopy {
-  description: string;
-  icon: LucideIcon;
-  title: string;
-}
-
-function coverageNotes({ coverage, frozen }: EmptyProps) {
-  const notes: string[] = [];
-  if (coverage.missing) {
-    notes.push(
-      `${coverage.missing} of ${counted(coverage.total, "cluster")} ${frozen ? "have no saved observation at this time" : "have not reported inventory"}, so their problems cannot be evaluated.`
-    );
-  }
-  if (coverage.aged) {
-    notes.push(
-      coverage.total === 1
-        ? "The inventory is stale, so the current state is unknown."
-        : `${coverage.aged} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
-    );
-  }
-  return notes.join(" ");
-}
-
-function unobservedText(frozen: boolean) {
-  return frozen
-    ? "No cluster in scope has a saved observation at this time."
-    : "No cluster in scope has reported inventory yet.";
-}
-
-function hiddenCopy(props: EmptyProps): EmptyCopy {
-  const count = props.graph.hiddenSystem;
-  const verb = count === 1 ? "is" : "are";
-  if (props.graph.grouped) {
-    return {
-      icon: Network,
-      title: "Only system namespaces have resources",
-      description: `${counted(count, "system namespace")} with resources ${verb} hidden by the current filters.`,
-    };
-  }
-  if (props.search) {
-    return {
-      icon: props.problems ? TriangleAlert : Network,
-      title: `No ${props.problems ? "problem resources" : "topology"} match “${props.search}” outside system namespaces`,
-      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.`,
-    };
-  }
-  const notes = coverageNotes(props);
-  return {
-    icon: TriangleAlert,
-    title: "Problems are in system namespaces",
-    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}`,
-  };
-}
-
-function scopeText(namespace: string) {
-  return namespace === "all" ? "any namespace" : namespace;
-}
-
-function emptyCopy(props: EmptyProps): EmptyCopy {
-  const { graph, problems, search, showSystem, frozen } = props;
-  const scope = scopeText(props.namespace);
-  const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads or unready nodes in ${scope}.`;
-  switch (emptyTopology(graph, { problems, search }, props.coverage)) {
-    case "hiddenSystem":
-      return hiddenCopy(props);
-    case "namespaces":
-      return {
-        icon: Network,
-        title: "No namespaces observed",
-        description: props.coverage.observed
-          ? "The inventory has no namespaced resources to draw."
-          : unobservedText(frozen),
-      };
-    case "noMatch":
-      return {
-        icon: Network,
-        title: `No ${problems ? "problem resources" : "topology"} match “${search}”`,
-        description: `Nothing in ${scope} matches.${
-          graph.unshown
-            ? ` ${graph.unshown} matching volume, EndpointSlice or idle ReplicaSet record${graph.unshown === 1 ? " has" : "s have"} no card; the List view shows them.`
-            : " Try a name, kind, namespace or status."
-        }`,
-      };
-    case "unobserved":
-      return {
-        icon: Network,
-        title: "No observations in scope",
-        description: `${unobservedText(frozen)} Problems cannot be evaluated.`,
-      };
-    case "partial":
-      return {
-        icon: Clock,
-        title: props.coverage.aged
-          ? "No problems in the last inventory"
-          : "No problems in the observed clusters",
-        description: `${coverageNotes(props)} ${problemList}`,
-      };
-    case "healthy":
-      return {
-        icon: CircleCheck,
-        title: "No problems observed",
-        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}`,
-      };
-    default:
-      return {
-        icon: Network,
-        title: "No services or workloads observed",
-        description: props.coverage.observed
-          ? `Nothing to draw in ${scope}.${system}`
-          : unobservedText(frozen),
-      };
-  }
-}
-
-function TopologyEmpty(props: EmptyProps) {
-  const { title, description, icon } = emptyCopy(props);
-  return (
-    <EmptyState
-      className="max-w-lg bg-card"
-      description={description}
-      icon={icon}
-      title={title}
+    <div
+      className={
+        floating
+          ? "pointer-events-none absolute inset-x-3 bottom-3 z-10 flex justify-center"
+          : "flex justify-center border-t px-3 py-2"
+      }
     >
-      {props.graph.hiddenSystem > 0 && props.onShowSystem && (
-        <Button
-          className="h-9 sm:h-8"
-          onClick={props.onShowSystem}
-          size="sm"
-          variant="outline"
-        >
-          Include system resources
-        </Button>
-      )}
-    </EmptyState>
-  );
-}
-
-function rowMeta(item: GraphItem, now: number) {
-  const { view, entity } = item;
-  const parts = [entity.kind, resourceStatus(entity)];
-  if (entity.kind === "Ingress") {
-    parts.splice(1, 1, entity.hosts?.join(", ") || "no host rule");
-  }
-  if (entity.ready != null && entity.desired != null) {
-    parts.push(`${entity.ready}/${entity.desired} ready`);
-  }
-  if (entity.kind === "Pod") {
-    parts.push(`${entity.restarts ?? 0} restarts`);
-    const node = nodeName(view, entity.nodeUid);
-    if (node) {
-      parts.push(`on ${node}`);
-    }
-  }
-  if (item.autoscalers?.length) {
-    parts.push("autoscaled");
-  }
-  if (staleView(view, now)) {
-    parts.push("stale");
-  }
-  return parts.join(" · ");
-}
-
-interface ListProps {
-  expanded: string[];
-  now: number;
-  onExpand: (id: string) => void;
-  onInspect: Inspect;
-  onNamespace: (namespace: string) => void;
-}
-
-function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
-  const { item } = entry;
-  const { view, entity } = item;
-  const problem = itemProblem(item, props.now);
-  const tone = toneOf(entity, problem, staleView(view, props.now));
-  const pods = ["Pod", "Namespace"].includes(entity.kind)
-    ? 0
-    : relatedPods(view, entity).length;
-  const open = props.expanded.includes(item.id);
-  return (
-    <li>
-      <div className="flex items-center gap-1">
-        <button
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() =>
-            entity.kind === "Namespace"
-              ? props.onNamespace(entity.name)
-              : props.onInspect(view, entity)
-          }
-          type="button"
-        >
-          <KindBadge kind={entity.kind} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate font-mono text-sm">
-              {entity.name}
-            </span>
-            <span className="block truncate text-muted-foreground text-xs">
-              {rowMeta(item, props.now)}
-            </span>
-          </span>
-          <StatusIcon className="size-4" tone={tone} />
-        </button>
-        {pods > 0 && (
-          <Button
-            aria-expanded={open}
-            aria-label={`${open ? "Hide" : "Show"} ${pods} pods for ${entity.name}`}
-            className="h-9 shrink-0 px-2 text-xs tabular-nums"
-            onClick={() => props.onExpand(item.id)}
-            size="sm"
-            variant="ghost"
-          >
-            {pods} pod{pods === 1 ? "" : "s"}
-            {open ? (
-              <ChevronUp aria-hidden="true" />
-            ) : (
-              <ChevronDown aria-hidden="true" />
-            )}
-          </Button>
+      <div
+        className={cn(
+          "pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 text-muted-foreground text-xs",
+          floating &&
+            "rounded-2xl border bg-card/95 px-3.5 py-1.5 shadow-sm backdrop-blur"
         )}
+      >
+        <span className="tabular-nums">{counts(graph)}</span>
+        {!graph.grouped && (
+          <ul
+            aria-label="Relationship legend"
+            className="hidden items-center gap-x-3 md:flex"
+          >
+            <LegendItem dash="6 4" label="routes" />
+            <LegendItem label="endpoints" />
+            <LegendItem dash="2 4" label="ownership · placement" />
+          </ul>
+        )}
+        <span className="font-medium text-foreground">
+          configured structure · traffic not measured
+        </span>
       </div>
-      {entry.children.length > 0 && (
-        <ul className="ml-[23px] border-l pl-1.5">
-          {entry.children.map((child) => (
-            <TreeRow entry={child} key={child.key} {...props} />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-function TopologyList({
-  graph,
-  ...props
-}: ListProps & { graph: ServiceGraph }) {
-  const tree = useMemo(() => topologyTree(graph), [graph]);
-  return (
-    <ul aria-label="Service topology list" className="space-y-0.5">
-      {tree.map((entry) => (
-        <TreeRow entry={entry} key={entry.key} {...props} />
-      ))}
-    </ul>
+    </div>
   );
 }

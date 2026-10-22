@@ -1,97 +1,84 @@
-import type { ClusterView, Lifecycle } from "@jood-monitor/api-client";
+import type { ClusterView } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
-import type { UseQueryResult } from "@tanstack/react-query";
-import { ArrowRight, Server } from "lucide-react";
+import { ArrowRight, Server, SlidersHorizontal } from "lucide-react";
 import { useDisplay } from "../hooks/display";
 import {
   type Attention,
   attentionSummary,
   clusterStatus,
-  observationCoverage,
 } from "../lib/attention";
-import { describeEvent } from "../lib/events";
-import {
-  compactCpu,
-  compactMemory,
-  percent,
-  percentage,
-  podReady,
-} from "../lib/infrastructure";
-import { freshness, inventoryFreshness, nodeTotals } from "../lib/metrics";
+import { percent } from "../lib/infrastructure";
+import { nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
-import { type AttentionActions, AttentionList } from "./attention-list";
-import { Section } from "./page";
 import { MetricBar } from "./resource-status";
-import { Resources } from "./resources";
 import { SeverityIcon, severityTone } from "./severity";
 import { TimeText } from "./time";
+import { Widget } from "./widget-card";
+import {
+  clusterCurrent,
+  fleetTiles,
+  nodeCounts,
+  podCounts,
+  type StatTile,
+  type StatTone,
+} from "./widget-model";
 
-const finishedPhases = ["Succeeded", "Completed", "Failed"];
+// Fleet and Clusters widgets for the observability dashboard. Values come
+// from observed inventory and fresh measurements only; gaps stay visible.
 
-function podCounts(views: ClusterView[]) {
-  const pods = views.flatMap((view) =>
-    view.inventory.entities.filter(
-      (entity) =>
-        entity.kind === "Pod" && !finishedPhases.includes(entity.status)
-    )
-  );
-  const known = pods.filter((pod) => podReady(pod) != null);
-  return {
-    total: pods.length,
-    known: known.length,
-    ready: pods.filter((pod) => podReady(pod) === true).length,
-  };
-}
+type Navigate = (view: string, extra?: Partial<SearchState>) => void;
 
-function nodeCounts(views: ClusterView[]) {
-  const nodes = views.flatMap((view) =>
-    view.inventory.entities.filter((entity) => entity.kind === "Node")
-  );
-  return {
-    total: nodes.length,
-    ready: nodes.filter((node) => node.status === "True").length,
-  };
-}
+const toneClass: Record<StatTone, string> = {
+  critical: "text-destructive-text",
+  warning: "text-warning-text",
+  ok: "text-success-text",
+};
 
-function Tile({
-  label,
-  value,
-  detail,
-  tone,
-  onClick,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: string;
-  onClick?: () => void;
-}) {
+function Tile({ tile, onClick }: { tile: StatTile; onClick?: () => void }) {
   const body = (
     <>
-      <p className="flex items-center justify-between text-muted-foreground text-xs">
-        {label}
+      <span className="flex items-center justify-center gap-1 font-medium text-xs">
+        {tile.label}
         {onClick && (
-          <ArrowRight className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          <ArrowRight
+            aria-hidden
+            className="size-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          />
         )}
-      </p>
-      <p
+      </span>
+      <span
         className={cn(
-          "mt-2 font-semibold text-2xl tabular-nums tracking-tight",
-          tone
+          "mt-1.5 flex items-center justify-center gap-1.5 font-semibold text-2xl tabular-nums tracking-tight",
+          tile.tone && toneClass[tile.tone]
         )}
       >
-        {value}
-      </p>
-      <p className="mt-1 truncate text-muted-foreground text-xs">{detail}</p>
+        {(tile.severity || tile.tone === "ok") && (
+          <SeverityIcon
+            className="size-4"
+            covered={tile.tone === "ok"}
+            decorative
+            severity={tile.severity}
+          />
+        )}
+        {tile.value}
+      </span>
+      <span className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+        {tile.detail}
+      </span>
     </>
   );
+  const shell =
+    "flex min-h-28 flex-col items-center justify-center rounded-lg bg-muted/40 px-3 py-4 text-center";
   if (!onClick) {
-    return <div className="rounded-lg border bg-card p-4">{body}</div>;
+    return <div className={shell}>{body}</div>;
   }
   return (
     <button
-      className="group rounded-lg border bg-card p-4 text-left outline-none transition-colors hover:border-ring/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        shell,
+        "group outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+      )}
       onClick={onClick}
       type="button"
     >
@@ -100,367 +87,38 @@ function Tile({
   );
 }
 
-type Navigate = (view: string, extra?: Partial<SearchState>) => void;
-
-function severityCounts(summary: ReturnType<typeof attentionSummary>) {
-  return [
-    summary.critical && `${summary.critical} critical`,
-    summary.warning &&
-      `${summary.warning} warning${summary.warning === 1 ? "" : "s"}`,
-    summary.info && `${summary.info} info`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-type Coverage = ReturnType<typeof observationCoverage>;
-
-// Problems are reported before coverage: a heartbeat without inventory is
-// still an observation that needs attention.
-function panelHeading(coverage: Coverage, problems: number) {
-  if (problems) {
-    return "Needs attention";
-  }
-  return coverage.observed
-    ? "No problems observed"
-    : "No observations in scope";
-}
-
-// Green only when every cluster in scope has observed inventory.
-function NoProblems({
-  coverage,
-  frozen,
-}: {
-  coverage: Coverage;
-  frozen: boolean;
-}) {
-  const scope = coverage.total === 1 ? "cluster" : "clusters";
-  if (coverage.missing) {
-    return (
-      <p className="flex items-center gap-2 px-4 py-4 text-muted-foreground text-sm">
-        <SeverityIcon decorative />
-        {coverage.observed
-          ? `No problems in the ${coverage.observed} observed ${coverage.observed === 1 ? "cluster" : "clusters"}; ${coverage.missing} without ${frozen ? "a saved observation" : "inventory"} cannot be evaluated.`
-          : `Nothing is ${frozen ? "saved for this time" : "observed yet"}, so problems cannot be evaluated.`}
-      </p>
-    );
-  }
-  return (
-    <p className="flex items-center gap-2 px-4 py-4 text-muted-foreground text-sm">
-      <SeverityIcon covered decorative />
-      {`No readiness, pressure${frozen ? "" : " or freshness"} problems in the observed ${scope}.`}
-    </p>
-  );
-}
-
-function AttentionPanel({
+export function FleetWidget({
+  views,
   attention,
-  views,
-  actions,
   onNavigate,
+  className,
 }: {
+  views: ClusterView[];
   attention: Attention[];
-  views: ClusterView[];
-  actions: AttentionActions;
   onNavigate: Navigate;
+  className?: string;
 }) {
-  const { frozen, referenceTime } = useDisplay();
-  const summary = attentionSummary(attention);
-  const live = attention.filter((item) => !item.terminal);
-  const coverage = observationCoverage(views, referenceTime);
-  return (
-    <section
-      aria-labelledby="attention-heading"
-      className="overflow-hidden rounded-lg border bg-card"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-        <h2
-          className="flex items-center gap-2 font-medium text-sm"
-          id="attention-heading"
-        >
-          <SeverityIcon covered={!coverage.missing} severity={summary.worst} />
-          {panelHeading(coverage, live.length)}
-          <span className="font-normal text-muted-foreground">
-            {severityCounts(summary)}
-          </span>
-        </h2>
-        {attention.length > 0 && (
-          <Button
-            className="h-7 text-xs"
-            onClick={() => onNavigate("attention")}
-            size="sm"
-            variant="ghost"
-          >
-            View all in Attention
-            <ArrowRight className="size-3" />
-          </Button>
-        )}
-      </div>
-      {live.length > 0 && (
-        <AttentionList actions={actions} items={live.slice(0, 5)} />
-      )}
-      {!live.length && <NoProblems coverage={coverage} frozen={frozen} />}
-      {(live.length > 5 || summary.finished > 0) && (
-        <p className="border-t px-4 py-2 text-muted-foreground text-xs">
-          {live.length > 5 && `${live.length - 5} more problems. `}
-          {summary.finished > 0 &&
-            `${summary.finished} finished pod${summary.finished === 1 ? "" : "s"} with failures retained in Kubernetes. `}
-          <button
-            className="text-foreground underline underline-offset-2"
-            onClick={() => onNavigate("attention")}
-            type="button"
-          >
-            Review in Attention
-          </button>
-        </p>
-      )}
-    </section>
-  );
-}
-
-function OverviewTiles({
-  views,
-  onNavigate,
-}: {
-  views: ClusterView[];
-  onNavigate: Navigate;
-}) {
-  const { referenceTime } = useDisplay();
+  const { referenceTime, frozen } = useDisplay();
+  const tiles = fleetTiles(views, attention, referenceTime, frozen);
   const totals = nodeTotals(views, referenceTime);
-  const nodes = nodeCounts(views);
-  const pods = podCounts(views);
-  const readinessKnown = pods.known === pods.total;
+  const targets: Partial<Record<StatTile["id"], () => void>> = {
+    servers: () => onNavigate("resources", { tab: "servers" }),
+    pods: () => onNavigate("resources", { tab: "pods" }),
+  };
   return (
-    <>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Tile
-          detail={
-            totals.covered < totals.nodes
-              ? `${totals.covered} of ${totals.nodes} with fresh measurements`
-              : "Kubernetes Ready condition"
-          }
-          label="Servers ready"
-          onClick={() => onNavigate("infrastructure", { mode: "servers" })}
-          tone={nodes.ready < nodes.total ? "text-destructive-text" : undefined}
-          value={nodes.total ? `${nodes.ready} / ${nodes.total}` : "—"}
-        />
-        <Tile
-          detail={`${compactCpu(totals.usedCpu)} of ${compactCpu(totals.coveredCpuCapacity)} measured`}
-          label="CPU used"
-          value={percentage(percent(totals.usedCpu, totals.coveredCpuCapacity))}
-        />
-        <Tile
-          detail={`${compactMemory(totals.usedMemory)} of ${compactMemory(totals.coveredMemoryCapacity)} measured`}
-          label="Memory used"
-          value={percentage(
-            percent(totals.usedMemory, totals.coveredMemoryCapacity)
-          )}
-        />
-        <Tile
-          detail={
-            readinessKnown
-              ? "Active pods, Kubernetes Ready condition"
-              : `${pods.total - pods.known} of ${pods.total} without readiness`
-          }
-          label="Pods ready"
-          onClick={() => onNavigate("workloads", { tab: "pods" })}
-          tone={
-            readinessKnown && pods.ready < pods.total
-              ? "text-warning-text"
-              : undefined
-          }
-          value={
-            readinessKnown && pods.total
-              ? `${pods.ready} / ${pods.total}`
-              : "Unknown"
-          }
-        />
+    <Widget bodyClassName="p-3 sm:p-4" className={className} title="Fleet">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-2">
+        {tiles.map((tile) => (
+          <Tile key={tile.id} onClick={targets[tile.id]} tile={tile} />
+        ))}
       </div>
       {totals.covered < totals.nodes && (
-        <p className="-mt-3 text-muted-foreground text-xs" role="note">
-          CPU and memory percentages cover only the {totals.covered} servers
-          with fresh measurements; the other {totals.nodes - totals.covered}{" "}
-          stay unknown rather than zero.
+        <p className="mt-3 text-muted-foreground text-xs" role="note">
+          CPU and memory cover only the {totals.covered} of {totals.nodes}{" "}
+          servers with fresh measurements; the rest stay unknown, not zero.
         </p>
       )}
-    </>
-  );
-}
-
-function RecentChanges({
-  events,
-  views,
-  onNavigate,
-}: {
-  events: UseQueryResult<Lifecycle[], Error>;
-  views: ClusterView[];
-  onNavigate: Navigate;
-}) {
-  const recent = (events.data ?? [])
-    .map((event) => ({ event, summary: describeEvent(event) }))
-    .filter((item) => !item.summary.rolloutStep)
-    .slice(0, 5);
-  const clusterNames = new Map(
-    views.map((view) => [view.cluster.id, view.cluster.name])
-  );
-  return (
-    <Section
-      action={
-        <Button
-          className="h-7 text-xs"
-          onClick={() => onNavigate("events")}
-          size="sm"
-          variant="ghost"
-        >
-          All events
-          <ArrowRight className="size-3" />
-        </Button>
-      }
-      title="Recent changes"
-    >
-      <div className="rounded-lg border bg-card">
-        {events.isPending && (
-          <p className="px-4 py-3 text-muted-foreground text-sm">
-            Loading changes…
-          </p>
-        )}
-        {events.isError && (
-          <p className="px-4 py-3 text-sm" role="alert">
-            Change history is unavailable.{" "}
-            <button
-              className="underline underline-offset-2"
-              onClick={() => events.refetch()}
-              type="button"
-            >
-              Retry
-            </button>
-          </p>
-        )}
-        {events.isSuccess && !recent.length && (
-          <p className="px-4 py-3 text-muted-foreground text-sm">
-            No node, scaling or resource changes in the selected range.
-          </p>
-        )}
-        <ul className="divide-y">
-          {recent.map(({ event, summary }) => (
-            <li className="px-4 py-3" key={event.id}>
-              <p className="text-sm leading-snug">{summary.title}</p>
-              <p className="mt-0.5 text-muted-foreground text-xs">
-                <TimeText label="Observed" value={event.observedAt} />
-                {views.length > 1 &&
-                  ` · ${clusterNames.get(event.clusterId) ?? event.clusterId}`}
-              </p>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Section>
-  );
-}
-
-function FirstCluster({ onConnect }: { onConnect: () => void }) {
-  return (
-    <div className="rounded-lg border bg-card p-6">
-      <Server aria-hidden className="mb-3 size-5 text-muted-foreground" />
-      <h2 className="font-medium">Connect your first cluster</h2>
-      <p className="mt-1 max-w-xl text-muted-foreground text-sm">
-        Create an enrollment, install the observer with Helm, and this overview
-        fills in as soon as the first heartbeat and inventory arrive.
-      </p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button onClick={onConnect}>Connect a cluster</Button>
-        <Button
-          nativeButton={false}
-          render={<a href="/docs/agents">Installation guide</a>}
-          variant="outline"
-        />
-      </div>
-    </div>
-  );
-}
-
-export function FleetOverview({
-  views,
-  attention,
-  events,
-  workspaceNames,
-  actions,
-  onNavigate,
-  onCluster,
-  onConnect,
-}: {
-  views: ClusterView[];
-  attention: Attention[];
-  events: UseQueryResult<Lifecycle[], Error>;
-  workspaceNames: Record<string, string>;
-  actions: AttentionActions;
-  onNavigate: Navigate;
-  onCluster: (view: ClusterView) => void;
-  onConnect: () => void;
-}) {
-  const { referenceTime } = useDisplay();
-  if (!views.length) {
-    return <FirstCluster onConnect={onConnect} />;
-  }
-  return (
-    <div className="space-y-6">
-      <AttentionPanel
-        actions={actions}
-        attention={attention}
-        onNavigate={onNavigate}
-        views={views}
-      />
-      <OverviewTiles onNavigate={onNavigate} views={views} />
-      <Section
-        description="Observer and inventory freshness, readiness and measured usage per cluster."
-        title={views.length === 1 ? "Cluster" : `Clusters · ${views.length}`}
-      >
-        <ul className="divide-y overflow-hidden rounded-lg border bg-card">
-          {views.map((view) => (
-            <ClusterRow
-              attention={attention.filter(
-                (item) => item.view.cluster.id === view.cluster.id
-              )}
-              key={view.cluster.id}
-              onCluster={onCluster}
-              onSettings={() =>
-                onNavigate("settings", { cluster: view.cluster.id })
-              }
-              view={view}
-              workspaceName={
-                workspaceNames[view.cluster.workspaceId] ??
-                view.cluster.workspaceId
-              }
-            />
-          ))}
-        </ul>
-      </Section>
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <Section
-          action={
-            <Button
-              className="h-7 text-xs"
-              onClick={() => onNavigate("infrastructure", { mode: "servers" })}
-              size="sm"
-              variant="ghost"
-            >
-              Server details
-              <ArrowRight className="size-3" />
-            </Button>
-          }
-          title="Servers"
-        >
-          <Resources
-            kinds={["Node"]}
-            onInspect={actions.onInspect}
-            referenceTime={referenceTime}
-            search=""
-            views={views}
-          />
-        </Section>
-        <RecentChanges events={events} onNavigate={onNavigate} views={views} />
-      </div>
-    </div>
+    </Widget>
   );
 }
 
@@ -483,6 +141,48 @@ function readyCount(
   return known === total ? `${ready}/${total}` : "Unknown";
 }
 
+function Freshness({ view, current }: { view: ClusterView; current: boolean }) {
+  const { frozen } = useDisplay();
+  if (frozen) {
+    return (
+      <p className="mt-1 text-muted-foreground text-xs">
+        Saved inventory sampled{" "}
+        <TimeText
+          absolute
+          label="Inventory source time"
+          value={view.inventory.sourceTime}
+        />
+      </p>
+    );
+  }
+  return (
+    <p
+      className={cn(
+        "mt-1 text-xs",
+        current ? "text-muted-foreground" : "text-warning-text"
+      )}
+    >
+      {view.cluster.heartbeatAt ? (
+        <>
+          Heartbeat{" "}
+          <TimeText
+            label="Last observer heartbeat"
+            value={view.cluster.heartbeatAt}
+          />{" "}
+          · Inventory{" "}
+          <TimeText
+            label="Inventory source time"
+            value={view.inventory.sourceTime}
+          />
+          {!current && <span className="sr-only"> (not current)</span>}
+        </>
+      ) : (
+        "No heartbeat yet. Install the observer to start collection."
+      )}
+    </p>
+  );
+}
+
 function ClusterRow({
   view,
   attention,
@@ -499,72 +199,55 @@ function ClusterRow({
   const { referenceTime, frozen } = useDisplay();
   const summary = attentionSummary(attention);
   const totals = nodeTotals([view], referenceTime);
-  const nodes = nodeCounts([view]);
-  const pods = podCounts([view]);
   const status = clusterStatus(view, summary, referenceTime, frozen);
-  const current =
-    freshness(view.cluster.heartbeatAt, referenceTime) === "fresh" &&
-    inventoryFreshness(view.inventory.sourceTime, referenceTime) === "fresh";
+  const current = clusterCurrent(view, referenceTime, frozen);
   return (
-    <li className="grid gap-4 p-4 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center">
-      <div className="min-w-0">
-        <p className="flex items-center gap-2 font-medium text-sm">
-          <SeverityIcon
-            covered={status.covered}
-            decorative
-            severity={status.severity}
-          />
-          <span className="truncate">{view.cluster.name}</span>
-          <span
-            className={cn(
-              "font-normal text-xs",
-              severityTone(status.severity, status.covered)
-            )}
-          >
-            {status.label}
-          </span>
-        </p>
-        <p className="mt-1 truncate text-muted-foreground text-xs">
-          {workspaceName} · {view.cluster.environment}
-          {!frozen && ` · ${view.profile.name} collection`}
-        </p>
-        {!frozen && (
-          <p
-            className={cn(
-              "mt-1 text-xs",
-              current ? "text-muted-foreground" : "text-warning-text"
-            )}
-          >
-            {view.cluster.heartbeatAt ? (
-              <>
-                Heartbeat{" "}
-                <TimeText
-                  label="Last observer heartbeat"
-                  value={view.cluster.heartbeatAt}
-                />{" "}
-                · Inventory{" "}
-                <TimeText
-                  label="Inventory source time"
-                  value={view.inventory.sourceTime}
-                />
-              </>
-            ) : (
-              "No heartbeat received yet — install the observer to start collection"
-            )}
+    <li className="grid gap-4 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] lg:items-center">
+      <div className="flex min-w-0 gap-3">
+        <span
+          aria-hidden
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/40"
+        >
+          <Server className="size-4 text-muted-foreground" />
+        </span>
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="truncate font-semibold text-sm">
+              {view.cluster.name}
+            </span>
+            <span
+              className={cn(
+                "flex items-center gap-1 text-xs",
+                severityTone(status.severity, status.covered)
+              )}
+            >
+              <SeverityIcon
+                className="size-3.5"
+                covered={status.covered}
+                decorative
+                severity={status.severity}
+              />
+              {status.label}
+            </span>
           </p>
-        )}
+          <p className="mt-0.5 truncate text-muted-foreground text-xs">
+            {workspaceName} · {view.cluster.environment}
+            {!frozen && ` · ${view.profile.name} collection`}
+          </p>
+          <Freshness current={current} view={view} />
+        </div>
       </div>
       <dl className="grid grid-cols-2 gap-3 text-xs">
         <div>
           <dt className="text-muted-foreground">Servers ready</dt>
-          <dd className="mt-0.5 font-medium tabular-nums">
-            {readyCount(status.covered, nodes)}
+          <dd className="mt-0.5 font-medium text-sm tabular-nums">
+            {readyCount(status.covered, nodeCounts([view]))}
           </dd>
         </div>
         <div>
           <dt className="text-muted-foreground">Pods ready</dt>
-          <dd className="mt-0.5 font-medium tabular-nums">
-            {readyCount(status.covered, pods)}
+          <dd className="mt-0.5 font-medium text-sm tabular-nums">
+            {readyCount(status.covered, podCounts([view]))}
           </dd>
         </div>
       </dl>
@@ -578,25 +261,79 @@ function ClusterRow({
           value={percent(totals.usedMemory, totals.coveredMemoryCapacity)}
         />
       </div>
-      <div className="flex gap-2 md:flex-col">
+      <div className="flex gap-2 lg:flex-col">
         <Button
-          className="h-8 flex-1 text-xs"
+          aria-label={`Explore ${view.cluster.name}`}
+          className="h-8 flex-1 text-xs lg:flex-none"
           onClick={() => onCluster(view)}
           size="sm"
           variant="outline"
         >
           Explore
-          <ArrowRight className="size-3" />
+          <ArrowRight aria-hidden className="size-3.5" />
         </Button>
         <Button
-          className="h-8 flex-1 text-xs"
+          aria-label={`Collection for ${view.cluster.name}`}
+          className="h-8 flex-1 text-xs lg:flex-none"
           onClick={onSettings}
           size="sm"
           variant="ghost"
         >
+          <SlidersHorizontal aria-hidden className="size-3.5" />
           Collection
         </Button>
       </div>
     </li>
+  );
+}
+
+export function ClustersWidget({
+  views,
+  attention,
+  workspaceNames,
+  onCluster,
+  onNavigate,
+  className,
+}: {
+  views: ClusterView[];
+  attention: Attention[];
+  workspaceNames: Record<string, string>;
+  onCluster: (view: ClusterView) => void;
+  onNavigate: Navigate;
+  className?: string;
+}) {
+  return (
+    <Widget
+      className={className}
+      description="Observer and inventory freshness, readiness and measured usage per cluster."
+      title={
+        <>
+          Clusters
+          <span className="font-normal text-muted-foreground text-sm tabular-nums">
+            {views.length}
+          </span>
+        </>
+      }
+    >
+      <ul className="divide-y">
+        {views.map((view) => (
+          <ClusterRow
+            attention={attention.filter(
+              (item) => item.view.cluster.id === view.cluster.id
+            )}
+            key={view.cluster.id}
+            onCluster={onCluster}
+            onSettings={() =>
+              onNavigate("settings", { cluster: view.cluster.id })
+            }
+            view={view}
+            workspaceName={
+              workspaceNames[view.cluster.workspaceId] ??
+              view.cluster.workspaceId
+            }
+          />
+        ))}
+      </ul>
+    </Widget>
   );
 }

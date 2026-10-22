@@ -77,21 +77,6 @@ function routeFor(view: string, extra: Partial<SearchState>) {
   return { view: legacy[view] ?? view };
 }
 
-// Resource components still distinguish the old infrastructure and workloads
-// screens; derive that from the project tab until they read the tab directly.
-function resourceSearch(search: SearchState): SearchState {
-  if (search.view === "architecture") {
-    return { ...search, view: "infrastructure", mode: "services" };
-  }
-  if (search.tab === "servers") {
-    return { ...search, view: "infrastructure", mode: "servers" };
-  }
-  if (search.tab === "all") {
-    return { ...search, view: "infrastructure", mode: "list" };
-  }
-  return { ...search, view: "workloads" };
-}
-
 export function Dashboard() {
   const search = useSearch({ from: "/" });
   return (
@@ -286,11 +271,10 @@ function PageBody({
     case "resources":
       return (
         <ResourceBrowser
-          allViews={data.allViews}
           inspect={inspect}
           namespaces={data.namespaces}
           referenceTime={referenceTime}
-          search={resourceSearch(search)}
+          search={search}
           update={update}
           views={data.views}
         />
@@ -316,10 +300,12 @@ function PageBody({
     case "workspaces":
       return (
         <WorkspacesPage
+          loading={data.workspaces.isPending}
           onNewWorkspace={onNewWorkspace}
           onOpen={(workspace) =>
             go("architecture", { workspace, cluster: undefined })
           }
+          scope={search.workspace}
           views={data.allViews}
           workspaces={data.workspaces.data ?? []}
         />
@@ -441,8 +427,7 @@ function DashboardContent() {
                     range={search.range}
                   />
                 )}
-                {(search.view === "settings" ||
-                  search.view === "workspaces") && (
+                {search.view === "settings" && (
                   <Button
                     className="h-8"
                     disabled={frozen || snapshot.isError}
@@ -531,6 +516,7 @@ function DashboardContent() {
           })
         }
         onInspect={inspect}
+        onRange={(range) => update({ range }, true)}
         range={search.range}
         referenceTime={referenceTime}
         scope={search.workspace}

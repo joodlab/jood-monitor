@@ -12,18 +12,23 @@ type Step = "install" | "waiting";
 
 // Guided connection: details (or the cluster to renew), install commands
 // with the one-time token, then the first heartbeat. The token lives only in
-// this component's state and disappears when the dialog closes.
+// this component's state and disappears when the dialog closes. `renew`
+// opens the renewal step for that cluster, as Settings → Enrollment does.
 export function EnrollForm({
   clusters,
   workspace,
+  renew,
 }: {
   clusters: Cluster[];
   workspace: string;
+  renew?: Cluster;
 }) {
-  const [mode, setMode] = useState<"new" | "recover">("new");
+  const [mode, setMode] = useState<"new" | "recover">(
+    renew ? "recover" : "new"
+  );
   const [recoverTarget, setRecoverTarget] = useState<
-    Cluster | { id: string }
-  >();
+    Cluster | { id: string } | undefined
+  >(renew);
   const [enrollment, setEnrollment] = useState<Enrollment>();
   const [step, setStep] = useState<Step>("install");
   const [waitingSince, setWaitingSince] = useState(0);

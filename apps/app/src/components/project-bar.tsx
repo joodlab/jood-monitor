@@ -15,6 +15,7 @@ import { cn } from "@jood-monitor/ui/utils";
 import {
   Activity,
   BookOpen,
+  CalendarClock,
   Check,
   ChevronsUpDown,
   Moon,
@@ -25,7 +26,7 @@ import {
   Settings2,
   Sun,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
 import { freshness } from "../lib/metrics";
@@ -79,7 +80,7 @@ function Crumb({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`${label}: ${value}`}
-        className="flex min-w-0 max-w-52 items-center gap-1.5 rounded-md px-2 py-1.5 font-medium text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-muted"
+        className="flex min-w-0 max-w-[38vw] items-center gap-1.5 rounded-md px-1.5 py-1.5 font-medium text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-muted sm:max-w-52 sm:px-2"
       >
         <span className="truncate">{value}</span>
         <ChevronsUpDown
@@ -101,7 +102,7 @@ function clusterDot(view: ClusterView, now: number) {
     : "bg-warning";
 }
 
-function PreferencesMenu() {
+function PreferencesMenu({ onTimeTravel }: { onTimeTravel: () => void }) {
   const display = useDisplay();
   return (
     <DropdownMenu>
@@ -142,6 +143,10 @@ function PreferencesMenu() {
           </DropdownMenuRadioGroup>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        <DropdownMenuItem className="sm:hidden" onClick={onTimeTravel}>
+          <CalendarClock />
+          View a saved observation…
+        </DropdownMenuItem>
         {/* biome-ignore lint/a11y/useAnchorContent: the menu item children render inside the link. */}
         <DropdownMenuItem render={<a href="/docs" />}>
           <BookOpen />
@@ -155,9 +160,13 @@ function PreferencesMenu() {
 function LiveControl({
   connection,
   onFreeze,
+  timeTravel,
+  onTimeTravel,
 }: {
   connection: string;
   onFreeze: (at?: string) => void;
+  timeTravel: boolean;
+  onTimeTravel: (open: boolean) => void;
 }) {
   const { frozen, at } = useDisplay();
   const connected = connection === "connected";
@@ -185,7 +194,12 @@ function LiveControl({
             !(frozen || connected) && "bg-warning"
           )}
         />
-        <span role="status">
+        {/* Phones show only the dot while live; text appears whenever the
+            stream is reconnecting or the view is frozen. */}
+        <span
+          className={cn(!frozen && connected && "sr-only sm:not-sr-only")}
+          role="status"
+        >
           {frozen && "Frozen"}
           {!frozen && (connected ? "Live" : "Reconnecting…")}
         </span>
@@ -195,7 +209,13 @@ function LiveControl({
           <Pause aria-hidden className="size-3 text-muted-foreground" />
         )}
       </button>
-      <ObservationTime at={at} onSelect={(value) => onFreeze(value)} />
+      <ObservationTime
+        at={at}
+        onOpenChange={onTimeTravel}
+        onSelect={(value) => onFreeze(value)}
+        open={timeTravel}
+        triggerClassName="hidden sm:inline-flex"
+      />
     </div>
   );
 }
@@ -232,12 +252,16 @@ export function ProjectBar({
   onSearch: () => void;
 }) {
   const { now, frozen, at, timeZone } = useDisplay();
+  const [timeTravel, setTimeTravel] = useState(false);
   const clusterName = cluster
     ? (clusters.find((item) => item.cluster.id === cluster)?.cluster.name ??
       cluster)
     : "All clusters";
   return (
-    <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
+    <header
+      className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur"
+      data-project-bar
+    >
       <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 px-3 sm:px-4">
         <nav
           aria-label="Workspace and cluster"
@@ -328,8 +352,13 @@ export function ProjectBar({
               Ctrl/⌘ K
             </kbd>
           </Button>
-          <LiveControl connection={connection} onFreeze={onFreeze} />
-          <PreferencesMenu />
+          <LiveControl
+            connection={connection}
+            onFreeze={onFreeze}
+            onTimeTravel={setTimeTravel}
+            timeTravel={timeTravel}
+          />
+          <PreferencesMenu onTimeTravel={() => setTimeTravel(true)} />
         </div>
       </div>
       <nav

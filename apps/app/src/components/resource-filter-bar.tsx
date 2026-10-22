@@ -10,16 +10,7 @@ import {
   SelectValue,
 } from "@jood-monitor/ui/select";
 import { cn } from "@jood-monitor/ui/utils";
-import {
-  List,
-  type LucideIcon,
-  Network,
-  Search,
-  Server,
-  Square,
-  SquareCheck,
-  X,
-} from "lucide-react";
+import { Search, Square, SquareCheck, X } from "lucide-react";
 import {
   type ReactNode,
   useEffect,
@@ -33,39 +24,39 @@ import {
   type KindSummary,
   kindSummary,
   type ResourceFilter,
+  type ResourceTab,
 } from "../lib/resource-table";
 import type { SearchState } from "../schemas/monitor";
 
-// One filter bar for Infrastructure and Workloads. Every filter stays
-// visible; one that cannot apply to the current mode is disabled and a
-// visible note, linked with aria-describedby, says why, so no hidden value
-// silently narrows the results.
+// One filter bar for every Resources tab. Filters edit the URL in place
+// (replace), so Back leaves the page rather than undoing keystrokes. The kind
+// filter appears on the All tab only, where it applies; every other tab is
+// itself a kind, so no hidden value silently narrows its results. A filter
+// that cannot apply is disabled and a visible note, linked with
+// aria-describedby, says why. The cluster is chosen in the project bar.
 
 type Update = (next: Partial<SearchState>, replace?: boolean) => void;
 
-const modes: { id: string; label: string; icon: LucideIcon }[] = [
-  { id: "services", label: "Topology", icon: Network },
-  { id: "servers", label: "Servers", icon: Server },
-  { id: "list", label: "List", icon: List },
-];
-
 const COMMON_KINDS = "common";
+
+const placeholders: Partial<Record<ResourceTab, string>> = {
+  servers: "Search pods, workloads or servers…",
+};
 
 export function ResourceFilterBar({
   search,
   update,
-  allViews,
   views,
   namespaces,
+  tab,
 }: {
   search: SearchState;
   update: Update;
-  allViews: ClusterView[];
   views: ClusterView[];
   namespaces: string[];
+  tab: ResourceTab;
 }) {
-  const infrastructure = search.view === "infrastructure";
-  const listMode = infrastructure && search.mode === "list";
+  const listMode = tab === "all";
   const kinds = useMemo(
     () =>
       listMode
@@ -79,16 +70,9 @@ export function ResourceFilterBar({
     [listMode, views, search.q, search.namespace, search.system]
   );
   const replace = (next: Partial<SearchState>) => update(next, true);
-  const kindNote = useId();
   const systemNote = useId();
   const systemNamespace = isSystemNamespace(search.namespace);
   const notes: FilterNote[] = [];
-  if (infrastructure && !listMode) {
-    notes.push({
-      id: kindNote,
-      text: "The kind filter applies to the List view.",
-    });
-  }
   if (systemNamespace) {
     notes.push({
       id: systemNote,
@@ -97,25 +81,21 @@ export function ResourceFilterBar({
   }
   return (
     <div className="space-y-2">
-      {infrastructure && (
-        <ModeSwitch mode={search.mode} onMode={(mode) => update({ mode })} />
-      )}
       <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-        <SearchField onCommit={(q) => replace({ q })} value={search.q} />
-        <ClusterSelect
-          allViews={allViews}
-          onChange={(cluster) => replace({ cluster, namespace: "all" })}
-          value={search.cluster}
+        <SearchField
+          onCommit={(q) => replace({ q })}
+          placeholder={placeholders[tab]}
+          value={search.q}
         />
         <NamespaceSelect
+          // Alone on its row on phones when the kind filter is absent.
+          className={listMode ? undefined : "col-span-2"}
           namespaces={namespaces}
           onChange={(namespace) => replace({ namespace })}
           value={search.namespace}
         />
-        {infrastructure && (
+        {listMode && (
           <KindSelect
-            describedBy={listMode ? undefined : kindNote}
-            disabled={!listMode}
             onChange={(kind) => replace({ kind })}
             summary={kinds}
             value={search.kind}
@@ -143,39 +123,6 @@ export function ResourceFilterBar({
         search={search}
       />
     </div>
-  );
-}
-
-function ModeSwitch({
-  mode,
-  onMode,
-}: {
-  mode: string;
-  onMode: (mode: string) => void;
-}) {
-  return (
-    <fieldset className="m-0 grid w-full min-w-0 grid-cols-3 rounded-lg border bg-card p-0.5 sm:inline-grid sm:w-auto">
-      <legend className="sr-only">Infrastructure view</legend>
-      {modes.map((item) => {
-        const active = mode === item.id;
-        return (
-          <Button
-            aria-pressed={active}
-            className={cn(
-              "h-9 gap-1.5 text-sm sm:h-8 sm:px-3",
-              active && "shadow-xs"
-            )}
-            key={item.id}
-            onClick={() => onMode(item.id)}
-            size="sm"
-            variant={active ? "secondary" : "ghost"}
-          >
-            <item.icon aria-hidden className="size-4" />
-            {item.label}
-          </Button>
-        );
-      })}
-    </fieldset>
   );
 }
 
@@ -215,9 +162,11 @@ function useDraft(value: string, commit: (value: string) => void) {
 function SearchField({
   value,
   onCommit,
+  placeholder = "Search name, kind, namespace, status…",
 }: {
   value: string;
   onCommit: (value: string) => void;
+  placeholder?: string;
 }) {
   const { draft, setDraft, flush } = useDraft(value, onCommit);
   return (
@@ -239,7 +188,7 @@ function SearchField({
             flush("");
           }
         }}
-        placeholder="Search name, kind, namespace, status…"
+        placeholder={placeholder}
         type="search"
         value={draft}
       />
@@ -260,54 +209,23 @@ function SearchField({
 
 const selectClass = "h-9 w-full text-xs sm:h-8 sm:w-44";
 
-function ClusterSelect({
-  allViews,
-  value,
-  onChange,
-}: {
-  allViews: ClusterView[];
-  value?: string;
-  onChange: (cluster?: string) => void;
-}) {
-  return (
-    <Select
-      onValueChange={(next) =>
-        onChange(next === "all" || !next ? undefined : next)
-      }
-      value={value ?? "all"}
-    >
-      <SelectTrigger aria-label="Cluster" className={selectClass}>
-        <SelectValue>
-          {value
-            ? (allViews.find((view) => view.cluster.id === value)?.cluster
-                .name ?? value)
-            : "All clusters"}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="all">All clusters</SelectItem>
-        {allViews.map((view) => (
-          <SelectItem key={view.cluster.id} value={view.cluster.id}>
-            {view.cluster.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
 function NamespaceSelect({
   namespaces,
   value,
   onChange,
+  className,
 }: {
   namespaces: string[];
   value: string;
   onChange: (namespace: string) => void;
+  className?: string;
 }) {
   return (
     <Select onValueChange={(next) => onChange(next ?? "all")} value={value}>
-      <SelectTrigger aria-label="Namespace" className={selectClass}>
+      <SelectTrigger
+        aria-label="Namespace"
+        className={cn(selectClass, className)}
+      >
         <SelectValue>{value === "all" ? "All namespaces" : value}</SelectValue>
       </SelectTrigger>
       <SelectContent>
@@ -357,29 +275,20 @@ function FilterNotes({ notes }: { notes: FilterNote[] }) {
 function KindSelect({
   value,
   summary,
-  disabled,
-  describedBy,
   onChange,
 }: {
   value?: string;
   summary?: KindSummary;
-  disabled: boolean;
-  describedBy?: string;
   onChange: (kind?: string) => void;
 }) {
   return (
     <Select
-      disabled={disabled}
       onValueChange={(next) =>
         onChange(next === COMMON_KINDS || !next ? undefined : next)
       }
       value={value ?? COMMON_KINDS}
     >
-      <SelectTrigger
-        aria-describedby={describedBy}
-        aria-label="Kind"
-        className={selectClass}
-      >
+      <SelectTrigger aria-label="Kind" className={selectClass}>
         <SelectValue>{kindLabel(value)}</SelectValue>
       </SelectTrigger>
       <SelectContent>

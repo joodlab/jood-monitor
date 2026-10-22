@@ -21,6 +21,52 @@ import { inventoryFreshness } from "./metrics";
 
 export type TablePreset = "list" | "nodes" | "pods" | "services" | "workloads";
 
+// The Resources page sub-tabs, in display order.
+export const resourceTabs = [
+  { id: "servers", label: "Servers" },
+  { id: "workloads", label: "Workloads" },
+  { id: "pods", label: "Pods" },
+  { id: "services", label: "Services" },
+  { id: "all", label: "All" },
+] as const;
+export type ResourceTab = (typeof resourceTabs)[number]["id"];
+
+// The kinds each table tab lists. Servers has its own placement view and All
+// lists every kind under the kind filter.
+export const tabKinds: Partial<Record<ResourceTab, string[]>> = {
+  workloads: ["Deployment", "StatefulSet", "DaemonSet"],
+  pods: ["Pod"],
+  services: ["Service"],
+};
+
+function isResourceTab(value: string): value is ResourceTab {
+  return resourceTabs.some((tab) => tab.id === value);
+}
+
+// The tab the Resources page shows. It reads the project tab directly; the
+// previous Infrastructure/Workloads shape is still understood so callers can
+// move over one at a time. (Infrastructure's topology mode is now the
+// Architecture canvas, so it is not a Resources tab.)
+export function resourceTabFor(search: {
+  mode: string;
+  tab: string;
+  view: string;
+}): ResourceTab {
+  if (search.view === "infrastructure" && search.mode === "servers") {
+    return "servers";
+  }
+  if (search.view === "infrastructure" && search.mode === "list") {
+    return "all";
+  }
+  if (
+    isResourceTab(search.tab) &&
+    (search.view === "resources" || tabKinds[search.tab])
+  ) {
+    return search.tab;
+  }
+  return "workloads";
+}
+
 // Kinds that dominate a raw inventory list without helping triage. The list
 // hides them by default and always says how many it hid.
 const noisyKinds = [

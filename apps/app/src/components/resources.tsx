@@ -56,7 +56,7 @@ import {
 import { defaultPageSize, pageSizes } from "../schemas/monitor";
 import { EmptyState } from "./page";
 import { cardFacts, resourceColumns } from "./resource-columns";
-import { StaleInventoryNotice, StatusBadge } from "./resource-status";
+import { KindTile, StaleInventoryNotice, StatusLine } from "./resource-status";
 
 const nouns: Record<TablePreset, [string, string]> = {
   list: ["resource", "resources"],
@@ -236,9 +236,9 @@ function ResourceTable({
   };
   return (
     <div className="space-y-3">
-      <div className="hidden overflow-hidden rounded-lg border sm:block">
+      <div className="hidden overflow-hidden rounded-xl border bg-card sm:block">
         <Table>
-          <TableHeader className="bg-muted/30">
+          <TableHeader className="bg-muted/40">
             {table.getHeaderGroups().map((group) => (
               <TableRow className="hover:bg-transparent" key={group.id}>
                 {group.headers.map((header) => (
@@ -248,7 +248,7 @@ function ResourceTable({
                         ? sortDirection(header.column.getIsSorted())
                         : undefined
                     }
-                    className="text-xs"
+                    className="h-10 px-3 text-xs first:pl-4"
                     key={header.id}
                   >
                     <SortHeader header={header} />
@@ -264,7 +264,7 @@ function ResourceTable({
           </TableBody>
         </Table>
       </div>
-      <ul className="space-y-2 sm:hidden">
+      <ul aria-label={nouns[preset][1]} className="space-y-2 sm:hidden">
         {rows.map((row) => (
           <li key={row.id}>
             <ResourceCard
@@ -312,7 +312,7 @@ function ResourceTableRow({
       onClick={open}
     >
       {row.getVisibleCells().map((cell) => (
-        <TableCell key={cell.id}>
+        <TableCell className="px-3 py-2.5 first:pl-4" key={cell.id}>
           {flexRender(cell.column.columnDef.cell, cell.getContext())}
         </TableCell>
       ))}
@@ -347,6 +347,8 @@ function SortHeader({ header }: { header: Header<ResourceRow, unknown> }) {
   );
 }
 
+// The stacked card for narrow screens, in the manner of a service card: an
+// icon tile and name, the key facts, then a status line.
 function ResourceCard({
   row,
   preset,
@@ -358,33 +360,36 @@ function ResourceCard({
 }) {
   return (
     <button
-      className="w-full rounded-lg border bg-card p-3 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring data-[problem=true]:border-warning/40 focus-visible:data-[problem=true]:border-ring"
+      className="flex w-full flex-col gap-3 rounded-xl border bg-card p-4 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring data-[problem=true]:border-warning/50 focus-visible:data-[problem=true]:border-ring"
       data-problem={row.problem}
       onClick={() => inspect(row.view, row.entity)}
       type="button"
     >
-      <span className="flex items-start justify-between gap-2">
-        <span className="min-w-0">
-          <span className="block truncate font-medium font-mono text-sm">
+      <span className="flex w-full min-w-0 items-start gap-3">
+        <KindTile kind={row.entity.kind} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-semibold text-sm">
             {row.entity.name}
           </span>
           <span className="block truncate text-muted-foreground text-xs">
             {row.entity.kind} · {row.view.cluster.name}
           </span>
         </span>
-        <StatusBadge
-          entity={row.entity}
-          problem={row.problem}
-          stale={row.stale}
-        />
       </span>
-      <span className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+      <span className="grid w-full grid-cols-2 gap-x-3 gap-y-2 text-xs">
         {cardFacts(row, preset).map((fact) => (
           <span className="min-w-0" key={fact.label}>
             <span className="block text-muted-foreground">{fact.label}</span>
             <span className="block truncate">{fact.value ?? "—"}</span>
           </span>
         ))}
+      </span>
+      <span className="flex w-full border-t pt-3">
+        <StatusLine
+          entity={row.entity}
+          problem={row.problem}
+          stale={row.stale}
+        />
       </span>
     </button>
   );
@@ -487,6 +492,7 @@ function NoRows({
 }) {
   return (
     <EmptyState
+      className="rounded-xl"
       description={
         hidden?.message ?? "Nothing observed matches the current filters."
       }

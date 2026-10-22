@@ -55,6 +55,7 @@ export function ResourceChart({
   to,
   references = [],
   percentBase,
+  height = 200,
 }: {
   samples: readonly { name: string; sourceTime: string; value: string }[];
   name: string;
@@ -67,6 +68,7 @@ export function ResourceChart({
   references?: readonly Reference[];
   // Reference the latest value is expressed against, e.g. the pod limit.
   percentBase?: Reference;
+  height?: number;
 }) {
   const { timeZone, frozen } = useDisplay();
   const series = useMemo(() => historySamples(samples, name), [samples, name]);
@@ -107,7 +109,7 @@ export function ResourceChart({
             ariaDescription={`${statsSentence(stats, unit)}. Interval ${interval}. Gaps longer than ${GAP_MS / 1000} seconds are left blank.`}
             ariaLabel={`${title} for ${subject}, in ${unit.label}`}
             definition={definition}
-            height={200}
+            height={height}
           />
         </div>
       ) : (

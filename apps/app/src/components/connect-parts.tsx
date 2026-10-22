@@ -26,7 +26,7 @@ export function ConnectSteps({
   return (
     <ol
       aria-label="Connection steps"
-      className="flex flex-wrap gap-x-4 gap-y-2"
+      className="flex flex-wrap gap-x-3 gap-y-2"
     >
       {steps.map((step, index) => {
         const done = index < current;
@@ -40,6 +40,15 @@ export function ConnectSteps({
             )}
             key={step}
           >
+            {index > 0 && (
+              <span
+                aria-hidden
+                className={cn(
+                  "h-px w-5 bg-border",
+                  (done || active) && "bg-success-text/40"
+                )}
+              />
+            )}
             <span
               aria-hidden
               className={cn(

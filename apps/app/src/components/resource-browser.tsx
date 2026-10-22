@@ -5,18 +5,19 @@ import {
   TabsList,
   TabsTrigger,
 } from "@jood-monitor/ui/tabs";
-import { lazy, Suspense, useCallback } from "react";
+import { useCallback } from "react";
 import { isSystemNamespace } from "../lib/infrastructure";
-import type { ResourceFilter } from "../lib/resource-table";
-import type { TopologyLayout } from "../lib/service-graph";
+import {
+  type ResourceFilter,
+  type ResourceTab,
+  resourceTabFor,
+  resourceTabs,
+  tabKinds,
+} from "../lib/resource-table";
 import { defaultPageSize, type SearchState } from "../schemas/monitor";
 import { ResourceFilterBar } from "./resource-filter-bar";
 import { Resources } from "./resources";
 import { Servers } from "./servers";
-
-const Topology = lazy(() =>
-  import("./topology").then((module) => ({ default: module.Topology }))
-);
 
 type Update = (next: Partial<SearchState>, replace?: boolean) => void;
 
@@ -24,54 +25,86 @@ interface ResourcePageProps {
   inspect: (view: ClusterView, entity: Entity) => void;
   referenceTime: number;
   search: SearchState;
-  // `replace` keeps filter edits out of browser history; view, mode and tab
-  // changes push entries so Back returns to the previous screen.
+  // `replace` keeps filter edits out of browser history; tab changes push
+  // entries so Back returns to the previous tab.
   update: Update;
   views: ClusterView[];
 }
 
+// The Resources tab: Railway-style underline sub-tabs (Servers, Workloads,
+// Pods, Services, All) over one shared filter bar. The tab comes from the
+// project tab in the URL; the previous Infrastructure/Workloads search shape
+// is still understood (see resourceTabFor). The topology map that used to
+// live here is the Architecture canvas.
 export function ResourceBrowser({
   search,
   views,
-  allViews,
   inspect,
   update,
   referenceTime,
   namespaces,
-}: ResourcePageProps & { allViews: ClusterView[]; namespaces: string[] }) {
+}: ResourcePageProps & {
+  // No longer read: the cluster is chosen in the project bar. Accepted so
+  // existing callers keep compiling.
+  allViews?: ClusterView[];
+  namespaces: string[];
+}) {
+  const tab = resourceTabFor(search);
+  const props = { inspect, referenceTime, search, update, views };
   return (
-    <>
+    <Tabs
+      className="gap-4"
+      onValueChange={(next) => {
+        if (next !== tab) {
+          update({ tab: String(next) });
+        }
+      }}
+      value={tab}
+    >
+      <ResourceTabList />
       <ResourceFilterBar
-        allViews={allViews}
         namespaces={namespaces}
         search={search}
+        tab={tab}
         update={update}
         views={views}
       />
-      <ResourceViews
-        inspect={inspect}
-        referenceTime={referenceTime}
-        search={search}
-        update={update}
-        views={views}
-      />
-    </>
+      {resourceTabs.map((item) => (
+        <TabsContent key={item.id} value={item.id}>
+          {item.id === tab && <TabView {...props} tab={item.id} />}
+        </TabsContent>
+      ))}
+    </Tabs>
   );
 }
 
-const workloadTabs: Record<string, string[]> = {
-  workloads: ["Deployment", "StatefulSet", "DaemonSet"],
-  pods: ["Pod"],
-  services: ["Service"],
-};
+// The rule under the tabs is an inset shadow, so the active underline draws
+// over it and the row still scrolls sideways on narrow screens.
+const tabListClass =
+  "w-full justify-start gap-0 overflow-x-auto overflow-y-hidden p-0 shadow-[inset_0_-1px_0_var(--color-border)] group-data-[orientation=horizontal]/tabs:h-10";
 
-function ResourceViews({
-  search,
-  views,
-  inspect,
-  update,
-  referenceTime,
-}: ResourcePageProps) {
+const tabTriggerClass =
+  "h-10 flex-none rounded-none border-0 px-2.5 font-normal text-muted-foreground text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-active:text-foreground sm:px-3 group-data-[orientation=horizontal]/tabs:after:inset-x-2.5 group-data-[orientation=horizontal]/tabs:after:bottom-0 sm:group-data-[orientation=horizontal]/tabs:after:inset-x-3";
+
+// Arrow keys move focus between tabs; Enter or Space opens one, so browsing
+// the tab list does not add history entries.
+function ResourceTabList() {
+  return (
+    <TabsList
+      aria-label="Resource type"
+      className={tabListClass}
+      variant="line"
+    >
+      {resourceTabs.map((item) => (
+        <TabsTrigger className={tabTriggerClass} key={item.id} value={item.id}>
+          {item.label}
+        </TabsTrigger>
+      ))}
+    </TabsList>
+  );
+}
+
+function useTableCallbacks(update: Update) {
   const relax = useCallback(
     (patch: Partial<ResourceFilter>) => update(patch, true),
     [update]
@@ -81,24 +114,16 @@ function ResourceViews({
       update({ pageSize: size === defaultPageSize ? undefined : size }, true),
     [update]
   );
-  // Stable callbacks keep the topology from rebuilding every card when this
-  // page re-renders for unrelated reasons. Drilling into a namespace is
-  // navigation, so Back returns to the map.
-  const drill = useCallback(
-    (namespace: string) => update({ namespace }),
-    [update]
-  );
-  // The Graph/List choice lives in the URL, so it survives the topology's
-  // remount; choosing it replaces the entry rather than adding one.
-  const chooseLayout = useCallback(
-    (layout: TopologyLayout) => update({ layout }, true),
-    [update]
-  );
-  const includeSystem = useCallback(
-    () => update({ system: true }, true),
-    [update]
-  );
-  const common = {
+  return { relax, pageSize };
+}
+
+function commonProps({
+  search,
+  views,
+  inspect,
+  referenceTime,
+}: ResourcePageProps) {
+  return {
     onInspect: inspect,
     referenceTime,
     views,
@@ -108,53 +133,22 @@ function ResourceViews({
     showSystem: search.system || isSystemNamespace(search.namespace),
     problems: search.problems,
   };
+}
+
+function TabView(props: ResourcePageProps & { tab: ResourceTab }) {
+  const { relax, pageSize } = useTableCallbacks(props.update);
+  const common = commonProps(props);
+  if (props.tab === "servers") {
+    return <Servers {...common} onRelax={relax} />;
+  }
   const table = {
     ...common,
     onRelax: relax,
-    pageSize: search.pageSize,
+    pageSize: props.search.pageSize,
     onPageSizeChange: pageSize,
   };
-  if (search.view === "workloads") {
-    return (
-      <Tabs
-        onValueChange={(tab) => update({ tab: String(tab) })}
-        value={workloadTabs[search.tab] ? search.tab : "workloads"}
-      >
-        <TabsList>
-          <TabsTrigger value="workloads">Workloads</TabsTrigger>
-          <TabsTrigger value="pods">Pods</TabsTrigger>
-          <TabsTrigger value="services">Services</TabsTrigger>
-        </TabsList>
-        {Object.entries(workloadTabs).map(([tab, kinds]) => (
-          <TabsContent className="mt-4" key={tab} value={tab}>
-            <Resources {...table} kinds={kinds} />
-          </TabsContent>
-        ))}
-      </Tabs>
-    );
+  if (props.tab === "all") {
+    return <Resources {...table} kind={props.search.kind} preset="list" />;
   }
-  if (search.mode === "services") {
-    return (
-      <Suspense
-        fallback={
-          <div className="p-6 text-muted-foreground text-sm" role="status">
-            Loading topology…
-          </div>
-        }
-      >
-        <Topology
-          {...common}
-          key={`${search.workspace}:${search.cluster ?? "all"}:${search.namespace}:${search.at ? "frozen" : "live"}`}
-          layout={search.layout}
-          onLayout={chooseLayout}
-          onNamespace={drill}
-          onShowSystem={includeSystem}
-        />
-      </Suspense>
-    );
-  }
-  if (search.mode === "servers") {
-    return <Servers {...common} onRelax={relax} />;
-  }
-  return <Resources {...table} kind={search.kind} preset="list" />;
+  return <Resources {...table} kinds={tabKinds[props.tab]} />;
 }

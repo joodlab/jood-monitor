@@ -109,32 +109,28 @@
     touch-action: manipulation;
   }
 }
-.react-flow__controls-button {
-  width: 32px;
-  height: 32px;
-  color: var(--foreground);
-  background: var(--card);
-  border-color: var(--border);
-}
-.react-flow__controls-button:focus-visible {
-  outline: 2px solid var(--muted-foreground);
-  outline-offset: -2px;
-}
-.react-flow__controls-button:hover {
-  background: var(--muted);
-}
-.react-flow__controls-button svg {
-  fill: currentColor;
+/* The canvas takes the app's own background; the dotted grid sits on it. */
+.react-flow {
+  --xy-background-color: transparent;
 }
 .react-flow__minimap {
+  overflow: hidden;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
+}
+.react-flow__attribution {
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  border-top-left-radius: 6px;
+}
+.react-flow__attribution a {
+  color: var(--muted-foreground);
 }
 .react-flow__edge-textbg {
   fill: var(--card);
 }
 .react-flow__edge-text {
+  font-size: 12px;
   fill: var(--foreground);
 }
 /* Handles only anchor edges; nothing in the topology is connectable. */
@@ -147,10 +143,11 @@
 }
 /* Beats React Flow's own `.react-flow__node.selectable:focus-visible` reset. */
 .react-flow__node.react-flow__node-resource:focus-visible,
+.react-flow__node.react-flow__node-namespace:focus-visible,
 .react-flow__node.react-flow__node-pod:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
-  border-radius: 8px;
+  border-radius: 14px;
 }
 .react-flow__node {
   font-size: 12px;
@@ -159,7 +156,4 @@
   background: var(--card);
   border-color: var(--border);
   border-radius: 8px;
-}
-.react-flow__edge-text {
-  font-size: 11px;
 }

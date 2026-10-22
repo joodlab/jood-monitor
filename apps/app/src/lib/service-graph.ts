@@ -740,6 +740,29 @@ export function activatedCard(key: string, target: KeyTarget | null) {
   return target.dataset.id;
 }
 
+interface Rect {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+}
+
+// Whether a card, in screen pixels, sits wholly inside the canvas area that
+// the floating overlays leave clear. A card that does not is brought into
+// view when the keyboard focuses it.
+export function cardInView(
+  card: Rect,
+  canvas: { width: number; height: number },
+  clear: { top: number; right: number; bottom: number; left: number }
+) {
+  return (
+    card.x >= clear.left &&
+    card.y >= clear.top &&
+    card.x + card.width <= canvas.width - clear.right &&
+    card.y + card.height <= canvas.height - clear.bottom
+  );
+}
+
 export function validPosition(
   value: unknown
 ): value is { x: number; y: number } {
@@ -758,7 +781,7 @@ export function validPosition(
 }
 
 // Layout geometry in flow units. Cards and pod chips render at these sizes.
-export const cardSize = { width: 280, height: 176 };
+export const cardSize = { width: 288, height: 168 };
 export const chipSize = { width: 224, height: 76 };
 const laneGap = 96;
 const rowGap = 32;

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   activatedCard,
   type CardState,
+  cardInView,
   cardSize,
   chipSize,
   emptyTopology,
@@ -579,5 +580,22 @@ describe("topology layout and keyboard", () => {
     expect(activatedCard("ArrowDown", card)).toBeUndefined();
     expect(activatedCard("Enter", target(["nodrag"]))).toBeUndefined();
     expect(activatedCard("Enter", null)).toBeUndefined();
+  });
+});
+
+describe("keyboard reveal", () => {
+  const canvas = { width: 1200, height: 800 };
+  const clear = { top: 72, right: 376, bottom: 64, left: 72 };
+  const card = { width: 288, height: 168 };
+  it("leaves a card that sits clear of every overlay", () => {
+    expect(cardInView({ ...card, x: 100, y: 100 }, canvas, clear)).toBe(true);
+  });
+  it("reveals cards under the toolbar, the Activity panel or off screen", () => {
+    expect(cardInView({ ...card, x: 20, y: 100 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: 600, y: 100 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: 100, y: 700 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: -400, y: -300 }, canvas, clear)).toBe(
+      false
+    );
   });
 });

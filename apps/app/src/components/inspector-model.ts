@@ -1,6 +1,11 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { podProblem } from "../lib/attention";
-import { isFinished, type ResourceSummary } from "../lib/infrastructure";
+import { formatUsage, percentOf, type UsageField } from "../lib/chart-scale";
+import {
+  isFinished,
+  type ResourceSummary,
+  workloadKinds,
+} from "../lib/infrastructure";
 
 // Pure helpers behind the resource inspector. Configured structure
 // (Services, Ingress routes, placement) is reported as configuration, never
@@ -8,6 +13,41 @@ import { isFinished, type ResourceSummary } from "../lib/infrastructure";
 
 type Edge = ClusterView["inventory"]["edges"][number];
 type Condition = NonNullable<Entity["conditions"]>[number];
+
+export type InspectorTab = "pods" | "metrics" | "details" | "links";
+
+// Kinds whose member pods the inventory resolves (see relatedPods): their
+// usage is a sum over those pods.
+const cohortKinds = new Set([...workloadKinds, "Service", "Namespace"]);
+
+export function isCohort(kind: string) {
+  return cohortKinds.has(kind);
+}
+
+// Railway's service tabs, with member pods in the role of its Deployments
+// list. A Pod has no members; a Node's only links are the pods scheduled on
+// it, which its Pods tab already lists; kinds without member pods have no
+// usage to chart.
+export function inspectorTabs(kind: string): InspectorTab[] {
+  if (kind === "Pod") {
+    return ["metrics", "details", "links"];
+  }
+  if (kind === "Node") {
+    return ["pods", "metrics", "details"];
+  }
+  if (cohortKinds.has(kind)) {
+    return ["pods", "metrics", "details", "links"];
+  }
+  return ["details", "links"];
+}
+
+// The chosen tab follows the operator to the next resource when that kind
+// has it; otherwise the panel opens on the kind's first tab. The choice
+// itself is kept, so returning to the earlier kind restores it.
+export function activeTab(chosen: string | undefined, kind: string) {
+  const tabs = inspectorTabs(kind);
+  return tabs.find((tab) => tab === chosen) ?? tabs[0];
+}
 
 export interface Crumb {
   entity: Entity;
@@ -90,6 +130,95 @@ export function sortPods(pods: readonly Entity[], now: number) {
   return [...pods].sort(
     (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)
   );
+}
+
+export interface PodGroups {
+  // Active pods without a problem, including readiness unknown.
+  active: Entity[];
+  // Active pods with a problem; start-up grace applies (see podProblem).
+  attention: Entity[];
+  // Succeeded, Completed or Failed: history, not live usage.
+  finished: Entity[];
+}
+
+// The Pods list in Railway's Deployments order: what needs attention, what
+// is running, then history. Names order each group.
+export function podGroups(pods: readonly Entity[], now: number): PodGroups {
+  const groups: PodGroups = { attention: [], active: [], finished: [] };
+  for (const pod of sortPods(pods, now)) {
+    if (isFinished(pod)) {
+      groups.finished.push(pod);
+    } else if (podProblem(pod, now)) {
+      groups.attention.push(pod);
+    } else {
+      groups.active.push(pod);
+    }
+  }
+  return groups;
+}
+
+export interface UsageReading {
+  // Share of a configured bound or the partial coverage, when known.
+  detail?: string;
+  // True when there is no value: the text explains why, never as zero.
+  missing: boolean;
+  value: string;
+}
+
+function usageShare(field: UsageField, value: number, entity: Entity) {
+  if (entity.kind === "Pod") {
+    const limit = field === "cpu" ? entity.limitedCpu : entity.limitedMemory;
+    const share = percentOf(value, limit ?? undefined);
+    return share && `${share} of limit`;
+  }
+  if (entity.kind === "Node") {
+    const allocatable =
+      field === "cpu" ? entity.allocatableCpu : entity.allocatableMemory;
+    const share = percentOf(value, allocatable ?? undefined);
+    return share && `${share} of allocatable`;
+  }
+}
+
+// A complete total, an explicitly partial lower bound, or the reason there
+// is no value. A missing measurement never reads as zero.
+export function usageReading(
+  field: UsageField,
+  entity: Entity,
+  summary: ResourceSummary,
+  coverage: Coverage
+): UsageReading {
+  const value = summary[field];
+  if (value != null) {
+    return {
+      value: formatUsage(field, value),
+      detail: usageShare(field, value, entity) || undefined,
+      missing: false,
+    };
+  }
+  if (entity.kind === "Pod" || entity.kind === "Node") {
+    return { value: "No fresh sample", missing: true };
+  }
+  if (!coverage.active) {
+    return { value: "No active pods", missing: true };
+  }
+  const partial = summary.usage?.[field];
+  if (partial?.observed == null) {
+    return { value: "No fresh samples", missing: true };
+  }
+  return {
+    value: `≥ ${formatUsage(field, partial.observed)}`,
+    detail: `partial · ${partial.measured} of ${coverage.active} pods`,
+    missing: false,
+  };
+}
+
+export function readyText(summary: ResourceSummary) {
+  if (summary.ready == null) {
+    return "Unknown";
+  }
+  return summary.desired == null
+    ? `${summary.ready} ready`
+    : `${summary.ready}/${summary.desired}`;
 }
 
 export interface NodePlacement {

@@ -1,5 +1,4 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { Badge } from "@jood-monitor/ui/badge";
 import { Button } from "@jood-monitor/ui/button";
 import {
   SheetClose,
@@ -11,10 +10,10 @@ import { useState } from "react";
 import { inventoryFreshness } from "../lib/metrics";
 import { CopyButton } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
-import { StatusBadge } from "./resource-status";
+import { KindTile, StatusBadge } from "./resource-status";
 
-// The trail of recently inspected resources for this open sheet. It resets
-// when the sheet closes so a new inspection starts a new trail.
+// The trail of recently inspected resources for this open panel. It resets
+// when the panel closes so a new inspection starts a new trail.
 export function useInspectionTrail(
   inspected: { view: ClusterView; entity: Entity } | null
 ) {
@@ -33,6 +32,11 @@ export function useInspectionTrail(
   return state.trail;
 }
 
+const iconButton =
+  "size-9 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+
+// Railway's service header: a large kind tile and name, the status pill and
+// where the resource lives, with copy actions and close on the right.
 export function InspectorHeader({
   view,
   entity,
@@ -50,12 +54,12 @@ export function InspectorHeader({
   const stale =
     inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
   return (
-    <header className="sticky top-0 z-10 space-y-2 border-b bg-popover px-4 pt-2 pb-3">
-      <div className="-mx-2 flex items-center gap-1">
-        {back ? (
+    <header className="space-y-3 px-4 pt-3 sm:px-6 sm:pt-4">
+      {back && (
+        <div className="-mx-2 flex min-h-9 items-center gap-1">
           <Button
             aria-label={`Back to ${back.entity.kind} ${back.entity.name}`}
-            className="h-9 sm:h-8"
+            className="h-9 shrink-0 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
             onClick={() => onInspect(back.view, back.entity)}
             size="sm"
             title={`Back to ${back.entity.name}`}
@@ -64,58 +68,73 @@ export function InspectorHeader({
             <ArrowLeft aria-hidden />
             Back
           </Button>
-        ) : null}
-        <Trail onInspect={onInspect} trail={trail} />
-        <CopyButton
-          label="Copy link to this resource"
-          link
-          text="Copy link"
-          value={() => window.location.href}
+          <Trail onInspect={onInspect} trail={trail} />
+        </div>
+      )}
+      <div className="flex items-start gap-3 sm:gap-4">
+        {/* The same tile as the resource's canvas card, at panel scale. */}
+        <KindTile
+          className="mt-0.5 size-12 rounded-xl text-foreground/80 sm:size-14 [&>svg]:size-6 sm:[&>svg]:size-7"
+          kind={entity.kind}
         />
-        <SheetClose
-          render={
-            <Button
-              aria-label="Close inspector"
-              className="size-9 sm:size-8"
-              size="icon-sm"
-              variant="ghost"
-            />
-          }
-        >
-          <XIcon aria-hidden />
-        </SheetClose>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary">{entity.kind}</Badge>
-        <StatusBadge entity={entity} stale={stale} />
-        <SheetDescription className="min-w-0 truncate text-xs">
-          {entity.namespace ? (
-            <>
-              namespace{" "}
-              <span className="font-mono text-foreground/80">
-                {entity.namespace}
-              </span>
-            </>
-          ) : (
-            "cluster scope"
-          )}{" "}
-          · {view.cluster.name}
-        </SheetDescription>
-      </div>
-      <div className="flex items-start gap-1">
-        <SheetTitle className="min-w-0 flex-1 break-all pt-1 font-mono text-base leading-snug">
-          {entity.name}
-        </SheetTitle>
-        <CopyButton label={`Copy name ${entity.name}`} value={entity.name} />
-        {entity.namespace && (
-          // The visible words lead the accessible name so voice control
-          // ("click copy ns/name") reaches it; the full value follows.
+        <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+          <SheetTitle className="font-semibold text-xl leading-tight tracking-tight [overflow-wrap:anywhere] sm:text-2xl">
+            {entity.name}
+          </SheetTitle>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <StatusBadge entity={entity} stale={stale} />
+            <SheetDescription className="min-w-0 text-xs">
+              {entity.kind} ·{" "}
+              {entity.namespace ? (
+                <>
+                  namespace{" "}
+                  <span className="font-mono text-foreground/80">
+                    {entity.namespace}
+                  </span>
+                </>
+              ) : (
+                "cluster scope"
+              )}{" "}
+              · {view.cluster.name}
+            </SheetDescription>
+            {entity.namespace && (
+              // The visible words lead the accessible name so voice control
+              // ("click copy ns/name") reaches it; the full value follows.
+              <CopyButton
+                className="-my-1 focus-visible:ring-2 focus-visible:ring-ring"
+                label={`Copy ns/name ${entity.namespace}/${entity.name}`}
+                text="Copy ns/name"
+                value={`${entity.namespace}/${entity.name}`}
+              />
+            )}
+          </div>
+        </div>
+        <div className="-mt-1 -mr-2 flex shrink-0 items-center">
           <CopyButton
-            label={`Copy ns/name ${entity.namespace}/${entity.name}`}
-            text="Copy ns/name"
-            value={`${entity.namespace}/${entity.name}`}
+            className={iconButton}
+            label={`Copy name ${entity.name}`}
+            value={entity.name}
           />
-        )}
+          <CopyButton
+            className={iconButton}
+            label="Copy link to this resource"
+            link
+            value={() => window.location.href}
+          />
+          <SheetClose
+            render={
+              <Button
+                aria-label="Close inspector"
+                className={iconButton}
+                size="icon"
+                title="Close (Esc)"
+                variant="ghost"
+              />
+            }
+          >
+            <XIcon aria-hidden className="size-5" />
+          </SheetClose>
+        </div>
       </div>
     </header>
   );
@@ -128,61 +147,55 @@ function Trail({
   trail: readonly Crumb[];
   onInspect: (view: ClusterView, entity: Entity) => void;
 }) {
-  if (trail.length < 2) {
-    return <div className="flex-1" />;
-  }
   // The latest three; Back covers the previous one on narrow screens.
   const shown = trail.slice(-3);
   return (
-    <>
-      <div className="flex-1 sm:hidden" />
-      <nav
-        aria-label="Recently inspected"
-        className="hidden min-w-0 flex-1 sm:block"
-      >
-        <ol className="flex min-w-0 items-center gap-0.5 overflow-hidden text-xs">
-          {trail.length > shown.length && (
-            <li aria-hidden className="px-1 text-muted-foreground">
-              …
+    <nav
+      aria-label="Recently inspected"
+      className="hidden min-w-0 flex-1 sm:block"
+    >
+      <ol className="flex min-w-0 items-center gap-0.5 overflow-hidden text-xs">
+        {trail.length > shown.length && (
+          <li aria-hidden className="px-1 text-muted-foreground">
+            …
+          </li>
+        )}
+        {shown.map((crumb, index) => {
+          const current = index === shown.length - 1;
+          return (
+            <li
+              className="flex min-w-0 shrink items-center gap-0.5 last:shrink-0"
+              key={crumb.key}
+            >
+              {(index > 0 || trail.length > shown.length) && (
+                <ChevronRight
+                  aria-hidden
+                  className="size-3 shrink-0 text-muted-foreground"
+                />
+              )}
+              {current ? (
+                <span
+                  aria-current="page"
+                  className="max-w-[12rem] truncate px-1 font-mono"
+                  title={`${crumb.entity.kind} ${crumb.entity.name}`}
+                >
+                  {crumb.entity.name}
+                </span>
+              ) : (
+                <button
+                  aria-label={`${crumb.entity.kind} ${crumb.entity.name}`}
+                  className="h-8 min-w-0 max-w-[10rem] truncate rounded px-1 font-mono text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => onInspect(crumb.view, crumb.entity)}
+                  title={`${crumb.entity.kind} ${crumb.entity.name}`}
+                  type="button"
+                >
+                  {crumb.entity.name}
+                </button>
+              )}
             </li>
-          )}
-          {shown.map((crumb, index) => {
-            const current = index === shown.length - 1;
-            return (
-              <li
-                className="flex min-w-0 shrink items-center gap-0.5 last:shrink-0"
-                key={crumb.key}
-              >
-                {(index > 0 || trail.length > shown.length) && (
-                  <ChevronRight
-                    aria-hidden
-                    className="size-3 shrink-0 text-muted-foreground"
-                  />
-                )}
-                {current ? (
-                  <span
-                    aria-current="page"
-                    className="max-w-[9rem] truncate px-1 font-mono"
-                    title={`${crumb.entity.kind} ${crumb.entity.name}`}
-                  >
-                    {crumb.entity.name}
-                  </span>
-                ) : (
-                  <button
-                    aria-label={`${crumb.entity.kind} ${crumb.entity.name}`}
-                    className="h-8 min-w-0 max-w-[8rem] truncate rounded px-1 font-mono text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                    onClick={() => onInspect(crumb.view, crumb.entity)}
-                    title={`${crumb.entity.kind} ${crumb.entity.name}`}
-                    type="button"
-                  >
-                    {crumb.entity.name}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
-    </>
+          );
+        })}
+      </ol>
+    </nav>
   );
 }

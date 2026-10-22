@@ -24,7 +24,9 @@ import {
   pageRange,
   presetFor,
   resourceRows,
+  resourceTabFor,
   staleViews,
+  tabKinds,
   usageDisplay,
 } from "./resource-table";
 import { serviceGraph, stablePositions, validPosition } from "./service-graph";
@@ -795,6 +797,32 @@ describe("resource URL state", () => {
     for (const [raw, expected] of cases) {
       expect(validateMonitorSearch(raw)).toMatchObject(expected);
     }
+  });
+  it("reads the Resources tab directly and still understands the previous shape", () => {
+    const tabOf = (raw: Record<string, unknown>) =>
+      resourceTabFor(validateMonitorSearch(raw));
+    for (const tab of ["servers", "workloads", "pods", "services", "all"]) {
+      expect(tabOf({ view: "resources", tab })).toBe(tab);
+    }
+    expect(tabOf({ view: "resources" })).toBe("all");
+    expect(tabOf({ view: "workloads", tab: "pods" })).toBe("pods");
+    expect(tabOf({ view: "infrastructure", mode: "servers" })).toBe("servers");
+    expect(tabOf({ view: "infrastructure", mode: "list" })).toBe("all");
+    // The translated shape the dashboard passes today.
+    const legacy = (tab: string, view: string, mode: string) =>
+      resourceTabFor({ tab, view, mode });
+    expect(legacy("servers", "infrastructure", "servers")).toBe("servers");
+    expect(legacy("all", "infrastructure", "list")).toBe("all");
+    expect(legacy("services", "workloads", "workloads")).toBe("services");
+    expect(legacy("servers", "workloads", "workloads")).toBe("workloads");
+    expect(legacy("nonsense", "resources", "workloads")).toBe("workloads");
+    // Infrastructure's topology mode now lives on the Architecture canvas.
+    expect(legacy("pods", "infrastructure", "services")).toBe("pods");
+    expect(legacy("all", "infrastructure", "services")).toBe("workloads");
+    expect(tabKinds.pods).toEqual(["Pod"]);
+    expect(tabKinds.servers).toBeUndefined();
+    expect(presetFor(tabKinds.workloads)).toBe("workloads");
+    expect(presetFor(tabKinds.services)).toBe("services");
   });
   it("keeps a valid topology layout choice and drops anything else", () => {
     expect(validateMonitorSearch({ layout: "list" }).layout).toBe("list");
