@@ -11,6 +11,7 @@ describe("honest resource presentation", () => {
     expect(freshness(new Date(0).toISOString(), 120_000)).toBe("stale");
     expect(freshness(new Date(120_000).toISOString(), 0)).toBe("clock skew");
     expect(freshness(null)).toBe("unknown");
+    expect(freshness("0001-01-01T00:00:00Z")).toBe("unknown");
   });
   it("requires a fresh selected-node acknowledgment for Diagnostic", () => {
     const now = Date.now();

@@ -139,7 +139,16 @@ function clusterCondition(
     };
   }
   const sourceTime = view.inventory.sourceTime;
-  if (sourceTime && freshness(sourceTime, now) !== "fresh") {
+  const inventory = freshness(sourceTime, now);
+  if (inventory === "unknown") {
+    return {
+      key: "inventory:missing",
+      severity: "warning",
+      title: "No inventory received yet",
+      reason: "Heartbeats arrive, but the observer has not reported resources",
+    };
+  }
+  if (inventory !== "fresh") {
     return {
       key: "inventory:stale",
       severity: "warning",
@@ -189,7 +198,7 @@ function nodeItems(
     view,
     entity: node,
     scope: "node" as const,
-    location: [view.cluster.name, node.roles?.join(", ") || "node"],
+    location: [view.cluster.name],
     members: [],
     terminal: false,
   };
@@ -274,10 +283,13 @@ function workloadItem(
   entity: Entity,
   members: Entity[]
 ): Attention {
-  const readiness =
-    entity.ready != null && entity.desired != null
-      ? `${entity.ready}/${entity.desired} ready`
-      : `${members.length} pod${members.length === 1 ? "" : "s"} not ready`;
+  const affected =
+    members.length === 1
+      ? "1 pod needs attention"
+      : `${members.length} pods need attention`;
+  const readiness = shortfall(entity)
+    ? `${entity.ready}/${entity.desired} ready`
+    : affected;
   const oldest = created(members);
   return {
     view,

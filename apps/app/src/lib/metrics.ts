@@ -39,10 +39,12 @@ function latest(metrics: Metric[], uid: string, name: string) {
   return index.get(`${uid}:${name}`);
 }
 export function freshness(at: string | null | undefined, now = Date.now()) {
-  if (!at) {
+  const time = at ? Date.parse(at) : Number.NaN;
+  // Missing, unparsable and zero-value times (Go's 0001-01-01) were never observed.
+  if (!Number.isFinite(time) || time < 0) {
     return "unknown";
   }
-  const seconds = (now - Date.parse(at)) / 1000;
+  const seconds = (now - time) / 1000;
   if (seconds > 90) {
     return "stale";
   }

@@ -444,7 +444,9 @@ function ClusterRow({
   const pods = podCounts([view]);
   const heartbeat = freshness(view.cluster.heartbeatAt, referenceTime);
   let status = "Healthy";
-  if (summary.critical) {
+  if (!view.cluster.heartbeatAt) {
+    status = "Awaiting observer";
+  } else if (summary.critical) {
     status = `${summary.critical} critical`;
   } else if (summary.warning) {
     status = `${summary.warning} warning${summary.warning === 1 ? "" : "s"}`;
@@ -474,16 +476,22 @@ function ClusterRow({
                 : "text-warning-text"
             )}
           >
-            Heartbeat{" "}
-            <TimeText
-              label="Last observer heartbeat"
-              value={view.cluster.heartbeatAt}
-            />{" "}
-            · Inventory{" "}
-            <TimeText
-              label="Inventory source time"
-              value={view.inventory.sourceTime}
-            />
+            {view.cluster.heartbeatAt ? (
+              <>
+                Heartbeat{" "}
+                <TimeText
+                  label="Last observer heartbeat"
+                  value={view.cluster.heartbeatAt}
+                />{" "}
+                · Inventory{" "}
+                <TimeText
+                  label="Inventory source time"
+                  value={view.inventory.sourceTime}
+                />
+              </>
+            ) : (
+              "No heartbeat received yet — install the observer to start collection"
+            )}
           </p>
         )}
       </div>

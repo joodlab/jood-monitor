@@ -1,7 +1,7 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { Attention } from "../lib/attention";
 import { resourceStatus } from "../lib/infrastructure";
 import { SeverityIcon, severityLabels } from "./severity";
@@ -18,6 +18,39 @@ function open(item: Attention, actions: AttentionActions) {
   } else {
     actions.onCluster(item.view);
   }
+}
+
+// Where and since when, without opening the row: cluster, namespace or node,
+// the subject's name, and an evidence time labelled with what it measures.
+function contextParts(item: Attention) {
+  const parts: { key: string; node: ReactNode }[] = item.location.map(
+    (part) => ({
+      key: `location:${part}`,
+      node: <span className="truncate">{part}</span>,
+    })
+  );
+  if (item.entity && item.scope !== "workload") {
+    parts.push({
+      key: "subject",
+      node: (
+        <span className="truncate font-mono text-foreground/80">
+          {item.entity.name}
+        </span>
+      ),
+    });
+  }
+  if (item.since) {
+    parts.push({
+      key: "since",
+      node: (
+        <span className="whitespace-nowrap">
+          {item.since.label}{" "}
+          <TimeText label={item.since.label} value={item.since.at} />
+        </span>
+      ),
+    });
+  }
+  return parts;
 }
 
 export function AttentionRow({
@@ -50,24 +83,18 @@ export function AttentionRow({
                 {item.reason}
               </span>
             )}
-            <span className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-muted-foreground text-xs">
-              {item.location.map((part) => (
-                <span className="max-w-full truncate font-mono" key={part}>
-                  {part}
+            <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground text-xs">
+              {contextParts(item).map((part, index) => (
+                <span
+                  className="flex max-w-full items-center gap-1.5"
+                  key={part.key}
+                >
+                  {index > 0 && <span aria-hidden>·</span>}
+                  {part.node}
                 </span>
               ))}
-              {item.entity && item.scope !== "workload" && !compact && (
-                <span className="max-w-full truncate font-mono">
-                  {item.entity.name}
-                </span>
-              )}
             </span>
           </span>
-          {item.since && (
-            <span className="shrink-0 text-muted-foreground text-xs">
-              <TimeText label={item.since.label} value={item.since.at} />
-            </span>
-          )}
           <ChevronRight
             aria-hidden
             className="mt-0.5 size-4 shrink-0 text-muted-foreground"

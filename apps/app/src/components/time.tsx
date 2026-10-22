@@ -74,7 +74,9 @@ export function DataAge({
       </span>
     );
   }
-  const known = times.filter((value): value is string => !!value).sort();
+  const known = times
+    .filter((value): value is string => !!value && Date.parse(value) >= 0)
+    .sort();
   if (!(now && known.length)) {
     return (
       <span className={cn("text-muted-foreground text-xs", className)}>

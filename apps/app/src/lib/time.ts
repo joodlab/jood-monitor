@@ -34,7 +34,8 @@ function valid(value: string | number | null | undefined) {
     return;
   }
   const time = typeof value === "number" ? value : Date.parse(value);
-  return Number.isFinite(time) ? time : undefined;
+  // Zero-value timestamps (for example Go's 0001-01-01) mean "never set".
+  return Number.isFinite(time) && time >= 0 ? time : undefined;
 }
 
 export function formatClock(
