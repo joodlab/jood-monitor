@@ -7,6 +7,7 @@ import {
 } from "@jood-monitor/ui/sheet";
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
 import { useState } from "react";
+import { liveNodeProblem } from "../lib/attention";
 import { inventoryFreshness } from "../lib/metrics";
 import { CopyButton } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
@@ -82,7 +83,16 @@ export function InspectorHeader({
             {entity.name}
           </SheetTitle>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <StatusBadge entity={entity} stale={stale} />
+            <StatusBadge
+              entity={entity}
+              // Nodes follow the attention rule, memory near full included.
+              problem={
+                entity.kind === "Node"
+                  ? liveNodeProblem(view, entity, referenceTime)
+                  : undefined
+              }
+              stale={stale}
+            />
             <SheetDescription className="min-w-0 text-xs">
               {entity.kind} ·{" "}
               {entity.namespace ? (

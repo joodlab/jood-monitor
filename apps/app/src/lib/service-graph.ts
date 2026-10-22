@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem, nodeProblem } from "./attention";
+import { liveNodeProblem, livePodProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
@@ -199,7 +199,7 @@ function liveProblem(view: ClusterView, entity: Entity, now: number) {
     return livePodProblem(entity, now);
   }
   if (entity.kind === "Node") {
-    return nodeProblem(view, entity, now) !== undefined;
+    return liveNodeProblem(view, entity, now);
   }
   return hasProblem(entity);
 }

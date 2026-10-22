@@ -3,13 +3,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { attentionItems } from "../lib/attention";
+import { inventoryCoverage, silentClusters } from "../lib/coverage";
 import { emptyTopology, type ServiceGraph } from "../lib/service-graph";
-import {
-  inventoryCoverage,
-  SilentClustersChip,
-  silentClusters,
-  TopologyEmpty,
-} from "./canvas-empty";
+import { SilentClustersChip, TopologyEmpty } from "./canvas-empty";
 
 // Synthetic clusters only.
 const now = Date.parse("2026-10-22T12:00:00Z");

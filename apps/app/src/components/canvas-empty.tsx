@@ -18,12 +18,7 @@ import {
   Plus,
   TriangleAlert,
 } from "lucide-react";
-import {
-  type ClusterCoverage,
-  coverageNotes,
-  inventoryCoverage as coverageRule,
-  silentClusters as silentRule,
-} from "../lib/coverage";
+import { type ClusterCoverage, coverageNotes } from "../lib/coverage";
 import { emptyTopology, type ServiceGraph } from "../lib/service-graph";
 import { EmptyState } from "./page";
 
@@ -33,11 +28,6 @@ import { EmptyState } from "./page";
 function counted(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
-
-// The coverage rule lives in lib/coverage, shared with the Servers view so
-// both say the same thing about an all clear; the canvas reads it here.
-export const inventoryCoverage = coverageRule;
-export const silentClusters = silentRule;
 
 interface EmptyProps {
   coverage: ClusterCoverage;

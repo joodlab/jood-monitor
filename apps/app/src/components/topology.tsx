@@ -39,6 +39,7 @@ import {
   openingViewport,
   restoredCanvasView,
 } from "../lib/canvas-view-memory";
+import { inventoryCoverage, silentClusters } from "../lib/coverage";
 import { inventoryFreshness } from "../lib/metrics";
 import {
   activatedCard,
@@ -61,12 +62,7 @@ import {
   type Inspect,
   nodeTypes,
 } from "./canvas-cards";
-import {
-  inventoryCoverage,
-  SilentClustersChip,
-  silentClusters,
-  TopologyEmpty,
-} from "./canvas-empty";
+import { SilentClustersChip, TopologyEmpty } from "./canvas-empty";
 import { phoneQuery, useLatestCallback, useMediaQuery } from "./canvas-hooks";
 import { TopologyList } from "./canvas-list";
 import { CanvasToolbar } from "./canvas-toolbar";
