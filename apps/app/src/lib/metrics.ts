@@ -66,19 +66,22 @@ export function inventoryFreshness(
   return freshness(at, now, INVENTORY_STALE_SECONDS);
 }
 
-// The observer samples resource usage every 60 s on Basic and every 30 s
-// otherwise. A sample stays current for two intervals plus 45 s of Metrics
-// API scrape age and delivery, so one late sample is not a gap. An expired
-// Diagnostic already samples at its return profile's interval.
+// The observer samples node usage every 60 s on Basic and every 30 s
+// otherwise; pods are sampled only off Basic, always every 30 s, so a pod
+// sample left from before a switch to Basic is not stretched to its cadence.
+// A sample stays current for two intervals plus 45 s of Metrics API scrape
+// age and delivery, so one late sample is not a gap. An expired Diagnostic
+// already samples at its return profile's interval.
 export function resourceSampleBudget(
   profile: ClusterView["profile"],
-  now = Date.now()
+  now = Date.now(),
+  kind: "Node" | "Pod" = "Node"
 ) {
   const expired =
     profile.name === "diagnostic" &&
     (!profile.expiresAt || Date.parse(profile.expiresAt) <= now);
   const name = expired ? profile.returnProfile || "basic" : profile.name;
-  return 2 * (name === "basic" ? 60 : 30) + 45;
+  return 2 * (kind === "Node" && name === "basic" ? 60 : 30) + 45;
 }
 
 export function nodeProfileOutcome(
@@ -130,7 +133,7 @@ export function observedUsage(
   return freshness(
     metric?.sourceTime,
     now,
-    resourceSampleBudget(view.profile, now)
+    resourceSampleBudget(view.profile, now, entity.kind)
   ) === "fresh"
     ? value(metric)
     : undefined;

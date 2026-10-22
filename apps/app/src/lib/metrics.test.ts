@@ -110,6 +110,24 @@ describe("resource sample budget", () => {
     expect(nodeTotals([basic], sampled + 164_000).usedCpu).toBe(1.5);
     expect(nodeTotals([basic], sampled + 166_000).usedCpu).toBeUndefined();
   });
+  it("never stretches a pod sample to the Basic node cadence", () => {
+    const pod: Entity = {
+      uid: "p1",
+      name: "shop-api-1",
+      kind: "Pod",
+      namespace: "shop",
+      status: "Running",
+    };
+    const basic = view({ name: "basic" });
+    expect(resourceSampleBudget(basic.profile, sampled, "Pod")).toBe(105);
+    basic.metrics = basic.metrics.map((metric) => ({
+      ...metric,
+      entityUid: "p1",
+      name: metric.name.replace("k8s.node.", "k8s.pod."),
+    }));
+    expect(observedUsage(basic, pod, "cpu", sampled + 104_000)).toBe(1.5);
+    expect(observedUsage(basic, pod, "cpu", sampled + 106_000)).toBeUndefined();
+  });
   it("expires a Standard sample after its shorter budget", () => {
     const standard = view({});
     expect(observedUsage(standard, node, "memory", sampled + 104_000)).toBe(
