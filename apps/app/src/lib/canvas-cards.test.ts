@@ -6,6 +6,7 @@ import {
   leadingStatus,
   namespaceStatus,
   namespaceSummary,
+  podDetail,
   podsLabel,
   staleText,
   toneOf,
@@ -269,6 +270,39 @@ describe("card status line", () => {
     expect(status).toEqual({ tone: "critical", text: "Not reporting" });
   });
 
+  it("names an unavailable network on a ready node and never calls it healthy", () => {
+    const view = fixture();
+    const node = entity("node-net", "Node", {
+      namespace: undefined,
+      status: "True",
+      conditions: [
+        { type: "Ready", status: "True" },
+        { type: "NetworkUnavailable", status: "True" },
+      ],
+    });
+    const status = cardStatus(node, summarize(view, node, now), {
+      ...fresh,
+      problem: true,
+    });
+    expect(status).toEqual({ tone: "warning", text: "Network unavailable" });
+  });
+
+  it("shows finished pods as neutral history, never healthy or a warning", () => {
+    const failed = pod("report-1", {
+      status: "Failed / OOM observed",
+      ready: 0,
+      restarts: 1,
+    });
+    const succeeded = pod("report-2", { status: "Succeeded", ready: 0 });
+    expect(toneOf(failed, false, false)).toBe("neutral");
+    expect(toneOf(succeeded, false, false)).toBe("neutral");
+    expect(podDetail(failed)).toBe(
+      "Finished · Failed · OOM observed · 1 restart"
+    );
+    expect(podDetail(succeeded)).toBe("Finished · Succeeded · 0 restarts");
+    expect(podDetail(pod("web-9"))).toBe("Running · 1/1 ready · 0 restarts");
+  });
+
   it("picks the most common failing status", () => {
     expect(
       leadingStatus([
@@ -359,6 +393,19 @@ describe("namespace cards", () => {
     expect(namespaceStatus(summary, { ...fresh, problem: true }).text).toBe(
       "1 of 3 pods need attention"
     );
+  });
+
+  it("counts finished pods with the observer's OOM suffix as history", () => {
+    const view = fixture([
+      pod("report-1", { status: "Failed / OOM observed", ready: 0 }),
+      pod("report-2", { status: "Succeeded / OOM observed", ready: 0 }),
+    ]);
+    expect(namespaceSummary(view, "shop", now)).toMatchObject({
+      pods: 5,
+      activePods: 3,
+      failing: 1,
+      finishedFailed: 1,
+    });
   });
 
   it("is healthy only with every running pod ready and fresh inventory", () => {

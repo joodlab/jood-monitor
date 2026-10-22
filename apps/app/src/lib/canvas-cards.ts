@@ -4,6 +4,8 @@ import {
   compactCpu,
   compactMemory,
   isFinished,
+  oomObserved,
+  podPhase,
   type ResourceSummary,
   resourceStatus,
   workloadKinds,
@@ -60,7 +62,9 @@ function neutral(entity: Entity) {
     ["Unknown", "Observed"].includes(status) ||
     ["Service", "Ingress", "Namespace"].includes(entity.kind) ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
-    starting(entity)
+    starting(entity) ||
+    // Finished pods are history: neither healthy nor a live problem.
+    (entity.kind === "Pod" && isFinished(entity))
   );
 }
 
@@ -305,7 +309,18 @@ export function podsLabel(
   return plural(count, "pod");
 }
 
+// "Running · 1/1 ready · 0 restarts", or "Finished · Failed · OOM observed
+// · 3 restarts" for history, where readiness no longer applies.
 export function podDetail(pod: Entity) {
+  if (isFinished(pod)) {
+    return [
+      `Finished · ${podPhase(pod)}`,
+      oomObserved(pod) && "OOM observed",
+      plural(pod.restarts ?? 0, "restart"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
   const ready =
     pod.ready == null
       ? "readiness unknown"
@@ -358,7 +373,7 @@ function countPods(pods: Entity[], now: number) {
     pods: pods.length,
     activePods: active.length,
     failing: pods.filter((pod) => livePodProblem(pod, now)).length,
-    finishedFailed: pods.filter((pod) => pod.status === "Failed").length,
+    finishedFailed: pods.filter((pod) => podPhase(pod) === "Failed").length,
     ready: known
       ? active.filter((pod) => (pod.ready ?? 0) > 0).length
       : undefined,

@@ -1,7 +1,11 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import {
+  isFinished,
+  nodeConditionProblems,
+  oomObserved,
   owningWorkload,
   percent,
+  podPhase,
   resourceStatus,
   workloadKinds,
 } from "./infrastructure";
@@ -39,7 +43,6 @@ const startingStatuses = new Set([
   "ContainerCreating",
   "PodInitializing",
 ]);
-const finished = new Set(["Succeeded", "Completed"]);
 const pressureLabels: Record<string, string> = {
   MemoryPressure: "memory pressure",
   DiskPressure: "disk pressure",
@@ -56,33 +59,49 @@ function nodeName(view: ClusterView, uid?: string) {
 function isStarting(pod: Entity, now: number) {
   const created = pod.createdAt ? Date.parse(pod.createdAt) : Number.NaN;
   return (
-    startingStatuses.has(pod.status) &&
+    startingStatuses.has(podPhase(pod)) &&
     Number.isFinite(created) &&
     now - created < STARTING_GRACE_MS
   );
 }
 
+// A live pod problem, or a finished pod that failed (retained history). An
+// observed OOM kill is a problem even on a ready pod inside its start-up grace.
 export function podProblem(pod: Entity, now: number) {
-  if (finished.has(pod.status) || isStarting(pod, now)) {
-    return false;
+  if (isFinished(pod)) {
+    return podPhase(pod) === "Failed";
+  }
+  if (oomObserved(pod)) {
+    return true;
   }
   return (
-    pod.status === "Failed" ||
-    pod.ready === 0 ||
-    !["Running", "Observed", "Unknown"].includes(pod.status)
+    !isStarting(pod, now) &&
+    (pod.ready === 0 ||
+      !["Running", "Observed", "Unknown"].includes(podPhase(pod)))
   );
 }
 
 // A pod problem happening now. Failed pods are retained history, which the
 // attention model lists on their own rather than as a live outage.
 export function livePodProblem(pod: Entity, now: number) {
-  return pod.status !== "Failed" && podProblem(pod, now);
+  return !isFinished(pod) && podProblem(pod, now);
+}
+
+// Finished pods say so, so retained history never reads as a live phase:
+// "Failed (finished) · OOM observed".
+function podStatusText(pod: Entity) {
+  if (!isFinished(pod)) {
+    return resourceStatus(pod);
+  }
+  return [`${podPhase(pod)} (finished)`, oomObserved(pod) && "OOM observed"]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function podReason(pods: Entity[]) {
   const counts = new Map<string, number>();
   for (const pod of pods) {
-    const status = resourceStatus(pod);
+    const status = podStatusText(pod);
     counts.set(status, (counts.get(status) ?? 0) + 1);
   }
   const restarts = pods.reduce((sum, pod) => sum + (pod.restarts ?? 0), 0);
@@ -122,7 +141,8 @@ function clusterCondition(
       key: "observer:waiting",
       severity: "info",
       title: "Waiting for the first observer heartbeat",
-      reason: "Install the observer with this cluster's enrollment token",
+      reason:
+        "If the one-time token was lost or expired, renew the enrollment in Settings",
     };
   }
   const heartbeat = freshness(heartbeatAt, now);
@@ -219,20 +239,53 @@ function clusterItems(
   ];
 }
 
-function pressureConditions(node: Entity) {
-  return (node.conditions ?? []).filter(
-    (condition) =>
-      condition.status === "True" &&
-      (condition.type.endsWith("Pressure") ||
-        condition.type === "NetworkUnavailable")
-  );
+// A saved observation carries the profile and heartbeat only when they were
+// archived with it; otherwise the view holds current metadata, never its own.
+function metadata(
+  view: ClusterView,
+  frozen: boolean,
+  field: "heartbeat" | "profile"
+) {
+  return !frozen || view.observationMetadataAvailable?.[field] === true;
+}
+
+// Why every node lacks usage, said once for the cluster instead of once per
+// node. Info only: these explain missing samples, they are not problems.
+function collectionNotes(view: ClusterView, frozen: boolean): Attention[] {
+  const notes: { key: string; title: string }[] = [];
+  if (view.profile.paused && metadata(view, frozen, "profile")) {
+    notes.push({
+      key: "collection:paused",
+      title: "Collection is paused by an operator; history is preserved",
+    });
+  }
+  if (
+    (view.heartbeat.capabilities ?? []).includes("metrics_api_unavailable") &&
+    metadata(view, frozen, "heartbeat")
+  ) {
+    notes.push({
+      key: "metrics:unavailable",
+      title:
+        "Metrics API unavailable: node and pod CPU/memory unknown (reported by observer)",
+    });
+  }
+  return notes.map(({ key, title }) => ({
+    view,
+    id: `${view.cluster.id}:${key}`,
+    scope: "cluster",
+    severity: "info",
+    title,
+    location: [view.cluster.name],
+    members: [],
+    terminal: false,
+  }));
 }
 
 function nodeItems(
   view: ClusterView,
   node: Entity,
   now: number,
-  observerHealthy: boolean
+  measurable: boolean
 ): Attention[] {
   const items: Attention[] = [];
   const base = {
@@ -256,7 +309,7 @@ function nodeItems(
     // An unready node's missing measurements share this cause.
     return items;
   }
-  for (const condition of pressureConditions(node)) {
+  for (const condition of nodeConditionProblems(node)) {
     items.push({
       ...base,
       id: `${view.cluster.id}:${node.uid}:${condition.type}`,
@@ -279,7 +332,7 @@ function nodeItems(
     });
   }
   if (
-    observerHealthy &&
+    measurable &&
     (observedUsage(view, node, "cpu", now) == null ||
       observedUsage(view, node, "memory", now) == null)
   ) {
@@ -288,7 +341,7 @@ function nodeItems(
       id: `${view.cluster.id}:${node.uid}:measurements`,
       severity: "info",
       title: "No fresh CPU or memory measurement",
-      reason: "Usage stays unknown until a node collector reports",
+      reason: "No fresh sample from the Kubernetes Metrics API",
     });
   }
   return items;
@@ -365,12 +418,13 @@ function workloadItems(view: ClusterView, now: number): Attention[] {
     if (pod.kind !== "Pod" || !podProblem(pod, now)) {
       continue;
     }
-    const owner =
-      pod.status === "Failed" ? undefined : owningWorkload(view, pod);
+    // podProblem holds a finished pod only when it failed: retained history.
+    const terminal = isFinished(pod);
+    const owner = terminal ? undefined : owningWorkload(view, pod);
     if (owner) {
       groups.set(owner.uid, [...(groups.get(owner.uid) ?? []), pod]);
     } else {
-      items.push(podItem(view, pod, pod.status === "Failed"));
+      items.push(podItem(view, pod, terminal));
     }
   }
   for (const entity of view.inventory.entities) {
@@ -406,9 +460,13 @@ export function attentionItems(
     const observerHealthy = !cluster.some(
       (item) => item.severity !== "info" || !view.cluster.heartbeatAt
     );
+    const notes = collectionNotes(view, frozen);
+    items.push(...notes);
+    // A cluster-wide reason for missing usage replaces per-node rows.
+    const measurable = (frozen || observerHealthy) && !notes.length;
     for (const node of view.inventory.entities) {
       if (node.kind === "Node") {
-        items.push(...nodeItems(view, node, now, frozen || observerHealthy));
+        items.push(...nodeItems(view, node, now, measurable));
       }
     }
     items.push(...workloadItems(view, now));

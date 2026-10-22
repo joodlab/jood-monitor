@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { validateMonitorSearch } from "../schemas/monitor";
 import { attentionItems } from "./attention";
 import {
+  hasProblem,
+  isFinished,
+  nodeConditionProblems,
+  oomObserved,
   owningWorkload,
+  podPhase,
   relatedPods,
   resourceStatus,
   summarize,
@@ -517,6 +522,59 @@ describe("resource usage coverage", () => {
       text: "—",
       title: "Finished pod: no live usage.",
     });
+  });
+});
+
+describe("pod phase and node conditions", () => {
+  const pod = (status: string, ready = 0) =>
+    entity("job-pod", "Pod", { status, ready, desired: 1 });
+
+  it("reads the phase before the observer's OOM suffixes", () => {
+    expect(podPhase(pod("Failed"))).toBe("Failed");
+    expect(podPhase(pod("Failed / OOM observed"))).toBe("Failed");
+    expect(podPhase(pod("Running / OOM observed / OOM observed"))).toBe(
+      "Running"
+    );
+    expect(oomObserved(pod("Running / OOM observed / OOM observed"))).toBe(
+      true
+    );
+    expect(oomObserved(pod("Running"))).toBe(false);
+  });
+
+  it("treats suffixed finished pods as finished history", () => {
+    expect(isFinished(pod("Succeeded / OOM observed"))).toBe(true);
+    expect(isFinished(pod("Failed / OOM observed"))).toBe(true);
+    expect(hasProblem(pod("Succeeded / OOM observed"))).toBe(false);
+    // A retained failure stays a problem record; the attention model keeps
+    // it as history rather than a live outage.
+    expect(hasProblem(pod("Failed / OOM observed"))).toBe(true);
+  });
+
+  it("keeps an observed OOM kill a problem on a running, ready pod", () => {
+    expect(hasProblem(pod("Running", 1))).toBe(false);
+    expect(hasProblem(pod("Running / OOM observed", 1))).toBe(true);
+  });
+
+  it("counts pressure and an unavailable network as node problems", () => {
+    const node = entity("node-net", "Node", {
+      namespace: undefined,
+      status: "True",
+      conditions: [
+        { type: "Ready", status: "True" },
+        { type: "NetworkUnavailable", status: "True" },
+        { type: "MemoryPressure", status: "False" },
+      ],
+    });
+    expect(nodeConditionProblems(node).map((item) => item.type)).toEqual([
+      "NetworkUnavailable",
+    ]);
+    expect(hasProblem(node)).toBe(true);
+    expect(
+      hasProblem({
+        ...node,
+        conditions: [{ type: "NetworkUnavailable", status: "False" }],
+      })
+    ).toBe(false);
   });
 });
 

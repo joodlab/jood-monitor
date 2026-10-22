@@ -151,6 +151,120 @@ describe("attention", () => {
       )
     ).toHaveLength(1);
   });
+  it("keeps finished pods with an observed OOM kill as history", () => {
+    const succeeded = entity("report-ok", "Pod", {
+      status: "Succeeded / OOM observed",
+      ready: 0,
+    });
+    expect(attentionItems([view([succeeded])], now)).toHaveLength(0);
+    const failed = entity("report-failed", "Pod", {
+      status: "Failed / OOM observed / OOM observed",
+      ready: 0,
+      restarts: 1,
+    });
+    const items = attentionItems([view([failed])], now);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      terminal: true,
+      severity: "info",
+      reason: "Failed (finished) · OOM observed · 1 restart",
+    });
+    expect(attentionSummary(items)).toMatchObject({
+      actionable: 0,
+      finished: 1,
+    });
+  });
+  it("treats an observed OOM kill on a running, ready pod as a live problem", () => {
+    const items = attentionItems(
+      [
+        view([
+          entity("cart-1", "Pod", {
+            status: "Running / OOM observed",
+            ready: 1,
+            restarts: 3,
+          }),
+        ]),
+      ],
+      now
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ terminal: false, severity: "warning" });
+    expect(attentionSummary(items).actionable).toBe(1);
+  });
+  it("warns about a ready node whose network is unavailable", () => {
+    const node = entity("node-net", "Node", {
+      status: "True",
+      conditions: [
+        { type: "Ready", status: "True" },
+        {
+          type: "NetworkUnavailable",
+          status: "True",
+          reason: "NoRouteCreated",
+        },
+      ],
+    });
+    const items = attentionItems([view([node])], now).filter(
+      (item) => item.severity !== "info"
+    );
+    expect(items.map((item) => [item.severity, item.title])).toEqual([
+      ["warning", "Node reports network unavailable"],
+    ]);
+  });
+  it("says why usage is missing once per cluster while collection is paused", () => {
+    const paused = view([
+      entity("node-a", "Node", { status: "True" }),
+      entity("node-b", "Node", { status: "True" }),
+    ]);
+    paused.profile.paused = true;
+    const items = attentionItems([paused], now);
+    expect(
+      items.map((item) => [item.scope, item.severity, item.title])
+    ).toEqual([
+      [
+        "cluster",
+        "info",
+        "Collection is paused by an operator; history is preserved",
+      ],
+    ]);
+    expect(attentionSummary(items).actionable).toBe(0);
+    // A saved observation names the pause only when its profile was archived.
+    expect(attentionItems([paused], now, true)).toHaveLength(2);
+    paused.observationMetadataAvailable = { profile: true, heartbeat: false };
+    expect(attentionItems([paused], now, true)).toHaveLength(1);
+  });
+  it("names an unavailable Metrics API once instead of per node", () => {
+    const unmeasured = view([
+      entity("node-a", "Node", { status: "True" }),
+      entity("node-b", "Node", { status: "True" }),
+    ]);
+    const perNode = attentionItems([unmeasured], now);
+    expect(perNode.map((item) => item.reason)).toEqual([
+      "No fresh sample from the Kubernetes Metrics API",
+      "No fresh sample from the Kubernetes Metrics API",
+    ]);
+    unmeasured.heartbeat.capabilities = ["metrics_api_unavailable"];
+    const items = attentionItems([unmeasured], now);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      scope: "cluster",
+      severity: "info",
+      title:
+        "Metrics API unavailable: node and pod CPU/memory unknown (reported by observer)",
+    });
+    expect(attentionSummary(items).actionable).toBe(0);
+    // The current heartbeat never describes a saved observation.
+    expect(attentionItems([unmeasured], now, true)).toHaveLength(2);
+  });
+  it("points a cluster waiting for its first heartbeat at enrollment renewal", () => {
+    const waiting = view([]);
+    waiting.cluster.heartbeatAt = null;
+    const [item] = attentionItems([waiting], now);
+    expect(item).toMatchObject({
+      id: "c1:observer:waiting",
+      reason:
+        "If the one-time token was lost or expired, renew the enrollment in Settings",
+    });
+  });
   it("attaches observer staleness to the cluster even without nodes", () => {
     const stale = view([]);
     stale.cluster.heartbeatAt = new Date(now - 15 * 60_000).toISOString();

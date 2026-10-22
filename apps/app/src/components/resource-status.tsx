@@ -17,7 +17,13 @@ import {
   Server,
   TriangleAlert,
 } from "lucide-react";
-import { hasProblem, percentage, resourceStatus } from "../lib/infrastructure";
+import {
+  hasProblem,
+  isFinished,
+  nodeConditionProblems,
+  percentage,
+  resourceStatus,
+} from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import { staleViews, type UsageDisplay } from "../lib/resource-table";
 import { TimeText } from "./time";
@@ -34,7 +40,7 @@ function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
     problem === false &&
     entity.kind === "Pod" &&
     entity.ready === 0 &&
-    !["Succeeded", "Completed", "Failed"].includes(entity.status);
+    !isFinished(entity);
   if (
     starting ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
@@ -178,22 +184,19 @@ export function KindTile({
   );
 }
 
-// A Ready node under pressure says which pressure, so a warning badge never
-// reads "Ready" without the reason.
+// A Ready node under pressure or without network says which, so a warning
+// badge never reads "Ready" without the reason.
 function statusLabel(entity: Entity) {
   const status = resourceStatus(entity);
   if (entity.kind !== "Node") {
     return status;
   }
-  const pressures = (entity.conditions ?? [])
-    .filter(
-      (condition) =>
-        condition.type.endsWith("Pressure") && condition.status === "True"
-    )
-    .map((condition) =>
-      condition.type.replace("Pressure", " pressure").toLowerCase()
-    );
-  return pressures.length ? `${status} · ${pressures.join(", ")}` : status;
+  const reasons = nodeConditionProblems(entity).map((condition) =>
+    condition.type === "NetworkUnavailable"
+      ? "network unavailable"
+      : condition.type.replace("Pressure", " pressure").toLowerCase()
+  );
+  return reasons.length ? `${status} · ${reasons.join(", ")}` : status;
 }
 
 // A utilisation bar. A missing value draws an empty dashed track and says so

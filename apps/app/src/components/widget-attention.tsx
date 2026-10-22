@@ -30,10 +30,13 @@ const filters: { id: Severity | "all"; label: string }[] = [
 type Coverage = ReturnType<typeof observationCoverage>;
 
 // Problems are reported before coverage: a heartbeat without inventory is
-// still an observation that needs attention.
-function heading(coverage: Coverage, problems: number) {
-  if (problems) {
+// still an observation that needs attention. Info rows alone are notes.
+function heading(coverage: Coverage, actionable: number, live: number) {
+  if (actionable) {
     return "Needs attention";
+  }
+  if (live) {
+    return "Notes";
   }
   return coverage.observed
     ? "No problems observed"
@@ -224,7 +227,7 @@ export function AttentionWidget({
             decorative
             severity={summary.worst}
           />
-          {heading(coverage, live.length)}
+          {heading(coverage, summary.actionable, live.length)}
           {live.length > 0 && (
             <span className="font-normal text-muted-foreground text-sm">
               {severityText(summary)}
