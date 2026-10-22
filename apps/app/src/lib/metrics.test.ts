@@ -1,6 +1,12 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
-import { bytes, freshness, nodeProfileOutcome, nodeTotals } from "./metrics";
+import {
+  bytes,
+  freshness,
+  inventoryFreshness,
+  nodeProfileOutcome,
+  nodeTotals,
+} from "./metrics";
 
 describe("honest resource presentation", () => {
   it("keeps unavailable values unknown", () => {
@@ -11,6 +17,13 @@ describe("honest resource presentation", () => {
     expect(freshness(new Date(0).toISOString(), 120_000)).toBe("stale");
     expect(freshness(new Date(120_000).toISOString(), 0)).toBe("clock skew");
     expect(freshness(null)).toBe("unknown");
+    expect(freshness("0001-01-01T00:00:00Z")).toBe("unknown");
+  });
+  it("gives inventory its own reconciliation-cadence budget", () => {
+    const sampled = new Date(0).toISOString();
+    expect(freshness(sampled, 120_000)).toBe("stale");
+    expect(inventoryFreshness(sampled, 120_000)).toBe("fresh");
+    expect(inventoryFreshness(sampled, 241_000)).toBe("stale");
   });
   it("requires a fresh selected-node acknowledgment for Diagnostic", () => {
     const now = Date.now();

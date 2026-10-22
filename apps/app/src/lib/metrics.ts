@@ -1,9 +1,5 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 
-export function observationTime(at?: string, now = Date.now()) {
-  return at ? Date.parse(at) : now;
-}
-
 const latestValues = new WeakMap<Metric[], Map<string, Metric>>();
 const receiptFraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/;
 function receiptNano(at: string) {
@@ -38,12 +34,24 @@ function latest(metrics: Metric[], uid: string, name: string) {
   }
   return index.get(`${uid}:${name}`);
 }
-export function freshness(at: string | null | undefined, now = Date.now()) {
-  if (!at) {
+// Heartbeats arrive every 15 s; inventory is reconciled every 60-75 s and the
+// browser may hold a snapshot for another 30-45 s (stream coalescing plus the
+// display clock). Inventory therefore gets its own staleness budget.
+const HEARTBEAT_STALE_SECONDS = 90;
+const INVENTORY_STALE_SECONDS = 240;
+
+export function freshness(
+  at: string | null | undefined,
+  now = Date.now(),
+  staleAfterSeconds = HEARTBEAT_STALE_SECONDS
+) {
+  const time = at ? Date.parse(at) : Number.NaN;
+  // Missing, unparsable and zero-value times (Go's 0001-01-01) were never observed.
+  if (!Number.isFinite(time) || time < 0) {
     return "unknown";
   }
-  const seconds = (now - Date.parse(at)) / 1000;
-  if (seconds > 90) {
+  const seconds = (now - time) / 1000;
+  if (seconds > staleAfterSeconds) {
     return "stale";
   }
   if (seconds < -60) {
@@ -51,6 +59,13 @@ export function freshness(at: string | null | undefined, now = Date.now()) {
   }
   return "fresh";
 }
+export function inventoryFreshness(
+  at: string | null | undefined,
+  now = Date.now()
+) {
+  return freshness(at, now, INVENTORY_STALE_SECONDS);
+}
+
 export function nodeProfileOutcome(
   view: ClusterView,
   uid: string,
