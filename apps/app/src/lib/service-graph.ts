@@ -1,11 +1,12 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem, podProblem } from "./attention";
+import { livePodProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
   isSystem,
   isSystemNamespace,
   owningWorkload,
+  podPhase,
   type ResourceItem,
   relatedPods,
   resourceId,
@@ -43,6 +44,9 @@ export interface ServiceGraphOptions {
   showSystem: boolean;
 }
 export interface ServiceGraph {
+  // Problems only: finished pods that failed, in scope and matching, left out
+  // as history rather than drawn as problems.
+  finishedFailed: number;
   grouped: boolean;
   // Cards this filter would draw from hidden system namespaces: matching or
   // problem resources, or namespaces on the map. Counted only for an empty
@@ -60,6 +64,7 @@ interface Point {
   y: number;
 }
 
+const workloadLane = 2;
 const podLane = 3;
 const lanes: Record<string, number> = {
   Ingress: 0,
@@ -68,7 +73,7 @@ const lanes: Record<string, number> = {
   Node: 4,
 };
 function laneOf(kind: string) {
-  return lanes[kind] ?? 2;
+  return lanes[kind] ?? workloadLane;
 }
 
 const kindSymbols: Record<string, string> = {
@@ -185,14 +190,9 @@ export function graphSubject(
   return entity.desired === 0 ? undefined : entity;
 }
 
-// Pods use the attention model (start-up grace, finished pods are fine);
-// every other kind uses its reported status and conditions.
-function graphProblem(entity: Entity, now: number) {
-  return entity.kind === "Pod" ? podProblem(entity, now) : hasProblem(entity);
-}
-
-// What makes a namespace or workload need attention now: retained failed
-// pods are history, as on the attention list, so they never escalate it.
+// A problem now, as the attention model's actionable items: pods use its live
+// rule (start-up grace; finished pods, failed ones included, are history),
+// every other kind its reported status and conditions.
 function liveProblem(entity: Entity, now: number) {
   return entity.kind === "Pod"
     ? livePodProblem(entity, now)
@@ -211,7 +211,7 @@ export function itemProblem(item: ResourceItem, now: number) {
     );
   }
   return (
-    graphProblem(entity, now) ||
+    liveProblem(entity, now) ||
     (workloadKinds.has(entity.kind) &&
       relatedPods(view, entity).some((pod) => livePodProblem(pod, now)))
   );
@@ -388,6 +388,7 @@ function namespaceGraph(views: ClusterView[], showSystem: boolean) {
     links: [] as GraphLink[],
     grouped: true,
     unshown: 0,
+    finishedFailed: 0,
     hiddenSystem: items.length ? 0 : occupied.length,
   };
 }
@@ -399,11 +400,16 @@ function seedItems(
 ) {
   const seeds = new Set<string>();
   let unshown = 0;
+  let finishedFailed = 0;
   for (const { view, entity } of scoped) {
-    if (
-      !matches(entity, options.search) ||
-      (options.problems && !graphProblem(entity, now))
-    ) {
+    if (!matches(entity, options.search)) {
+      continue;
+    }
+    if (options.problems && !liveProblem(entity, now)) {
+      // Finished pods that failed are history: counted, never a problem.
+      if (entity.kind === "Pod" && podPhase(entity) === "Failed") {
+        finishedFailed++;
+      }
       continue;
     }
     const subject = graphSubject(view, entity);
@@ -413,7 +419,31 @@ function seedItems(
       unshown++;
     }
   }
-  return { seeds, unshown };
+  return { seeds, unshown, finishedFailed };
+}
+
+// Pods with no owning workload that are not an endpoint of a Service in view
+// have no card to expand them from. A namespace canvas draws them on their
+// own, so every pod its namespace card counts can be reached.
+function standalonePods(scoped: ResourceItem[]) {
+  const endpoints = new Set<string>();
+  for (const { view, entity } of scoped) {
+    if (entity.kind === "Service") {
+      for (const pod of relatedPods(view, entity)) {
+        endpoints.add(resourceId({ view, entity: pod }));
+      }
+    }
+  }
+  return new Set(
+    scoped
+      .filter(
+        (item) =>
+          item.entity.kind === "Pod" &&
+          !owningWorkload(item.view, item.entity) &&
+          !endpoints.has(resourceId(item))
+      )
+      .map(resourceId)
+  );
 }
 
 // Search context: whatever is directly related to a match.
@@ -461,12 +491,12 @@ function problemContext(seeds: Set<string>, links: GraphLink[]) {
   return selected;
 }
 
-function graphItem(item: ResourceItem): GraphItem {
+function graphItem(item: ResourceItem, standalone = false): GraphItem {
   const index = graphIndex(item.view);
   return {
     ...item,
     id: resourceId(item),
-    lane: laneOf(item.entity.kind),
+    lane: standalone ? workloadLane : laneOf(item.entity.kind),
     autoscalers: index.autoscalers.get(item.entity.uid),
     replicaSets: index.replicaSets.get(item.entity.uid),
   };
@@ -499,9 +529,13 @@ function selectIds(
   options: ServiceGraphOptions
 ) {
   if (!(options.search || options.problems)) {
-    return { selected: new Set(candidates.keys()), unshown: 0 };
+    return {
+      selected: new Set(candidates.keys()),
+      unshown: 0,
+      finishedFailed: 0,
+    };
   }
-  const { seeds, unshown } = seedItems(
+  const { seeds, unshown, finishedFailed } = seedItems(
     scoped,
     options,
     options.now ?? Date.now()
@@ -511,6 +545,7 @@ function selectIds(
       ? problemContext(seeds, links)
       : searchContext(seeds, links),
     unshown,
+    finishedFailed,
   };
 }
 
@@ -525,12 +560,15 @@ export function serviceGraph(
   const scoped = filterResources(views, "", "all", options.showSystem).filter(
     ({ entity }) => inScope(entity, options)
   );
+  const standalone = focused ? new Set<string>() : standalonePods(scoped);
   const candidates = new Map(
     scoped
       .filter(
-        ({ view, entity }) =>
-          graphSubject(view, entity) === entity &&
-          (focused || graphKinds.has(entity.kind))
+        (item) =>
+          graphSubject(item.view, item.entity) === item.entity &&
+          (focused ||
+            graphKinds.has(item.entity.kind) ||
+            standalone.has(resourceId(item)))
       )
       .map((item) => [resourceId(item), item])
   );
@@ -545,12 +583,17 @@ export function serviceGraph(
     }
   }
   const links = structuralLinks(views, [...candidates.values()]);
-  const { selected, unshown } = selectIds(scoped, links, candidates, options);
+  const { selected, unshown, finishedFailed } = selectIds(
+    scoped,
+    links,
+    candidates,
+    options
+  );
   const items: GraphItem[] = [];
   for (const id of selected) {
     const item = candidates.get(id);
     if (item) {
-      items.push(graphItem(item));
+      items.push(graphItem(item, standalone.has(id)));
     }
   }
   expandPods(
@@ -559,10 +602,13 @@ export function serviceGraph(
     options.expanded,
     new Set(scoped.filter((item) => item.entity.kind === "Pod").map(resourceId))
   );
+  // Within a lane, standalone pods follow the cards, so a namespace full of
+  // finished Job pods cannot push its workloads past the bound.
   const bounded = items
     .sort(
       (a, b) =>
         a.lane - b.lane ||
+        Number(a.entity.kind === "Pod") - Number(b.entity.kind === "Pod") ||
         (a.entity.namespace ?? "").localeCompare(b.entity.namespace ?? "") ||
         a.entity.name.localeCompare(b.entity.name)
     )
@@ -574,6 +620,7 @@ export function serviceGraph(
     links: links.filter((link) => ids.has(link.source) && ids.has(link.target)),
     grouped: false,
     unshown,
+    finishedFailed,
     hiddenSystem:
       bounded.length || !focused ? 0 : hiddenSystemSeeds(views, options),
   };
@@ -911,7 +958,7 @@ function components(items: GraphItem[], neighbours: Map<string, Set<string>>) {
   }
   // Read chains in workload order; chains without a workload follow.
   const rank = (group: GraphItem[]) => {
-    const anchor = group.find((member) => member.lane === 2);
+    const anchor = group.find((member) => member.lane === workloadLane);
     return anchor
       ? (order.get(anchor.id) ?? 0)
       : items.length + (order.get(group[0].id) ?? 0);
@@ -970,7 +1017,7 @@ function layoutComponent(
     append(byLane, item.lane, item);
   }
   const used = [...byLane.keys()].sort((a, b) => a - b);
-  const anchor = used.includes(2) ? 2 : used[0];
+  const anchor = used.includes(workloadLane) ? workloadLane : used[0];
   const left = used.filter((lane) => lane < anchor).reverse();
   const right = used.filter((lane) => lane > anchor);
   const y = new Map<string, number>();

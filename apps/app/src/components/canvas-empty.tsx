@@ -106,11 +106,21 @@ function scopeText(namespace: string) {
   return namespace === "all" ? "any namespace" : namespace;
 }
 
+// Finished pods that failed are history, named so the counts add up but
+// never presented as a problem.
+function historyText(finishedFailed: number) {
+  if (!finishedFailed) {
+    return "";
+  }
+  return ` ${counted(finishedFailed, "finished pod")} with failures ${finishedFailed === 1 ? "is" : "are"} kept as history.`;
+}
+
 function emptyCopy(props: EmptyProps): EmptyCopy {
   const { graph, problems, search, showSystem, frozen } = props;
   const scope = scopeText(props.namespace);
   const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads or unready nodes in ${scope}.`;
+  const problemList = `No failing pods, under-replicated workloads or node problems in ${scope}.`;
+  const history = historyText(graph.finishedFailed);
   switch (emptyTopology(graph, { problems, search }, props.coverage)) {
     case "hiddenSystem":
       return hiddenCopy(props);
@@ -130,7 +140,7 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
           graph.unshown
             ? ` ${graph.unshown} matching volume, EndpointSlice or idle ReplicaSet record${graph.unshown === 1 ? " has" : "s have"} no card; the List view shows them.`
             : " Try a name, kind, namespace or status."
-        }`,
+        }${history}`,
       };
     case "unobserved":
       return {
@@ -142,15 +152,15 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
       return {
         icon: Clock,
         title: props.coverage.aged
-          ? "No problems in the last inventory"
-          : "No problems in the observed clusters",
-        description: `${coverageNotes(props)} ${problemList}`,
+          ? "No live problems in the last inventory"
+          : "No live problems in the observed clusters",
+        description: `${coverageNotes(props)} ${problemList}${history}`,
       };
     case "healthy":
       return {
         icon: CircleCheck,
-        title: "No problems observed",
-        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}`,
+        title: "No live problems observed",
+        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}${history}`,
       };
     default:
       return {

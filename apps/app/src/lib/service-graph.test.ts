@@ -1,6 +1,6 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
-import { cardStatus } from "./canvas-cards";
+import { cardStatus, podDetail, toneOf } from "./canvas-cards";
 import { summarize } from "./infrastructure";
 import {
   activatedCard,
@@ -143,6 +143,24 @@ function fixture(): ClusterView {
     },
   };
 }
+function find(view: ClusterView, uid: string) {
+  const found = view.inventory.entities.find((item) => item.uid === uid);
+  if (!found) {
+    throw new Error(`fixture has ${uid}`);
+  }
+  return found;
+}
+// The fixture with its crashing checkout pod recovered: no live problem.
+function healthyFixture() {
+  const view = fixture();
+  Object.assign(find(view, "checkout-2"), {
+    status: "Running",
+    ready: 1,
+    restarts: 0,
+  });
+  find(view, "checkout").ready = 2;
+  return view;
+}
 const options: ServiceGraphOptions = {
   search: "",
   namespace: "shop",
@@ -273,6 +291,52 @@ describe("problems-only topology", () => {
     });
     expect(status.tone).toBe("neutral");
     expect(status.text).toBe("2/2 ready · Failed · 1 of 3 pods");
+  });
+
+  it("seeds a ready node whose network is unavailable", () => {
+    const view = healthyFixture();
+    const node = find(view, "node-b");
+    node.conditions = [
+      { type: "Ready", status: "True" },
+      { type: "NetworkUnavailable", status: "True", reason: "NoRouteCreated" },
+    ];
+    expect(itemProblem({ view, entity: node }, now)).toBe(true);
+    expect(toneOf(node, itemProblem({ view, entity: node }, now), false)).toBe(
+      "warning"
+    );
+    const graph = serviceGraph([view], {
+      ...options,
+      namespace: "all",
+      problems: true,
+    });
+    expect(uids(graph.items)).toEqual(["node-b"]);
+  });
+
+  it("leaves finished failed pods out and counts them as history", () => {
+    const view = healthyFixture();
+    view.inventory.entities.push(
+      pod("report-1", { status: "Failed / OOM observed", ready: 0 }),
+      pod("report-2", { status: "Failed", ready: 0 }),
+      pod("report-3", { status: "Succeeded / OOM observed", ready: 0 })
+    );
+    view.inventory.edges.push(edge("report-2", "cart-rs", "owned_by"));
+    const graph = serviceGraph([view], { ...options, problems: true });
+    expect(graph.items).toHaveLength(0);
+    expect(graph.finishedFailed).toBe(2);
+    expect(
+      emptyTopology(
+        graph,
+        { problems: true, search: "" },
+        { total: 1, observed: 1, missing: 0, aged: 0 }
+      )
+    ).toBe("healthy");
+    // A live problem is still drawn; the history stays counted, not drawn.
+    find(view, "checkout-2").ready = 0;
+    const live = serviceGraph([view], { ...options, problems: true });
+    expect(uids(live.items)).toContain("checkout-2");
+    expect(uids(live.items)).not.toContain("report-1");
+    expect(live.finishedFailed).toBe(2);
+    expect(serviceGraph([view], options).finishedFailed).toBe(0);
   });
 
   it("keeps a pod inside its start-up grace out of the problem view", () => {
@@ -598,6 +662,96 @@ describe("layout", () => {
       expect(positions[item.id].x).toBeGreaterThanOrEqual(
         positions["synthetic:cart"].x + cardSize.width
       );
+    }
+  });
+});
+
+describe("standalone pods", () => {
+  // An ownerless finished pod, an ownerless crashing pod and an ownerless
+  // pod that serves the cart Service, beside the owned chains.
+  function standaloneFixture() {
+    const view = fixture();
+    view.inventory.entities.push(
+      pod("smoke-check", { status: "Failed", ready: 0 }),
+      pod("debug-shell", {
+        status: "CrashLoopBackOff",
+        ready: 0,
+        restarts: 4,
+      }),
+      pod("bare-endpoint")
+    );
+    view.inventory.edges.push(
+      edge("cart-svc", "bare-endpoint", "has_endpoint")
+    );
+    return view;
+  }
+
+  it("draws pods with no workload or Service on the namespace canvas", () => {
+    const view = standaloneFixture();
+    const graph = serviceGraph([view], options);
+    const smoke = graph.items.find((item) => item.entity.uid === "smoke-check");
+    // In the workload lane, as a card of its own rather than a pod chip
+    // hanging from an expanded parent.
+    expect(smoke?.lane).toBe(2);
+    expect(smoke?.parent).toBeUndefined();
+    expect(uids(graph.items)).toContain("debug-shell");
+    // Owned pods and Service endpoints stay behind their card's toggle.
+    expect(uids(graph.items)).not.toContain("bare-endpoint");
+    expect(uids(graph.items)).not.toContain("cart-1");
+    const expanded = serviceGraph([view], {
+      ...options,
+      expanded: ["synthetic:cart-svc"],
+    });
+    expect(
+      expanded.items.find((item) => item.entity.uid === "bare-endpoint")?.parent
+    ).toBe("synthetic:cart-svc");
+    const positions = stablePositions(graph.items, {}, graph.links);
+    expect(positions["synthetic:smoke-check"]).toBeDefined();
+  });
+
+  it("shows a finished standalone pod as history and a live one as a problem", () => {
+    const view = standaloneFixture();
+    const graph = serviceGraph([view], options);
+    const card = (uid: string) => {
+      const item = graph.items.find((entry) => entry.entity.uid === uid);
+      if (!item) {
+        throw new Error(`graph draws ${uid}`);
+      }
+      return item;
+    };
+    const smoke = card("smoke-check");
+    const smokeProblem = itemProblem(smoke, now);
+    expect(smokeProblem).toBe(false);
+    expect(toneOf(smoke.entity, smokeProblem, false)).toBe("neutral");
+    expect(podDetail(smoke.entity)).toBe("Finished · Failed · 0 restarts");
+    const debug = card("debug-shell");
+    expect(toneOf(debug.entity, itemProblem(debug, now), false)).toBe(
+      "warning"
+    );
+  });
+
+  it("lists standalone pods in the phone tree", () => {
+    const tree = topologyTree(serviceGraph([standaloneFixture()], options));
+    const roots = tree.map((entry) => entry.item.entity.uid);
+    expect(roots).toContain("smoke-check");
+    expect(roots).toContain("debug-shell");
+  });
+
+  it("keeps standalone pods behind the workloads when the graph is bounded", () => {
+    const view = standaloneFixture();
+    for (let index = 0; index < 220; index++) {
+      view.inventory.entities.push(
+        pod(`a-job-${String(index).padStart(3, "0")}`, {
+          status: "Succeeded",
+          ready: 0,
+        })
+      );
+    }
+    const graph = serviceGraph([view], options);
+    expect(graph.items).toHaveLength(200);
+    expect(graph.total).toBeGreaterThan(200);
+    for (const uid of ["cart", "checkout", "worker", "cart-svc", "cart-in"]) {
+      expect(uids(graph.items)).toContain(uid);
     }
   });
 });
