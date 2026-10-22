@@ -9,8 +9,17 @@ import {
 import { Input } from "@jood-monitor/ui/input";
 import { Label } from "@jood-monitor/ui/label";
 import { useForm } from "@tanstack/react-form";
-import { Clock3 } from "lucide-react";
+import { CalendarClock } from "lucide-react";
 import { useState } from "react";
+import { useDisplay } from "../hooks/display";
+import { fromZonedInput, timeZoneLabel, toZonedInput } from "../lib/time";
+
+const presets = [
+  { label: "15 min ago", minutes: 15 },
+  { label: "1 hour ago", minutes: 60 },
+  { label: "6 hours ago", minutes: 360 },
+  { label: "1 day ago", minutes: 1440 },
+];
 
 export function ObservationTime({
   at,
@@ -20,23 +29,26 @@ export function ObservationTime({
   onSelect: (at: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { timeZone } = useDisplay();
   return (
     <>
       <Button
-        aria-label="Choose observation time"
+        aria-label="Go to a saved observation time"
         onClick={() => setOpen(true)}
         size="icon-sm"
+        title="Go to a saved observation time"
         variant="outline"
       >
-        <Clock3 />
+        <CalendarClock />
       </Button>
       <Dialog onOpenChange={setOpen} open={open}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Inspect a saved observation</DialogTitle>
+            <DialogTitle>View a saved observation</DialogTitle>
             <DialogDescription>
-              Select the end of the history window in Riyadh time (UTC+3).
-              Missing coverage remains visible.
+              Inventory and metrics are shown as they were saved at the chosen
+              time. Missing coverage stays visible; collection status is not
+              retained historically.
             </DialogDescription>
           </DialogHeader>
           {open && (
@@ -46,6 +58,7 @@ export function ObservationTime({
                 onSelect(selected);
                 setOpen(false);
               }}
+              timeZone={timeZone}
             />
           )}
         </DialogContent>
@@ -56,72 +69,94 @@ export function ObservationTime({
 
 function ObservationForm({
   at,
+  timeZone,
   onSelect,
 }: {
   at?: string;
+  timeZone: string;
   onSelect: (at: string) => void;
 }) {
+  const zone = timeZoneLabel(timeZone);
   const form = useForm({
     defaultValues: {
-      time: new Date(at ?? Date.now())
-        .toLocaleString("sv-SE", { timeZone: "Asia/Riyadh" })
-        .replace(" ", "T")
-        .slice(0, 16),
+      time: toZonedInput(at ? Date.parse(at) : Date.now(), timeZone),
     },
-    onSubmit: ({ value }) =>
-      onSelect(new Date(`${value.time}:00+03:00`).toISOString()),
+    onSubmit: ({ value }) => {
+      const time = fromZonedInput(value.time, timeZone);
+      if (time != null) {
+        onSelect(new Date(time).toISOString());
+      }
+    },
   });
+  const validTime = (value: string) => {
+    const time = fromZonedInput(value, timeZone);
+    return time != null && time <= Date.now() && time > 0;
+  };
   return (
-    <form
-      className="space-y-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        form.handleSubmit();
-      }}
-    >
-      <form.Field
-        name="time"
-        validators={{
-          onChange: ({ value }) =>
-            validTime(value) ? undefined : "Choose a valid time in the past.",
-          onSubmit: ({ value }) =>
-            validTime(value) ? undefined : "Choose a valid time in the past.",
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <p className="font-medium text-sm">Quick jump</p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {presets.map((preset) => (
+            <Button
+              key={preset.minutes}
+              onClick={() =>
+                onSelect(
+                  new Date(Date.now() - preset.minutes * 60_000).toISOString()
+                )
+              }
+              size="sm"
+              variant="outline"
+            >
+              {preset.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          form.handleSubmit();
         }}
       >
-        {(field) => (
-          <div className="space-y-2">
-            <Label htmlFor="observation-time">Observation time · Riyadh</Label>
-            <Input
-              aria-invalid={field.state.meta.errors.length > 0}
-              id="observation-time"
-              onChange={(event) => field.handleChange(event.target.value)}
-              required
-              type="datetime-local"
-              value={field.state.value}
-            />
-            {field.state.meta.errors.map((error) => (
+        <form.Field
+          name="time"
+          validators={{
+            onChange: ({ value }) =>
+              validTime(value) ? undefined : "Choose a valid time in the past.",
+          }}
+        >
+          {(field) => (
+            <div className="space-y-2">
+              <Label htmlFor="observation-time">Exact time · {zone}</Label>
+              <Input
+                aria-describedby="observation-time-error"
+                aria-invalid={field.state.meta.errors.length > 0}
+                id="observation-time"
+                onChange={(event) => field.handleChange(event.target.value)}
+                required
+                type="datetime-local"
+                value={field.state.value}
+              />
               <p
-                className="text-destructive text-xs"
-                key={String(error)}
+                className="min-h-4 text-destructive-text text-xs"
+                id="observation-time-error"
                 role="alert"
               >
-                {error}
+                {field.state.meta.errors.join(" ")}
               </p>
-            ))}
-          </div>
-        )}
-      </form.Field>
-      <form.Subscribe selector={(state) => state.canSubmit}>
-        {(canSubmit) => (
-          <Button disabled={!canSubmit} type="submit">
-            Inspect saved observation
-          </Button>
-        )}
-      </form.Subscribe>
-    </form>
+            </div>
+          )}
+        </form.Field>
+        <form.Subscribe selector={(state) => state.canSubmit}>
+          {(canSubmit) => (
+            <Button disabled={!canSubmit} type="submit">
+              View saved observation
+            </Button>
+          )}
+        </form.Subscribe>
+      </form>
+    </div>
   );
-}
-function validTime(value: string) {
-  const time = Date.parse(`${value}:00+03:00`);
-  return Number.isFinite(time) && time <= Date.now() && time > 0;
 }

@@ -1,7 +1,7 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import { attentionItems } from "./attention";
 import {
-  attentionItems,
   owningWorkload,
   relatedPods,
   resourceStatus,

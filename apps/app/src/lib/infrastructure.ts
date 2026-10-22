@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { freshness, observedUsage } from "./metrics";
+import { observedUsage } from "./metrics";
 
 export const workloadKinds = new Set([
   "Deployment",
@@ -222,7 +222,7 @@ export function resourceStatus(entity: Entity) {
     return (
       ({ True: "Ready", False: "Not ready" } as Record<string, string>)[
         entity.status
-      ] ?? "Unknown"
+      ] ?? "Not reporting"
     );
   }
   if (
@@ -244,7 +244,7 @@ export function resourceStatus(entity: Entity) {
 
 export function hasProblem(entity: Entity) {
   return (
-    (entity.kind === "Node" && entity.status === "False") ||
+    (entity.kind === "Node" && entity.status !== "True") ||
     (entity.kind === "Pod" &&
       !["Succeeded", "Completed"].includes(entity.status) &&
       (entity.ready === 0 ||
@@ -257,90 +257,6 @@ export function hasProblem(entity: Entity) {
       (condition) =>
         condition.type.endsWith("Pressure") && condition.status === "True"
     ) === true
-  );
-}
-
-export interface Attention extends ResourceItem {
-  severity: "warning" | "critical" | "info";
-  title: string;
-}
-function entityAttention(
-  view: ClusterView,
-  entity: Entity,
-  now: number
-): Attention[] {
-  const items: Attention[] = [];
-  if (hasProblem(entity)) {
-    items.push({
-      view,
-      entity,
-      title:
-        entity.kind === "Node"
-          ? "Node reports a readiness or pressure condition"
-          : `Pod ${resourceStatus(entity)}`,
-      severity: "warning",
-    });
-  }
-  if (entity.kind !== "Node") {
-    return items;
-  }
-  const memory = percent(
-    observedUsage(view, entity, "memory", now),
-    entity.capacityMemory
-  );
-  if (memory != null && memory >= 90) {
-    items.push({
-      view,
-      entity,
-      title: `Memory at ${memory.toFixed(1)}% of capacity`,
-      severity: "critical",
-    });
-  }
-  if (
-    observedUsage(view, entity, "cpu", now) == null ||
-    observedUsage(view, entity, "memory", now) == null
-  ) {
-    items.push({
-      view,
-      entity,
-      title: "Resource measurements are missing or stale",
-      severity: "info",
-    });
-  }
-  return items;
-}
-export function attentionItems(
-  views: ClusterView[],
-  now: number,
-  frozen = false
-): Attention[] {
-  const items: Attention[] = [];
-  for (const view of views) {
-    const entities = view.inventory.entities.filter(
-      (entity) => entity.kind === "Node" || entity.kind === "Pod"
-    );
-    const node = entities.find((entity) => entity.kind === "Node");
-    if (
-      !frozen &&
-      node &&
-      freshness(view.cluster.heartbeatAt, now) !== "fresh"
-    ) {
-      items.push({
-        view,
-        entity: node,
-        title: "Observer heartbeat is stale",
-        severity: "critical",
-      });
-    }
-    items.push(
-      ...entities.flatMap((entity) => entityAttention(view, entity, now))
-    );
-  }
-  const priority = { critical: 0, warning: 1, info: 2 };
-  return items.sort(
-    (a, b) =>
-      priority[a.severity] - priority[b.severity] ||
-      a.entity.name.localeCompare(b.entity.name)
   );
 }
 
