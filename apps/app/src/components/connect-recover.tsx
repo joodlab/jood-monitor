@@ -21,7 +21,7 @@ type Cluster = ClusterView["cluster"];
 
 // What the hub will most likely do, from what the operator view can see.
 // Credential state itself is never exposed to operators.
-function RenewalHint({ cluster }: { cluster: Cluster }) {
+export function RenewalHint({ cluster }: { cluster: Cluster }) {
   if (cluster.revoked) {
     return (
       <p className="flex items-start gap-1.5 text-muted-foreground text-xs">
@@ -148,8 +148,8 @@ export function ConnectRecover({
           {selected && <RenewalHint cluster={selected} />}
           {!options.length && (
             <p className="text-muted-foreground text-xs">
-              No clusters in this workspace. Switch workspace from the sidebar
-              to renew a cluster elsewhere.
+              No clusters in this workspace. Switch workspace from the workspace
+              menu in the top bar to renew a cluster elsewhere.
             </p>
           )}
         </div>

@@ -10,27 +10,38 @@ import {
   type ProfileDraft,
 } from "./collection-model";
 import { FieldNote } from "./connect-parts";
+import { StagedPill, stagedSurface } from "./settings-rail";
 
 const filterThreshold = 12;
 
+// A chip whose state differs from the applied profile is staged: added
+// chips are tinted, removed ones are tinted, dashed and struck through.
 function NamespaceChip({
   name,
   checked,
+  staged,
   disabled,
   missing,
   onToggle,
 }: {
   name: string;
   checked: boolean;
+  staged: boolean;
   disabled: boolean;
   missing: boolean;
   onToggle: () => void;
 }) {
+  let stagedNote = "";
+  if (staged) {
+    stagedNote = checked ? " (staged to add)" : " (staged to remove)";
+  }
   return (
     <label
       className={cn(
         "inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full border px-3 text-xs transition-colors hover:bg-muted/50 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
-        checked && "border-primary bg-primary/10",
+        checked && !staged && "border-primary bg-primary/10",
+        staged && cn(stagedSurface, "text-staged-text"),
+        staged && !checked && "border-dashed",
         disabled && "cursor-not-allowed opacity-50"
       )}
     >
@@ -42,11 +53,20 @@ function NamespaceChip({
         type="checkbox"
       />
       {checked ? (
-        <Check aria-hidden className="size-3.5 text-primary" />
+        <Check
+          aria-hidden
+          className={cn(
+            "size-3.5",
+            staged ? "text-staged-text" : "text-primary"
+          )}
+        />
       ) : (
         <Plus aria-hidden className="size-3.5 text-muted-foreground" />
       )}
-      <span className="font-mono">{name}</span>
+      <span className={cn("font-mono", staged && !checked && "line-through")}>
+        {name}
+      </span>
+      {stagedNote && <span className="sr-only">{stagedNote}</span>}
       {missing && (
         <span className="text-muted-foreground">· not in inventory</span>
       )}
@@ -103,7 +123,7 @@ function AddNamespace({
           value={value}
         />
         <Button
-          className="h-8"
+          className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
           disabled={disabled || !value.trim()}
           onClick={add}
           size="sm"
@@ -122,19 +142,22 @@ function NamespaceChoices({
   known,
   inventory,
   selected,
+  current,
   disabled,
   onChange,
 }: {
   known: string[];
   inventory: Set<string>;
   selected: string[];
+  // Namespaces in the applied profile.
+  current: string[];
   disabled: boolean;
   onChange: (namespaces: string[]) => void;
 }) {
   const uid = useId();
   const [filter, setFilter] = useState("");
   const atLimit = selected.length >= namespaceLimit;
-  const names = [...new Set([...known, ...selected])].sort((a, b) =>
+  const names = [...new Set([...known, ...selected, ...current])].sort((a, b) =>
     a.localeCompare(b)
   );
   const visible = filter
@@ -193,6 +216,7 @@ function NamespaceChoices({
                       : [...selected, name]
                   )
                 }
+                staged={checked !== current.includes(name)}
               />
             );
           })}
@@ -218,18 +242,22 @@ function NamespaceChoices({
 
 export function NamespaceField({
   draft,
+  current,
   known,
   inventory,
   disabled,
   onChange,
 }: {
   draft: ProfileDraft;
+  // Namespaces in the applied profile; empty means all namespaces.
+  current: string[];
   known: string[];
   inventory: Set<string>;
   disabled: boolean;
   onChange: (next: Pick<ProfileDraft, "scope" | "namespaces">) => void;
 }) {
   const uid = useId();
+  const currentScope = current.length ? "selected" : "all";
   const scopes = [
     {
       value: "all" as const,
@@ -244,44 +272,58 @@ export function NamespaceField({
   ];
   return (
     <fieldset className="space-y-2" disabled={disabled}>
-      <legend className="font-medium text-sm">Pod metrics namespaces</legend>
-      <p className="text-muted-foreground text-xs" id={`${uid}-note`}>
-        Limits pod and container usage metrics. Node metrics and inventory are
-        unaffected.
-        {draft.name === "basic" &&
-          " Basic does not collect pod metrics, so this applies once you switch to Standard or Diagnostic."}
-      </p>
+      <legend className="sr-only">Pod metrics namespaces</legend>
+      {draft.name === "basic" && (
+        <p className="text-muted-foreground text-xs" id={`${uid}-note`}>
+          Basic does not collect pod metrics, so this applies once you switch to
+          Standard or Diagnostic.
+        </p>
+      )}
       <div
-        aria-describedby={`${uid}-note`}
-        className="space-y-2"
+        aria-describedby={draft.name === "basic" ? `${uid}-note` : undefined}
+        className="space-y-1"
         role="radiogroup"
       >
-        {scopes.map((scope) => (
-          <label
-            className="flex cursor-pointer items-start gap-2.5 rounded-md py-1 text-sm has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
-            key={scope.value}
-          >
-            <input
-              checked={draft.scope === scope.value}
-              className="mt-1 size-4 accent-primary"
-              name={`${uid}-scope`}
-              onChange={() =>
-                onChange({ scope: scope.value, namespaces: draft.namespaces })
-              }
-              type="radio"
-              value={scope.value}
-            />
-            <span>
-              <span className="block">{scope.label}</span>
-              <span className="block text-muted-foreground text-xs">
-                {scope.detail}
+        {scopes.map((scope) => {
+          const checked = draft.scope === scope.value;
+          const pending = checked && scope.value !== currentScope;
+          return (
+            <label
+              className={cn(
+                "flex cursor-pointer items-start gap-2.5 rounded-md border border-transparent px-2 py-1.5 text-sm has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
+                pending && stagedSurface
+              )}
+              key={scope.value}
+            >
+              <input
+                checked={checked}
+                className={cn(
+                  "mt-1 size-4",
+                  pending ? "accent-staged" : "accent-primary"
+                )}
+                name={`${uid}-scope`}
+                onChange={() =>
+                  onChange({ scope: scope.value, namespaces: draft.namespaces })
+                }
+                type="radio"
+                value={scope.value}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  {scope.label}
+                  {pending && <StagedPill />}
+                </span>
+                <span className="block text-muted-foreground text-xs">
+                  {scope.detail}
+                </span>
               </span>
-            </span>
-          </label>
-        ))}
+            </label>
+          );
+        })}
       </div>
       {draft.scope === "selected" && (
         <NamespaceChoices
+          current={current}
           disabled={disabled}
           inventory={inventory}
           known={known}

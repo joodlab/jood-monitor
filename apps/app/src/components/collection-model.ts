@@ -81,7 +81,7 @@ function unique(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-function draftNamespaces(draft: ProfileDraft) {
+export function draftNamespaces(draft: ProfileDraft) {
   return draft.scope === "all" ? [] : unique(draft.namespaces);
 }
 
@@ -148,32 +148,68 @@ function profileChange(
     : undefined;
 }
 
-// Human-readable changes the draft would request; empty when unchanged.
+// The settings a draft can change. Each maps to one staged change.
+export type DraftField = "profile" | "namespaces" | "paused";
+
+interface DraftFieldChange {
+  field: DraftField;
+  summary: string;
+}
+
+// The changes the draft would request, per setting; empty when unchanged.
 // Other changes keep a running diagnostic's expiry unless the draft
 // explicitly restarts it.
+export function draftFieldChanges(
+  draft: ProfileDraft,
+  profile: Profile,
+  nodeName: (uid: string) => string = (uid) => uid,
+  now = Date.now()
+) {
+  const changes: DraftFieldChange[] = [];
+  const change = profileChange(draft, profile, nodeName, now);
+  if (change) {
+    changes.push({ field: "profile", summary: change });
+  }
+  const namespaces = draftNamespaces(draft);
+  if (!sameNamespaces(namespaces, profile.namespaces)) {
+    changes.push({
+      field: "namespaces",
+      summary: `Collect pod metrics in ${namespaceSummary(namespaces)} instead of ${namespaceSummary(profile.namespaces)}`,
+    });
+  }
+  if (draft.paused !== profile.paused) {
+    changes.push({
+      field: "paused",
+      summary: draft.paused
+        ? "Pause new samples"
+        : "Resume collecting new samples",
+    });
+  }
+  return changes;
+}
+
+// Human-readable changes the draft would request; empty when unchanged.
 export function draftChanges(
   draft: ProfileDraft,
   profile: Profile,
   nodeName: (uid: string) => string = (uid) => uid,
   now = Date.now()
 ) {
-  const changes: string[] = [];
-  const change = profileChange(draft, profile, nodeName, now);
-  if (change) {
-    changes.push(change);
-  }
-  const namespaces = draftNamespaces(draft);
-  if (!sameNamespaces(namespaces, profile.namespaces)) {
-    changes.push(
-      `Collect pod metrics in ${namespaceSummary(namespaces)} instead of ${namespaceSummary(profile.namespaces)}`
-    );
-  }
-  if (draft.paused !== profile.paused) {
-    changes.push(
-      draft.paused ? "Pause new samples" : "Resume collecting new samples"
-    );
-  }
-  return changes;
+  return draftFieldChanges(draft, profile, nodeName, now).map(
+    (change) => change.summary
+  );
+}
+
+// Why the hub schema rejected a request, as one sentence.
+export function validationText(error: {
+  issues: { path: PropertyKey[]; message: string }[];
+}) {
+  return `The request is invalid: ${error.issues
+    .map(
+      (issue) =>
+        `${issue.path.map(String).join(".") || "profile"} ${issue.message}`
+    )
+    .join("; ")}.`;
 }
 
 export function namespaceProblem(value: string, selected: string[]) {
@@ -224,31 +260,42 @@ function diagnosticProblem(
   return;
 }
 
-// Problems that block applying the draft, written as next steps. With the
-// current profile, a running diagnostic about to end is also flagged.
+// Problems that block applying the draft, per setting, written as next
+// steps. With the current profile, a running diagnostic about to end is also
+// flagged.
+export function draftFieldProblems(
+  draft: ProfileDraft,
+  nodes: Entity[],
+  profile?: Profile,
+  now = Date.now()
+) {
+  const diagnostic = diagnosticProblem(draft, nodes, profile, now);
+  const namespaces = draftNamespaces(draft);
+  const namespaceProblems: string[] = [];
+  if (draft.scope === "selected" && namespaces.length === 0) {
+    namespaceProblems.push(
+      "Select at least one namespace, or collect pod metrics from all namespaces."
+    );
+  }
+  if (namespaces.length > namespaceLimit) {
+    namespaceProblems.push(
+      `Select at most ${namespaceLimit} namespaces (currently ${namespaces.length}), or collect from all namespaces.`
+    );
+  }
+  return {
+    profile: diagnostic ? [diagnostic] : [],
+    namespaces: namespaceProblems,
+  };
+}
+
 export function draftProblems(
   draft: ProfileDraft,
   nodes: Entity[],
   profile?: Profile,
   now = Date.now()
 ) {
-  const problems: string[] = [];
-  const diagnostic = diagnosticProblem(draft, nodes, profile, now);
-  if (diagnostic) {
-    problems.push(diagnostic);
-  }
-  const namespaces = draftNamespaces(draft);
-  if (draft.scope === "selected" && namespaces.length === 0) {
-    problems.push(
-      "Select at least one namespace, or collect pod metrics from all namespaces."
-    );
-  }
-  if (namespaces.length > namespaceLimit) {
-    problems.push(
-      `Select at most ${namespaceLimit} namespaces (currently ${namespaces.length}), or collect from all namespaces.`
-    );
-  }
-  return problems;
+  const problems = draftFieldProblems(draft, nodes, profile, now);
+  return [...problems.profile, ...problems.namespaces];
 }
 
 // The profile sent to the hub. The hub assigns the next revision and the
@@ -288,6 +335,31 @@ export function activeDiagnostic(profile: Profile, now: number) {
     expiresAt,
     returnTo: returnProfile(profile),
   };
+}
+
+export function clusterNodes(view: ClusterView) {
+  return view.inventory.entities.filter((entity) => entity.kind === "Node");
+}
+
+// The node's inventory name, or its UID when the inventory has no name.
+export function nodeNamer(view: ClusterView) {
+  const names = new Map(
+    clusterNodes(view).map((node) => [node.uid, node.name])
+  );
+  return (uid: string) => names.get(uid) ?? uid;
+}
+
+const capabilityLabels: Record<string, string> = {
+  inventory: "Kubernetes inventory",
+  host_proc: "Host counters",
+  token_review: "Node identity (TokenReview)",
+  metrics_api: "Metrics API",
+  metrics_api_unavailable: "Metrics API unavailable",
+  inventory_unavailable: "Inventory unavailable",
+};
+
+export function capabilityLabel(capability: string) {
+  return capabilityLabels[capability] ?? capability;
 }
 
 // Namespaces known from inventory plus any already configured, so a
@@ -382,18 +454,77 @@ export function requestProgress(
   return { phase, observerReceived, ...counts };
 }
 
+export type RequestProgress = ReturnType<typeof requestProgress>;
+
+function plural(count: number, noun: string) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// A full sentence on where a requested revision stands.
+export function progressText(progress: RequestProgress, revision: number) {
+  const nodes = `${progress.acknowledged} of ${plural(progress.total, "node")} acknowledged`;
+  const observer = progress.observerReceived
+    ? "Observer received it"
+    : "Waiting for the observer to pick it up (it checks about every 15 seconds)";
+  switch (progress.phase) {
+    case "syncing":
+      return `Requested revision ${revision}. Loading the latest status…`;
+    case "superseded":
+      return `Revision ${revision} was replaced by a newer request.`;
+    case "observer-stale":
+      return `Requested revision ${revision}. The observer has no fresh heartbeat, so acknowledgments cannot be confirmed yet.`;
+    case "complete":
+      return `All ${plural(progress.total, "node")} acknowledged revision ${revision}.`;
+    default:
+      return progress.total
+        ? `Requested revision ${revision}. ${observer} · ${nodes}.`
+        : `Requested revision ${revision}. ${observer}. No nodes have reported yet.`;
+  }
+}
+
+// A short status line for compact surfaces such as the staged-changes card.
+export function progressSummary(progress: RequestProgress) {
+  switch (progress.phase) {
+    case "syncing":
+      return "Sent, loading the latest status…";
+    case "superseded":
+      return "Replaced by a newer request";
+    case "observer-stale":
+      return "Observer heartbeat stale, acknowledgments unconfirmed";
+    case "complete":
+      return `All ${plural(progress.total, "node")} acknowledged`;
+    default:
+      if (!progress.observerReceived) {
+        return "Waiting for the observer to pick it up";
+      }
+      return progress.total
+        ? `${progress.acknowledged} of ${plural(progress.total, "node")} acknowledged`
+        : "Observer received it, no nodes reported yet";
+  }
+}
+
 // While a profile request awaits acknowledgment, the snapshot is refreshed on
 // a capped backoff that ends with the patience window.
 export const ackPatienceMs = 3 * 60_000;
-const ackPollStepsMs = [10_000, 20_000, 30_000];
+// Refresh marks after the request: 10 s, 30 s, then every 30 s to the end of
+// the patience window.
+const ackPollMarksMs = [
+  10_000, 30_000, 60_000, 90_000, 120_000, 150_000, 180_000,
+];
+// A timer can fire a few milliseconds early; that tick still counts as its
+// mark rather than scheduling the same mark again.
+const ackPollToleranceMs = 500;
 
-// Delay before refresh `attempt` (0-based) when `elapsedMs` have passed since
-// the request, or undefined once that refresh would fall outside the window.
-export function ackPollDelay(attempt: number, elapsedMs: number) {
-  const delay =
-    ackPollStepsMs[Math.min(attempt, ackPollStepsMs.length - 1)] ??
-    ackPatienceMs;
-  return elapsedMs + delay > ackPatienceMs ? undefined : delay;
+// Delay until the next refresh mark when `elapsedMs` have passed since the
+// request, or undefined when no mark is left in the patience window. It
+// depends only on elapsed time, so a remounted poller keeps the schedule.
+export function ackPollDelay(elapsedMs: number) {
+  const mark = ackPollMarksMs.find(
+    (value) => value > elapsedMs + ackPollToleranceMs
+  );
+  return mark === undefined || mark > ackPatienceMs
+    ? undefined
+    : mark - elapsedMs;
 }
 
 // A profile request the hub accepted: its revision and when it was sent.

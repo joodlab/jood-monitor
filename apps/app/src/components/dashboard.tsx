@@ -7,18 +7,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@jood-monitor/ui/dialog";
-import { SidebarInset, SidebarProvider } from "@jood-monitor/ui/sidebar";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
-import {
-  type CSSProperties,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchEvents,
   fetchSnapshot,
@@ -28,26 +21,64 @@ import {
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
 import type { SearchState } from "../schemas/monitor";
-import { AppHeader, AppSidebar, navigation } from "./app-shell";
+import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
-import { AttentionPage } from "./attention-page";
 import { CommandPalette } from "./command-palette";
 import { EnrollForm } from "./enroll-form";
 import { EventsPage } from "./events-page";
-import { FleetOverview } from "./fleet-overview";
+import { NewWorkspace } from "./new-workspace";
+import { Observability } from "./observability";
 import { PageHeader } from "./page";
+import { ProjectBar, projectTabs } from "./project-bar";
+import { RangeSelect } from "./range-select";
 import { ResourceBrowser } from "./resource-browser";
 import { ResourceInspector } from "./resource-inspector";
 import { CollectionSettings } from "./settings-page";
 import { DataAge } from "./time";
+import { WorkspacesPage } from "./workspaces-page";
 
+const pageTitles: Record<string, string> = {
+  observability: "Observability",
+  resources: "Resources",
+  activity: "Activity",
+  settings: "Settings",
+  workspaces: "Workspaces",
+};
 const pageDescriptions: Record<string, string> = {
-  infrastructure:
-    "Discovered structure, servers and every observed resource. Topology shows configuration, not traffic.",
-  workloads: "Deployments, StatefulSets, DaemonSets, pods and services.",
+  observability:
+    "What needs attention, readiness and measured usage across the clusters in scope.",
+  resources: "Servers, workloads, pods and services, with filters and search.",
+  activity: "A timeline of what changed in the clusters in scope.",
   settings:
     "Observer health, collection profiles, diagnostics and cluster enrollment.",
+  workspaces: "Workspaces group clusters and scope what you see.",
 };
+
+// Switching workspace or cluster starts from that scope's whole map, so a
+// namespace or search from the previous scope cannot hide its resources.
+const scopeReset = { namespace: "all", q: "" } satisfies Partial<SearchState>;
+
+// Components written for the previous navigation still ask for its views;
+// translate them to the project tabs.
+function routeFor(view: string, extra: Partial<SearchState>) {
+  if (view === "infrastructure") {
+    if (extra.mode === "servers") {
+      return { view: "resources", tab: "servers" };
+    }
+    return extra.mode === "list"
+      ? { view: "resources", tab: "all" }
+      : { view: "architecture" };
+  }
+  if (view === "workloads") {
+    return { view: "resources", tab: extra.tab ?? "workloads" };
+  }
+  const legacy: Record<string, string> = {
+    overview: "observability",
+    attention: "observability",
+    events: "activity",
+  };
+  return { view: legacy[view] ?? view };
+}
 
 export function Dashboard() {
   const search = useSearch({ from: "/" });
@@ -150,11 +181,11 @@ function useDashboardNavigation() {
   const go = useCallback(
     (view: string, extra: Partial<SearchState> = {}) =>
       update({
-        view,
         resource: undefined,
         resourceCluster: undefined,
         diagnosticNode: undefined,
         ...extra,
+        ...routeFor(view, extra),
       }),
     [update]
   );
@@ -169,10 +200,21 @@ function useDashboardNavigation() {
   );
   const openCluster = useCallback(
     (view: ClusterView) =>
-      go("infrastructure", {
+      go("architecture", {
+        ...scopeReset,
         workspace: view.cluster.workspaceId,
         cluster: view.cluster.id,
-        mode: "servers",
+      }),
+    [go]
+  );
+  // The finder promises a cluster's servers.
+  const openClusterServers = useCallback(
+    (view: ClusterView) =>
+      go("resources", {
+        ...scopeReset,
+        tab: "servers",
+        workspace: view.cluster.workspaceId,
+        cluster: view.cluster.id,
       }),
     [go]
   );
@@ -187,7 +229,15 @@ function useDashboardNavigation() {
     }),
     [inspect, go]
   );
-  return { update, go, inspect, closeInspector, openCluster, actions };
+  return {
+    update,
+    go,
+    inspect,
+    closeInspector,
+    openCluster,
+    openClusterServers,
+    actions,
+  };
 }
 
 // ⌘K / Ctrl+K opens the finder. There is no single-key shortcut, so speech
@@ -214,28 +264,36 @@ function PageBody({
   navigation: { update, go, inspect, openCluster, actions },
   referenceTime,
   onConnect,
+  onNewWorkspace,
 }: {
   search: SearchState;
   data: ReturnType<typeof useMonitorData>;
   navigation: ReturnType<typeof useDashboardNavigation>;
   referenceTime: number;
   onConnect: () => void;
+  onNewWorkspace: () => void;
 }) {
   switch (search.view) {
-    case "attention":
+    case "architecture":
       return (
-        <AttentionPage
+        <Architecture
           actions={actions}
+          allViews={data.allViews}
           attention={data.attention}
-          clusterFilter={search.cluster}
+          events={data.events}
+          inspect={inspect}
+          namespaces={data.namespaces}
+          onConnect={onConnect}
+          onNavigate={(view, extra) => go(view, extra)}
+          referenceTime={referenceTime}
+          search={search}
+          update={update}
           views={data.views}
         />
       );
-    case "infrastructure":
-    case "workloads":
+    case "resources":
       return (
         <ResourceBrowser
-          allViews={data.allViews}
           inspect={inspect}
           namespaces={data.namespaces}
           referenceTime={referenceTime}
@@ -244,7 +302,7 @@ function PageBody({
           views={data.views}
         />
       );
-    case "events":
+    case "activity":
       return (
         <EventsPage
           events={data.events}
@@ -262,11 +320,27 @@ function PageBody({
           views={data.views}
         />
       );
+    case "workspaces":
+      return (
+        <WorkspacesPage
+          error={data.workspaces.isError && !data.workspaces.data}
+          loading={data.workspaces.isPending}
+          onNewWorkspace={onNewWorkspace}
+          onOpen={(workspace) =>
+            go("architecture", { ...scopeReset, workspace, cluster: undefined })
+          }
+          onRetry={() => data.workspaces.refetch()}
+          scope={search.workspace}
+          views={data.allViews}
+          workspaces={data.workspaces.data ?? []}
+        />
+      );
     default:
       return (
-        <FleetOverview
+        <Observability
           actions={actions}
           attention={data.attention}
+          clusterFilter={search.cluster}
           events={data.events}
           onCluster={openCluster}
           onConnect={onConnect}
@@ -296,18 +370,23 @@ function DashboardContent() {
     inspected,
   } = data;
   const summary = attentionSummary(attention);
-  const page = navigation.find((item) => item.id === search.view);
+  const [newWorkspace, setNewWorkspace] = useState(false);
   const dashboardNavigation = useDashboardNavigation();
-  const { update, go, inspect, closeInspector, openCluster } =
-    dashboardNavigation;
+  const { update, go, inspect, closeInspector } = dashboardNavigation;
   const openPalette = useCallback(() => setPalette(true), []);
+  // The canvas is the landing view: fetch its chunk alongside the snapshot
+  // instead of after it.
+  useEffect(() => {
+    if (search.view === "architecture") {
+      import("./topology").catch(() => undefined);
+    }
+  }, [search.view]);
   usePaletteShortcut(openPalette);
   function changeWorkspace(workspace: string) {
     update({
+      ...scopeReset,
       workspace,
       cluster: undefined,
-      namespace: "all",
-      q: "",
       resource: undefined,
       resourceCluster: undefined,
       diagnosticNode: undefined,
@@ -315,20 +394,36 @@ function DashboardContent() {
   }
   const pageTargets = useMemo(
     () =>
-      navigation.map((item) => ({
-        id: item.id,
-        label: item.name,
-        run: () => go(item.id),
-      })),
+      [...projectTabs, { id: "workspaces", name: "Workspaces" }].map(
+        (item) => ({
+          id: item.id,
+          label: item.name,
+          run: () => go(item.id),
+        })
+      ),
     [go]
   );
   const loading = snapshot.isLoading || !now;
   const counts = countSummary(views, !!snapshot.data, workspaceName);
+  const canvas = search.view === "architecture";
+  const state = (
+    <PageState
+      loading={loading}
+      onRetry={() => snapshot.refetch()}
+      snapshot={snapshot}
+    />
+  );
   return (
-    <SidebarProvider style={{ "--sidebar-width": "240px" } as CSSProperties}>
-      <AppSidebar
+    <div className="flex min-h-svh flex-col">
+      <ProjectBar
         attention={{ count: summary.actionable, worst: summary.worst }}
+        cluster={search.cluster}
+        clusters={allViews}
+        connection={connection}
+        onCluster={(cluster) => update({ ...scopeReset, cluster })}
+        onFreeze={(at) => update({ at })}
         onNavigate={(view) => go(view)}
+        onNewWorkspace={() => setNewWorkspace(true)}
         onSearch={() => setPalette(true)}
         onWorkspace={changeWorkspace}
         view={search.view}
@@ -336,96 +431,87 @@ function DashboardContent() {
         workspaceName={workspaceName}
         workspaces={workspaces.data ?? []}
       />
-      <SidebarInset className="min-w-0">
-        <AppHeader
-          clusterName={
-            search.cluster
-              ? (allViews.find((view) => view.cluster.id === search.cluster)
-                  ?.cluster.name ?? search.cluster)
-              : undefined
-          }
-          connection={connection}
-          onClearCluster={() =>
-            update({ cluster: undefined, namespace: "all" })
-          }
-          onFreeze={(at) => update({ at })}
-          onRange={(range) => update({ range }, true)}
-          onSearch={() => setPalette(true)}
-          page={page?.name ?? "Overview"}
-          range={search.range}
-        />
-        <main className="min-w-0 space-y-5 p-4 md:p-6">
-          <PageHeader
-            actions={
-              (search.view === "overview" || search.view === "settings") && (
-                <Button
-                  className="h-8"
-                  disabled={frozen || snapshot.isError}
-                  onClick={() => setEnroll(true)}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Plus className="size-3.5" />
-                  Connect cluster
-                </Button>
-              )
-            }
-            description={
-              <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span>{pageDescriptions[search.view] ?? counts}</span>
-                {pageDescriptions[search.view] && (
-                  <span className="text-xs">{counts}</span>
-                )}
-                {snapshot.data && <DataAge views={views} />}
-              </span>
-            }
-            title={page?.name ?? "Overview"}
-          />
-          {snapshot.isError && (
-            <div
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm"
-              role="alert"
-            >
-              <span>
-                The hub could not be reached. Observations below may be out of
-                date.
-              </span>
-              <Button
-                onClick={() => snapshot.refetch()}
-                size="sm"
-                variant="outline"
-              >
-                Retry
-              </Button>
-            </div>
-          )}
-          {loading && !snapshot.isError && (
-            <div aria-busy="true" className="space-y-4">
-              <span className="sr-only" role="status">
-                Loading observations…
-              </span>
-              <Skeleton className="h-28" />
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {[1, 2, 3, 4].map((item) => (
-                  <Skeleton className="h-24" key={item} />
-                ))}
-              </div>
-              <Skeleton className="h-40" />
-            </div>
-          )}
+      {canvas ? (
+        <main className="relative flex min-h-0 flex-1 flex-col">
+          {state}
           {!loading && (snapshot.data || !snapshot.isError) && (
             <PageBody
               data={data}
               navigation={dashboardNavigation}
               onConnect={() => setEnroll(true)}
+              onNewWorkspace={() => setNewWorkspace(true)}
               referenceTime={referenceTime}
               search={search}
             />
           )}
         </main>
-      </SidebarInset>
+      ) : (
+        <main className="mx-auto w-full min-w-0 max-w-[1600px] space-y-6 p-4 md:p-6">
+          <PageHeader
+            actions={
+              <>
+                {(search.view === "observability" ||
+                  search.view === "activity") && (
+                  <RangeSelect
+                    onRange={(range) => update({ range }, true)}
+                    range={search.range}
+                  />
+                )}
+                {search.view === "settings" && (
+                  <Button
+                    className="h-8"
+                    disabled={frozen || snapshot.isError}
+                    onClick={() => setEnroll(true)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Plus className="size-3.5" />
+                    Connect cluster
+                  </Button>
+                )}
+              </>
+            }
+            description={
+              <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>{pageDescriptions[search.view]}</span>
+                <span className="text-xs">{counts}</span>
+                {snapshot.data && <DataAge views={views} />}
+              </span>
+            }
+            title={pageTitles[search.view] ?? "Observability"}
+          />
+          {state}
+          {!loading && (snapshot.data || !snapshot.isError) && (
+            <PageBody
+              data={data}
+              navigation={dashboardNavigation}
+              onConnect={() => setEnroll(true)}
+              onNewWorkspace={() => setNewWorkspace(true)}
+              referenceTime={referenceTime}
+              search={search}
+            />
+          )}
+        </main>
+      )}
+      <Dialog onOpenChange={setNewWorkspace} open={newWorkspace}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New workspace</DialogTitle>
+            <DialogDescription>
+              Workspaces group clusters and scope what the dashboard shows.
+            </DialogDescription>
+          </DialogHeader>
+          <NewWorkspace
+            onCancel={() => setNewWorkspace(false)}
+            onCreated={(workspace) => {
+              setNewWorkspace(false);
+              changeWorkspace(workspace.id);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
       <CommandPalette
-        onCluster={openCluster}
+        onCluster={dashboardNavigation.openClusterServers}
         onInspect={inspect}
         onOpenChange={setPalette}
         open={palette}
@@ -460,6 +546,7 @@ function DashboardContent() {
           })
         }
         onInspect={inspect}
+        onRange={(range) => update({ range }, true)}
         range={search.range}
         referenceTime={referenceTime}
         scope={search.workspace}
@@ -490,7 +577,49 @@ function DashboardContent() {
           </DialogContent>
         </Dialog>
       )}
-    </SidebarProvider>
+    </div>
+  );
+}
+
+function PageState({
+  snapshot,
+  loading,
+  onRetry,
+}: {
+  snapshot: { isError: boolean };
+  loading: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      {snapshot.isError && (
+        <div
+          className="m-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm"
+          role="alert"
+        >
+          <span>
+            The hub could not be reached. Observations below may be out of date.
+          </span>
+          <Button onClick={onRetry} size="sm" variant="outline">
+            Retry
+          </Button>
+        </div>
+      )}
+      {loading && !snapshot.isError && (
+        <div aria-busy="true" className="space-y-4 p-4">
+          <span className="sr-only" role="status">
+            Loading observations…
+          </span>
+          <Skeleton className="h-28" />
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {[1, 2, 3, 4].map((item) => (
+              <Skeleton className="h-24" key={item} />
+            ))}
+          </div>
+          <Skeleton className="h-40" />
+        </div>
+      )}
+    </>
   );
 }
 

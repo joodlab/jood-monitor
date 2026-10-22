@@ -1,7 +1,22 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Badge } from "@jood-monitor/ui/badge";
 import { cn } from "@jood-monitor/ui/utils";
-import { Clock, TriangleAlert } from "lucide-react";
+import {
+  Box,
+  Boxes,
+  CircleCheck,
+  CircleDashed,
+  Clock,
+  Database,
+  FileBox,
+  Folder,
+  Globe,
+  Layers,
+  type LucideIcon,
+  Network,
+  Server,
+  TriangleAlert,
+} from "lucide-react";
 import { hasProblem, percentage, resourceStatus } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import { staleViews, type UsageDisplay } from "../lib/resource-table";
@@ -13,7 +28,15 @@ type Tone = "neutral" | "ok" | "problem" | "stale";
 // warning so staleness does not hide it; the label says it is stale either way.
 function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
   const status = resourceStatus(entity);
+  // A not-ready pod the caller has judged unproblematic is still starting:
+  // neutral, never a green "ok".
+  const starting =
+    problem === false &&
+    entity.kind === "Pod" &&
+    entity.ready === 0 &&
+    !["Succeeded", "Completed", "Failed"].includes(entity.status);
   if (
+    starting ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
     ["Unknown", "Observed"].includes(status) ||
     entity.kind === "Service" ||
@@ -72,6 +95,86 @@ export function StatusBadge({
       {tone === "stale" && <Clock aria-hidden />}
       {stale ? `Stale · ${statusLabel(entity)}` : statusLabel(entity)}
     </Badge>
+  );
+}
+
+const lineIcons: Record<Tone, LucideIcon> = {
+  ok: CircleCheck,
+  problem: TriangleAlert,
+  neutral: CircleDashed,
+  stale: Clock,
+};
+
+const lineTones: Record<Tone, string> = {
+  ok: "text-muted-foreground [&>svg]:text-success-text",
+  problem: "text-warning-text",
+  neutral: "text-muted-foreground",
+  stale: "text-muted-foreground",
+};
+
+// The status line at the foot of a card, in the manner of a deployment line:
+// an icon whose shape carries the tone, then the status text. Stale lines say
+// "Stale" and keep the last reported status, never a green check.
+export function StatusLine({
+  entity,
+  stale = false,
+  problem,
+  className,
+}: {
+  entity: Entity;
+  stale?: boolean;
+  problem?: boolean;
+  className?: string;
+}) {
+  const tone = statusTone(entity, stale, problem);
+  const Icon = lineIcons[tone];
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1.5 text-xs",
+        lineTones[tone],
+        className
+      )}
+      title={stale ? staleTitle : undefined}
+    >
+      <Icon aria-hidden className="size-3.5 shrink-0" />
+      <span className="truncate">
+        {stale ? `Stale · ${statusLabel(entity)}` : statusLabel(entity)}
+      </span>
+    </span>
+  );
+}
+
+const kindIcons: Record<string, LucideIcon> = {
+  Node: Server,
+  Pod: Box,
+  Deployment: Layers,
+  StatefulSet: Database,
+  DaemonSet: Boxes,
+  Service: Network,
+  Ingress: Globe,
+  Namespace: Folder,
+};
+
+// The icon tile that leads a resource card, like a service's logo.
+export function KindTile({
+  kind,
+  className,
+}: {
+  kind: string;
+  className?: string;
+}) {
+  const Icon = kindIcons[kind] ?? FileBox;
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50 text-muted-foreground",
+        className
+      )}
+    >
+      <Icon className="size-4" />
+    </span>
   );
 }
 
@@ -234,7 +337,7 @@ export function StaleInventoryNotice({
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded-lg border border-muted-foreground/40 border-dashed px-3 py-2 text-sm",
+        "flex items-start gap-2 rounded-xl border border-muted-foreground/40 border-dashed px-3 py-2 text-sm",
         className
       )}
       role="note"

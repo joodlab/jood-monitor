@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { livePodProblem, podProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
@@ -191,15 +191,29 @@ function graphProblem(entity: Entity, now: number) {
   return entity.kind === "Pod" ? podProblem(entity, now) : hasProblem(entity);
 }
 
+// What makes a namespace or workload need attention now: retained failed
+// pods are history, as on the attention list, so they never escalate it.
+function liveProblem(entity: Entity, now: number) {
+  return entity.kind === "Pod"
+    ? livePodProblem(entity, now)
+    : hasProblem(entity);
+}
+
 // Namespace cards carry the problems of what they contain, so the namespace
-// map shows where to look first.
+// map shows where to look first. Workloads carry their live failing pods, as
+// the attention model does: during a surge rollout readyReplicas can equal
+// replicas while the new pod crashes.
 export function itemProblem(item: ResourceItem, now: number) {
-  if (item.entity.kind !== "Namespace") {
-    return graphProblem(item.entity, now);
+  const { view, entity } = item;
+  if (entity.kind === "Namespace") {
+    return view.inventory.entities.some(
+      (member) => member.namespace === entity.name && liveProblem(member, now)
+    );
   }
-  return item.view.inventory.entities.some(
-    (member) =>
-      member.namespace === item.entity.name && graphProblem(member, now)
+  return (
+    graphProblem(entity, now) ||
+    (workloadKinds.has(entity.kind) &&
+      relatedPods(view, entity).some((pod) => livePodProblem(pod, now)))
   );
 }
 
@@ -740,6 +754,40 @@ export function activatedCard(key: string, target: KeyTarget | null) {
   return target.dataset.id;
 }
 
+interface Rect {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+}
+
+// Whether two screen rectangles share any area, such as a focused control
+// and the Activity panel floating over the canvas.
+export function rectsOverlap(a: Rect, b: Rect) {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
+// Whether a card, in screen pixels, sits wholly inside the canvas area that
+// the floating overlays leave clear. A card that does not is brought into
+// view when the keyboard focuses it.
+export function cardInView(
+  card: Rect,
+  canvas: { width: number; height: number },
+  clear: { top: number; right: number; bottom: number; left: number }
+) {
+  return (
+    card.x >= clear.left &&
+    card.y >= clear.top &&
+    card.x + card.width <= canvas.width - clear.right &&
+    card.y + card.height <= canvas.height - clear.bottom
+  );
+}
+
 export function validPosition(
   value: unknown
 ): value is { x: number; y: number } {
@@ -758,7 +806,7 @@ export function validPosition(
 }
 
 // Layout geometry in flow units. Cards and pod chips render at these sizes.
-export const cardSize = { width: 280, height: 176 };
+export const cardSize = { width: 288, height: 168 };
 export const chipSize = { width: 224, height: 76 };
 const laneGap = 96;
 const rowGap = 32;

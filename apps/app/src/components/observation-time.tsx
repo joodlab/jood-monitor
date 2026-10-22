@@ -24,16 +24,29 @@ const presets = [
 export function ObservationTime({
   at,
   onSelect,
+  open: controlledOpen,
+  onOpenChange,
+  triggerClassName,
 }: {
   at?: string;
   onSelect: (at: string) => void;
+  // Optional control so another surface (a menu) can open the dialog.
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  triggerClassName?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlledOpen ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const { timeZone } = useDisplay();
   return (
     <>
       <Button
         aria-label="Go to a saved observation time"
+        className={triggerClassName}
         onClick={() => setOpen(true)}
         size="icon-sm"
         title="Go to a saved observation time"

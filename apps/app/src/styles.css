@@ -30,6 +30,8 @@
   --color-warning-text: var(--warning-text);
   --color-info: var(--info);
   --color-info-text: var(--info-text);
+  --color-staged: var(--staged);
+  --color-staged-text: var(--staged-text);
   --color-border: var(--border);
   --color-input: var(--border);
   --color-ring: var(--ring);
@@ -66,17 +68,20 @@
   --warning-text: oklch(0.5 0.13 60);
   --info: oklch(0.62 0.13 240);
   --info-text: oklch(0.47 0.13 245);
+  /* Pending, not yet applied changes (Railway's staged-change convention). */
+  --staged: oklch(0.55 0.2 295);
+  --staged-text: oklch(0.47 0.2 295);
   --radius: 0.625rem;
 }
 .dark {
-  --background: #0b0c0d;
+  --background: #111018;
   --foreground: #ebecee;
-  --card: #131416;
+  --card: #18171f;
   --primary: #c4f35c;
   --primary-foreground: #11140a;
-  --muted: #1d1f22;
-  --muted-foreground: #8d9199;
-  --border: #26282d;
+  --muted: #211f2a;
+  --muted-foreground: #938fa2;
+  --border: #2c2a36;
   --destructive: oklch(0.64 0.21 22);
   --destructive-text: oklch(0.74 0.15 22);
   --success: oklch(0.7 0.15 155);
@@ -85,6 +90,8 @@
   --warning-text: oklch(0.83 0.14 80);
   --info: oklch(0.7 0.12 235);
   --info-text: oklch(0.79 0.1 235);
+  --staged: oklch(0.66 0.19 295);
+  --staged-text: oklch(0.8 0.12 295);
   color-scheme: dark;
 }
 @layer base {
@@ -102,32 +109,28 @@
     touch-action: manipulation;
   }
 }
-.react-flow__controls-button {
-  width: 32px;
-  height: 32px;
-  color: var(--foreground);
-  background: var(--card);
-  border-color: var(--border);
-}
-.react-flow__controls-button:focus-visible {
-  outline: 2px solid var(--muted-foreground);
-  outline-offset: -2px;
-}
-.react-flow__controls-button:hover {
-  background: var(--muted);
-}
-.react-flow__controls-button svg {
-  fill: currentColor;
+/* The canvas takes the app's own background; the dotted grid sits on it. */
+.react-flow {
+  --xy-background-color: transparent;
 }
 .react-flow__minimap {
+  overflow: hidden;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
+}
+.react-flow__attribution {
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  border-top-left-radius: 6px;
+}
+.react-flow__attribution a {
+  color: var(--muted-foreground);
 }
 .react-flow__edge-textbg {
   fill: var(--card);
 }
 .react-flow__edge-text {
+  font-size: 12px;
   fill: var(--foreground);
 }
 /* Handles only anchor edges; nothing in the topology is connectable. */
@@ -140,10 +143,11 @@
 }
 /* Beats React Flow's own `.react-flow__node.selectable:focus-visible` reset. */
 .react-flow__node.react-flow__node-resource:focus-visible,
+.react-flow__node.react-flow__node-namespace:focus-visible,
 .react-flow__node.react-flow__node-pod:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
-  border-radius: 8px;
+  border-radius: 14px;
 }
 .react-flow__node {
   font-size: 12px;
@@ -152,7 +156,4 @@
   background: var(--card);
   border-color: var(--border);
   border-radius: 8px;
-}
-.react-flow__edge-text {
-  font-size: 11px;
 }

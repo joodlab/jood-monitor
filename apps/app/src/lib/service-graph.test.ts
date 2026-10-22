@@ -1,8 +1,11 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import { cardStatus } from "./canvas-cards";
+import { summarize } from "./infrastructure";
 import {
   activatedCard,
   type CardState,
+  cardInView,
   cardSize,
   chipSize,
   emptyTopology,
@@ -10,6 +13,7 @@ import {
   graphSubject,
   itemProblem,
   kindSymbol,
+  rectsOverlap,
   type ServiceGraphOptions,
   sameGraphItem,
   serviceGraph,
@@ -203,6 +207,72 @@ describe("problems-only topology", () => {
     expect(graph.grouped).toBe(true);
     expect(graph.items.map((item) => item.entity.name)).toEqual(["shop"]);
     expect(itemProblem(graph.items[0], now)).toBe(true);
+  });
+
+  it("does not mark a namespace for retained failed pods alone", () => {
+    // Finished debug or Job pods stay listed as history on the attention
+    // list; the namespace map must not contradict "nothing needs attention".
+    const view = fixture();
+    const crashing = view.inventory.entities.find(
+      (item) => item.uid === "checkout-2"
+    ) as Entity;
+    Object.assign(crashing, { status: "Running", ready: 1, restarts: 0 });
+    const checkout = view.inventory.entities.find(
+      (item) => item.uid === "checkout"
+    ) as Entity;
+    checkout.ready = 2;
+    view.inventory.entities.push(
+      pod("debugger", { status: "Failed", ready: 0 })
+    );
+    const graph = serviceGraph([view], { ...options, namespace: "all" });
+    expect(graph.items.map((item) => item.entity.name)).toEqual(["shop"]);
+    expect(itemProblem(graph.items[0], now)).toBe(false);
+  });
+
+  it("marks a fully ready workload whose new rollout pod is crashing", () => {
+    // A surge rollout: the old ReplicaSet keeps both replicas ready while
+    // the new ReplicaSet's only pod crashes, so readiness alone looks complete.
+    const view = fixture();
+    view.inventory.entities.push(
+      entity("cart-rs-new", "ReplicaSet", { desired: 1 }),
+      pod("cart-3", { status: "CrashLoopBackOff", ready: 0, restarts: 5 })
+    );
+    view.inventory.edges.push(
+      edge("cart-rs-new", "cart", "owned_by"),
+      edge("cart-3", "cart-rs-new", "owned_by")
+    );
+    const cart = view.inventory.entities.find(
+      (item) => item.uid === "cart"
+    ) as Entity;
+    expect(cart).toMatchObject({ ready: 2, desired: 2 });
+    expect(itemProblem({ view, entity: cart }, now)).toBe(true);
+    expect(
+      cardStatus(cart, summarize(view, cart, now), {
+        now,
+        problem: true,
+        stale: false,
+      })
+    ).toEqual({ tone: "warning", text: "CrashLoopBackOff · 1 of 3 pods" });
+  });
+
+  it("leaves a retained failed pod to the attention model, not its workload", () => {
+    const view = fixture();
+    view.inventory.entities.push(
+      pod("cart-old", { status: "Failed", ready: 0 })
+    );
+    view.inventory.edges.push(edge("cart-old", "cart-rs", "owned_by"));
+    const cart = view.inventory.entities.find(
+      (item) => item.uid === "cart"
+    ) as Entity;
+    expect(itemProblem({ view, entity: cart }, now)).toBe(false);
+    // The card still never calls it healthy beside the failed pod.
+    const status = cardStatus(cart, summarize(view, cart, now), {
+      now,
+      problem: false,
+      stale: false,
+    });
+    expect(status.tone).toBe("neutral");
+    expect(status.text).toBe("2/2 ready · Failed · 1 of 3 pods");
   });
 
   it("keeps a pod inside its start-up grace out of the problem view", () => {
@@ -579,5 +649,33 @@ describe("topology layout and keyboard", () => {
     expect(activatedCard("ArrowDown", card)).toBeUndefined();
     expect(activatedCard("Enter", target(["nodrag"]))).toBeUndefined();
     expect(activatedCard("Enter", null)).toBeUndefined();
+  });
+});
+
+describe("keyboard reveal", () => {
+  const canvas = { width: 1200, height: 800 };
+  const clear = { top: 72, right: 376, bottom: 64, left: 72 };
+  const card = { width: 288, height: 168 };
+  it("leaves a card that sits clear of every overlay", () => {
+    expect(cardInView({ ...card, x: 100, y: 100 }, canvas, clear)).toBe(true);
+  });
+  it("reveals cards under the toolbar, the Activity panel or off screen", () => {
+    expect(cardInView({ ...card, x: 20, y: 100 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: 600, y: 100 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: 100, y: 700 }, canvas, clear)).toBe(false);
+    expect(cardInView({ ...card, x: -400, y: -300 }, canvas, clear)).toBe(
+      false
+    );
+  });
+  it("finds controls the open Activity panel covers", () => {
+    // The panel at 900px wide: 352px from the right edge, below the top row.
+    const panel = { x: 536, y: 156, width: 352, height: 580 };
+    const covered = { x: 600, y: 300, width: 288, height: 128 };
+    const beside = { x: 100, y: 300, width: 288, height: 128 };
+    const above = { x: 600, y: 108, width: 120, height: 36 };
+    expect(rectsOverlap(covered, panel)).toBe(true);
+    expect(rectsOverlap({ ...beside, x: 300 }, panel)).toBe(true);
+    expect(rectsOverlap(beside, panel)).toBe(false);
+    expect(rectsOverlap(above, panel)).toBe(false);
   });
 });

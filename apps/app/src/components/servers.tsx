@@ -1,6 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
-import { Card, CardContent } from "@jood-monitor/ui/card";
 import {
   Tooltip,
   TooltipContent,
@@ -41,9 +40,10 @@ import {
 import { inventoryStale } from "../lib/resource-table";
 import { EmptyState } from "./page";
 import {
+  KindTile,
   MetricBar,
   StaleInventoryNotice,
-  StatusBadge,
+  StatusLine,
 } from "./resource-status";
 
 const TILE_LIMIT = 60;
@@ -106,16 +106,20 @@ export function Servers({
         <PlacementSummary placement={placement} />
         <Legend highlighted={placement.basis === "pods"} stale={stale} />
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      <ul
+        aria-label="Servers"
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+      >
         {placement.servers.map((server) => (
-          <ServerTile
-            key={server.id}
-            onInspect={onInspect}
-            referenceTime={referenceTime}
-            server={server}
-          />
+          <li className="flex" key={server.id}>
+            <ServerTile
+              onInspect={onInspect}
+              referenceTime={referenceTime}
+              server={server}
+            />
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   );
 }
@@ -218,6 +222,10 @@ function Legend({
   );
 }
 
+// A server card in the manner of a Railway service card: icon tile, name and
+// role line, usage, pod placement, and a status line at the foot. The name
+// button stretches over the card so the whole card opens the inspector;
+// pod tiles and times sit above that layer and keep their own actions.
 function ServerTile({
   server,
   onInspect,
@@ -231,64 +239,63 @@ function ServerTile({
   const cpu = observedUsage(view, node, "cpu", referenceTime);
   const memory = observedUsage(view, node, "memory", referenceTime);
   const stale = inventoryStale(view, referenceTime);
+  const addresses = node.addresses?.join(", ");
   return (
-    <Card
+    <div
       className={cn(
-        "gap-0 overflow-hidden py-0",
-        server.problem && "border-warning/50"
+        "group relative flex w-full min-w-0 flex-col gap-4 rounded-xl border bg-card p-4 transition-colors hover:border-foreground/25",
+        server.problem && "border-warning/50 hover:border-warning/70"
       )}
     >
-      <div className="flex items-start gap-2 border-b p-4">
-        <Server
-          aria-hidden
-          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-        />
+      <div className="flex items-start gap-3">
+        <KindTile kind="Node" />
         <div className="min-w-0 flex-1">
-          <Button
-            className="h-auto max-w-full justify-start p-0 font-mono text-sm"
+          <button
+            className="block max-w-full rounded-sm text-left font-semibold text-sm outline-none after:absolute after:inset-0 after:rounded-xl hover:underline focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => onInspect(view, node)}
-            variant="link"
+            type="button"
           >
-            <span className="truncate">{node.name}</span>
-            <ArrowUpRight aria-hidden className="size-3.5 shrink-0" />
-          </Button>
-          <p className="mt-1 truncate text-muted-foreground text-xs">
+            <span className="block truncate">{node.name}</span>
+          </button>
+          <p className="truncate text-muted-foreground text-xs">
             {node.roles?.join(", ") || "Node"} · {view.cluster.name}
           </p>
         </div>
-        <StatusBadge entity={node} stale={stale} />
+        <ArrowUpRight
+          aria-hidden
+          className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+        />
       </div>
-      <CardContent className="space-y-4 p-4">
-        <div className="grid grid-cols-2 gap-4">
-          <MetricBar
-            detail={`${compactCpu(cpu)} / ${compactCpu(node.capacityCpu ?? undefined)}`}
-            label="CPU"
-            value={percent(cpu, node.capacityCpu)}
-          />
-          <MetricBar
-            detail={`${compactMemory(memory)} / ${compactMemory(node.capacityMemory ?? undefined)}`}
-            label="Memory"
-            value={percent(memory, node.capacityMemory)}
-          />
-        </div>
+      <div className="grid grid-cols-2 gap-4">
+        <MetricBar
+          detail={`${compactCpu(cpu)} / ${compactCpu(node.capacityCpu ?? undefined)}`}
+          label="CPU"
+          value={percent(cpu, node.capacityCpu)}
+        />
+        <MetricBar
+          detail={`${compactMemory(memory)} / ${compactMemory(node.capacityMemory ?? undefined)}`}
+          label="Memory"
+          value={percent(memory, node.capacityMemory)}
+        />
+      </div>
+      <div className="relative z-10 flex-1">
         <Placement
           onInspect={onInspect}
           referenceTime={referenceTime}
           server={server}
           stale={stale}
         />
-        <p className="truncate border-t pt-3 text-muted-foreground text-xs">
-          <span className="font-mono">
-            {node.addresses?.join(", ") || "Address unavailable"}
-          </span>
-          <span className="tabular-nums">
-            {" "}
-            · {node.capacityCpu ?? "—"} vCPU ·{" "}
-            {compactMemory(node.capacityMemory ?? undefined)}
-          </span>
-        </p>
-      </CardContent>
-    </Card>
+      </div>
+      <div className="flex items-center justify-between gap-3 border-t pt-3">
+        <StatusLine entity={node} stale={stale} />
+        <span
+          className="relative z-10 min-w-0 truncate font-mono text-muted-foreground text-xs"
+          title={addresses || undefined}
+        >
+          {addresses || "Address unavailable"}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -508,6 +515,7 @@ function NoServers({
   const hint = "hint" in state ? state.hint : undefined;
   return (
     <EmptyState
+      className="rounded-xl"
       description={copy.description}
       icon={copy.icon}
       title={copy.title}

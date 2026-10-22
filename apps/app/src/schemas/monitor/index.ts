@@ -29,19 +29,78 @@ export interface SearchState {
 export const pageSizes = [25, 50, 100] as const;
 export const defaultPageSize = pageSizes[0];
 
+// Railway-style project tabs. Architecture (the canvas) is the landing view;
+// "workspaces" is the workspace grid opened from the logo.
 const views = [
-  "overview",
-  "infrastructure",
-  "workloads",
-  "events",
-  "attention",
+  "architecture",
+  "observability",
+  "resources",
+  "activity",
   "settings",
-];
+  "workspaces",
+] as const;
+const resourceTabs = [
+  "servers",
+  "workloads",
+  "pods",
+  "services",
+  "all",
+] as const;
+// Links from the previous navigation keep working.
 const legacyViews: Record<string, string> = {
-  topology: "infrastructure",
-  resources: "infrastructure",
+  overview: "observability",
+  attention: "observability",
+  events: "activity",
+  workloads: "resources",
+  topology: "architecture",
   agents: "settings",
 };
+
+function viewFor(raw: Record<string, unknown>) {
+  const view = String(raw.view ?? "architecture");
+  if (view === "infrastructure") {
+    return ["servers", "list"].includes(String(raw.mode))
+      ? "resources"
+      : "architecture";
+  }
+  const mapped = legacyViews[view] ?? view;
+  return (views as readonly string[]).includes(mapped)
+    ? mapped
+    : "architecture";
+}
+
+function resourceTab(raw: Record<string, unknown>) {
+  // Old Infrastructure links always carried the default tab=workloads, so
+  // their mode decides the tab.
+  if (raw.view === "infrastructure") {
+    if (raw.mode === "servers") {
+      return "servers";
+    }
+    if (raw.mode === "list") {
+      return "all";
+    }
+  }
+  const tab = String(raw.tab);
+  if ((resourceTabs as readonly string[]).includes(tab)) {
+    return tab;
+  }
+  if (raw.view === "resources") {
+    return raw.mode === "servers" ? "servers" : "all";
+  }
+  return "workloads";
+}
+
+// The resource views still read a mode; it follows the tab so existing
+// components keep their behaviour.
+function modeFor(view: string, tab: string) {
+  if (view !== "resources") {
+    return "services";
+  }
+  if (tab === "servers") {
+    return "servers";
+  }
+  return tab === "all" ? "list" : "workloads";
+}
 const kindPattern = /^[A-Za-z][A-Za-z0-9]{0,62}$/;
 
 function kindFilter(value: unknown) {
@@ -70,30 +129,24 @@ function optionalString(value: unknown) {
 export function validateMonitorSearch(
   raw: Record<string, unknown>
 ): SearchState {
-  const view = String(raw.view ?? "overview");
+  const view = viewFor(raw);
+  const tab = resourceTab(raw);
   const at =
     typeof raw.at === "string" && Number.isFinite(Date.parse(raw.at))
       ? raw.at
       : undefined;
-  const mode = ["services", "servers", "list"].includes(String(raw.mode))
-    ? String(raw.mode)
-    : "services";
   return {
     workspace: typeof raw.workspace === "string" ? raw.workspace : "global",
-    view: legacyViews[view] ?? (views.includes(view) ? view : "overview"),
+    view,
     range: ["1", "6", "24"].includes(String(raw.range))
       ? String(raw.range)
       : "1",
-    mode: view === "resources" ? "list" : mode,
+    mode: modeFor(view, tab),
     namespace: typeof raw.namespace === "string" ? raw.namespace : "all",
     q: typeof raw.q === "string" ? raw.q : "",
     system: raw.system === true,
     problems: raw.problems === true,
-    tab: ["workloads", "pods", "services", "collection", "appearance"].includes(
-      String(raw.tab)
-    )
-      ? String(raw.tab)
-      : "workloads",
+    tab,
     kind: kindFilter(raw.kind),
     pageSize: pageSize(raw.pageSize),
     layout: topologyLayout(raw.layout),

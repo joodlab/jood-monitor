@@ -1,18 +1,25 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import type { ResourceSummary } from "../lib/infrastructure";
 import {
+  activeTab,
   type Crumb,
   conditionAbnormal,
   conditionGroups,
   exposure,
   historyRefetchInterval,
+  inspectorTabs,
   nextTrail,
+  panelLinks,
   placement,
   podCoverage,
+  podGroups,
+  readyText,
   relationships,
   relationText,
   sortPods,
   splitRevisions,
+  usageReading,
 } from "./inspector-model";
 
 const now = Date.parse("2026-10-22T12:00:00Z");
@@ -105,6 +112,36 @@ describe("pods", () => {
       sortPods([done, running, crashing], now).map((pod) => pod.uid)
     ).toEqual(["c-crash", "b-run", "a-done"]);
   });
+  it("groups pods like Railway deployments: attention, running, history", () => {
+    const starting = entity({
+      uid: "d-start",
+      kind: "Pod",
+      status: "ContainerCreating",
+      ready: 0,
+      createdAt: new Date(now - 10_000).toISOString(),
+    });
+    const unknown = entity({
+      uid: "e-unknown",
+      kind: "Pod",
+      status: "Running",
+    });
+    const failed = entity({ uid: "f-failed", kind: "Pod", status: "Failed" });
+    const groups = podGroups(
+      [done, failed, unknown, running, starting, crashing],
+      now
+    );
+    const uids = (pods: Entity[]) => pods.map((pod) => pod.uid);
+    expect(uids(groups.attention)).toEqual(["c-crash"]);
+    // A pod inside its start-up grace and one of unknown readiness are not
+    // problems, but neither is presented as finished history.
+    expect(uids(groups.active)).toEqual(["b-run", "d-start", "e-unknown"]);
+    expect(uids(groups.finished)).toEqual(["a-done", "f-failed"]);
+    expect(podGroups([], now)).toEqual({
+      attention: [],
+      active: [],
+      finished: [],
+    });
+  });
   it("does not count finished pods against coverage", () => {
     expect(
       podCoverage({
@@ -193,5 +230,161 @@ describe("history polling", () => {
     expect(historyRefetchInterval("2026-10-22T11:00:00Z", "frozen")).toBe(
       false
     );
+  });
+});
+
+describe("panel tabs", () => {
+  it("gives each kind Railway-style tabs that have something to show", () => {
+    expect(inspectorTabs("Deployment")).toEqual([
+      "pods",
+      "metrics",
+      "details",
+      "links",
+    ]);
+    expect(inspectorTabs("Service")).toEqual([
+      "pods",
+      "metrics",
+      "details",
+      "links",
+    ]);
+    expect(inspectorTabs("Node")).toEqual(["pods", "metrics", "details"]);
+    expect(inspectorTabs("Pod")).toEqual(["metrics", "details", "links"]);
+    expect(inspectorTabs("Ingress")).toEqual(["details", "links"]);
+  });
+  it("keeps the chosen tab where the kind has it and falls back otherwise", () => {
+    expect(activeTab(undefined, "Deployment")).toBe("pods");
+    expect(activeTab("details", "Pod")).toBe("details");
+    expect(activeTab("pods", "Pod")).toBe("metrics");
+    expect(activeTab("links", "Node")).toBe("pods");
+    expect(activeTab("links", "Node", true)).toBe("links");
+    expect(activeTab("unknown", "Ingress")).toBe("details");
+  });
+  it("gives a Node a Links tab only for links other than pod placement", () => {
+    expect(inspectorTabs("Node", true)).toEqual([
+      "pods",
+      "metrics",
+      "details",
+      "links",
+    ]);
+    expect(inspectorTabs("Node", false)).toEqual([
+      "pods",
+      "metrics",
+      "details",
+    ]);
+  });
+});
+
+describe("panel links", () => {
+  // Synthetic kubelet Service whose EndpointSlice targets a Node, as in
+  // kube-system; the Node also runs one pod.
+  const node = entity({ uid: "node-a", kind: "Node" });
+  const pod = entity({ uid: "pod-a", kind: "Pod", nodeUid: "node-a" });
+  const kubelet = entity({ uid: "svc-kubelet", kind: "Service" });
+  const placementEdge = {
+    source: "pod-a",
+    target: "node-a",
+    relation: "scheduled_on",
+    evidence: "Pod.spec.nodeName",
+  };
+  const endpointEdge = {
+    source: "svc-kubelet",
+    target: "node-a",
+    relation: "has_endpoint",
+    evidence: "EndpointSlice.targetRef; observed endpoint, not traffic",
+  };
+  it("lists a Node's endpoint links but not the pods its Pods tab lists", () => {
+    const view = clusterView(
+      [node, pod, kubelet],
+      [placementEdge, endpointEdge]
+    );
+    const links = panelLinks(view, node);
+    expect(links.map((link) => link.edge.relation)).toEqual(["has_endpoint"]);
+    expect(links[0].other).toBe(kubelet);
+    expect(links[0].outgoing).toBe(false);
+    expect(relationText(links[0], node)).toBe("Service has endpoint this Node");
+  });
+  it("leaves a Node with only pod placement without links", () => {
+    const view = clusterView([node, pod], [placementEdge]);
+    expect(panelLinks(view, node)).toEqual([]);
+  });
+  it("keeps placement on the Pod's own links", () => {
+    const view = clusterView(
+      [node, pod, kubelet],
+      [placementEdge, endpointEdge]
+    );
+    expect(panelLinks(view, pod).map((link) => link.edge.relation)).toEqual([
+      "scheduled_on",
+    ]);
+  });
+});
+
+describe("usage readings", () => {
+  const summary = (fields: Partial<ResourceSummary>): ResourceSummary => ({
+    active: 0,
+    measured: 0,
+    pods: [],
+    nodes: [],
+    services: [],
+    usage: { cpu: { measured: 0 }, memory: { measured: 0 } },
+    ...fields,
+  });
+  const pod = entity({ uid: "pod", kind: "Pod", limitedCpu: 0.5 });
+  const deployment = entity({ uid: "deploy", kind: "Deployment" });
+  it("states a pod's share of its limit", () => {
+    expect(
+      usageReading("cpu", pod, summary({ cpu: 0.25 }), {
+        active: 1,
+        finished: 0,
+        measured: 1,
+      })
+    ).toEqual({ value: "250m", detail: "50% of limit", missing: false });
+  });
+  it("never shows a missing sample as zero", () => {
+    expect(
+      usageReading("memory", pod, summary({}), {
+        active: 1,
+        finished: 0,
+        measured: 0,
+      })
+    ).toEqual({ value: "No fresh sample", missing: true });
+    expect(
+      usageReading("cpu", deployment, summary({}), {
+        active: 0,
+        finished: 0,
+        measured: 0,
+      })
+    ).toEqual({ value: "No active pods", missing: true });
+    expect(
+      usageReading("cpu", deployment, summary({ active: 2 }), {
+        active: 2,
+        finished: 0,
+        measured: 0,
+      })
+    ).toEqual({ value: "No fresh samples", missing: true });
+  });
+  it("labels a partial sum as a lower bound with its coverage", () => {
+    expect(
+      usageReading(
+        "cpu",
+        deployment,
+        summary({
+          active: 3,
+          usage: {
+            cpu: { measured: 2, observed: 0.0923 },
+            memory: { measured: 2 },
+          },
+        }),
+        { active: 3, finished: 0, measured: 2 }
+      )
+    ).toEqual({
+      value: "≥ 92.3m",
+      detail: "partial · 2 of 3 pods",
+      missing: false,
+    });
+  });
+  it("reports readiness as known counts or unknown", () => {
+    expect(readyText(summary({}))).toBe("Unknown");
+    expect(readyText(summary({ ready: 2, desired: 3 }))).toBe("2/3");
+    expect(readyText(summary({ ready: 4 }))).toBe("4 ready");
   });
 });

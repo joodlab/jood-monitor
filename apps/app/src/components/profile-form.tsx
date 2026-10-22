@@ -1,14 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Badge } from "@jood-monitor/ui/badge";
-import { Button } from "@jood-monitor/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@jood-monitor/ui/dialog";
 import { Label } from "@jood-monitor/ui/label";
 import {
   Select,
@@ -19,9 +10,8 @@ import {
 } from "@jood-monitor/ui/select";
 import { Switch } from "@jood-monitor/ui/switch";
 import { cn } from "@jood-monitor/ui/utils";
-import { useForm } from "@tanstack/react-form";
-import { Timer, TriangleAlert } from "lucide-react";
-import { useId, useState } from "react";
+import { Timer } from "lucide-react";
+import { useId } from "react";
 import { useDisplay } from "../hooks/display";
 import { minutesLeft } from "../lib/install-enrollment";
 import { formatClock, timeZoneLabel } from "../lib/time";
@@ -29,18 +19,16 @@ import {
   activeDiagnostic,
   continuesDiagnostic,
   diagnosticMinutes,
-  draftChanges,
-  draftFromProfile,
-  draftProblems,
   effectiveProfileName,
-  knownNamespaces,
-  type ProfileDraft,
   type ProfileName,
   profileChoices,
   profileNames,
   returnProfile,
 } from "./collection-model";
-import { NamespaceField } from "./collection-namespaces";
+import { StagedPill, stagedSurface } from "./settings-rail";
+
+// Collection settings controls. Each edits the cluster's staged draft;
+// nothing reaches the hub until the operator applies the staged changes.
 
 type Profile = ClusterView["profile"];
 
@@ -54,67 +42,85 @@ function currentBadge(choice: ProfileName, profile: Profile, now: number) {
     : "Current";
 }
 
-function ProfileChoices({
+function ChoiceDot({ checked, staged }: { checked: boolean; staged: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-4 shrink-0 items-center justify-center rounded-full border",
+        checked && (staged ? "border-staged" : "border-primary")
+      )}
+    >
+      {checked && (
+        <span
+          className={cn(
+            "size-2 rounded-full",
+            staged ? "bg-staged" : "bg-primary"
+          )}
+        />
+      )}
+    </span>
+  );
+}
+
+export function ProfileChoices({
   value,
   profile,
+  staged,
+  disabled,
   onChange,
 }: {
   value: ProfileName;
   profile: Profile;
+  staged: boolean;
+  disabled: boolean;
   onChange: (value: ProfileName) => void;
 }) {
   const uid = useId();
   const { now } = useDisplay();
   return (
-    <fieldset className="space-y-2">
-      <legend className="font-medium text-sm" id={`${uid}-legend`}>
-        Collection profile
-      </legend>
-      <div
-        aria-labelledby={`${uid}-legend`}
-        className="grid gap-2 sm:grid-cols-3"
-        role="radiogroup"
-      >
+    <fieldset disabled={disabled}>
+      <legend className="sr-only">Collection profile</legend>
+      <div className="grid gap-2 sm:grid-cols-3">
         {profileNames.map((name) => {
           const badge = currentBadge(name, profile, now);
+          const checked = value === name;
+          const pending = checked && staged;
           return (
             <label
               className={cn(
-                "group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 transition-colors hover:bg-muted/40 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
-                value === name && "border-primary bg-primary/5"
+                "relative flex cursor-pointer flex-col gap-1.5 rounded-lg border p-3 transition-colors hover:bg-muted/40 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
+                checked && !pending && "border-primary bg-primary/5",
+                pending && stagedSurface
               )}
               key={name}
             >
               <input
                 aria-describedby={`${uid}-${name}-detail`}
-                checked={value === name}
+                checked={checked}
                 className="sr-only"
                 name={`${uid}-profile`}
                 onChange={() => onChange(name)}
                 type="radio"
                 value={name}
               />
-              <span className="flex items-center justify-between gap-2">
+              <span className="flex flex-wrap items-center justify-between gap-2">
                 <span className="flex items-center gap-2 font-medium text-sm">
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                      value === name && "border-primary"
-                    )}
-                  >
-                    {value === name && (
-                      <span className="size-2 rounded-full bg-primary" />
-                    )}
-                  </span>
+                  <ChoiceDot checked={checked} staged={pending} />
                   {profileChoices[name].label}
                 </span>
-                {badge && (
+                {pending && <StagedPill />}
+                {badge && !pending && (
                   <Badge className="font-normal" variant="secondary">
                     {badge}
                   </Badge>
                 )}
               </span>
+              {badge && pending && (
+                <span className="text-muted-foreground text-xs">
+                  In effect: {badge}
+                </span>
+              )}
               <span
                 className="text-muted-foreground text-xs leading-relaxed"
                 id={`${uid}-${name}-detail`}
@@ -140,11 +146,11 @@ function RestartField({
 }) {
   const uid = useId();
   return (
-    <div className="flex items-start gap-3 border-info/30 border-t pt-3">
+    <div className="flex items-start gap-3 border-t pt-3">
       <Switch
         aria-describedby={`${uid}-note`}
         checked={checked}
-        className="mt-0.5"
+        className="mt-0.5 data-checked:bg-staged"
         id={`${uid}-restart`}
         onCheckedChange={onChange}
       />
@@ -195,11 +201,13 @@ function ExpiryNote({
   );
 }
 
-function DiagnosticOptions({
+export function DiagnosticOptions({
   value,
   extend,
   nodes,
   profile,
+  staged,
+  disabled,
   onChange,
   onExtendChange,
 }: {
@@ -207,6 +215,8 @@ function DiagnosticOptions({
   extend: boolean;
   nodes: Entity[];
   profile: Profile;
+  staged: boolean;
+  disabled: boolean;
   onChange: (uid: string) => void;
   onExtendChange: (value: boolean) => void;
 }) {
@@ -218,10 +228,21 @@ function DiagnosticOptions({
     now
   );
   return (
-    <div className="space-y-2 rounded-lg border border-info/40 bg-info/5 p-3">
-      <Label htmlFor={`${uid}-node`}>Diagnostic node</Label>
+    <fieldset
+      className={cn(
+        "space-y-2 rounded-lg border p-3",
+        staged ? stagedSurface : "border-info/40 bg-info/5"
+      )}
+      disabled={disabled}
+    >
+      <legend className="sr-only">Diagnostic options</legend>
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor={`${uid}-node`}>Diagnostic node</Label>
+        {staged && <StagedPill />}
+      </div>
       {nodes.length > 0 ? (
         <Select
+          disabled={disabled}
           items={Object.fromEntries(nodes.map((node) => [node.uid, node.name]))}
           onValueChange={(next) => onChange(next ?? "")}
           value={value}
@@ -255,271 +276,54 @@ function DiagnosticOptions({
       {continuing && (
         <RestartField checked={extend} onChange={onExtendChange} />
       )}
-    </div>
+    </fieldset>
   );
 }
 
-function PauseField({
+export function PauseField({
   checked,
   current,
+  staged,
+  disabled,
   onChange,
 }: {
   checked: boolean;
   current: boolean;
+  staged: boolean;
+  disabled: boolean;
   onChange: (value: boolean) => void;
 }) {
   const uid = useId();
   return (
-    <div className="flex items-start gap-3 rounded-lg border p-3">
+    <div
+      className={cn(
+        "flex items-start gap-3 rounded-lg border p-3",
+        staged && stagedSurface
+      )}
+    >
       <Switch
         aria-describedby={`${uid}-note`}
         checked={checked}
-        className="mt-0.5"
+        className={cn("mt-0.5", staged && "data-checked:bg-staged")}
+        disabled={disabled}
         id={`${uid}-pause`}
         onCheckedChange={onChange}
       />
       <div className="space-y-1">
-        <Label htmlFor={`${uid}-pause`}>Pause new samples</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor={`${uid}-pause`}>Pause new samples</Label>
+          {staged && <StagedPill />}
+        </div>
         <p className="text-muted-foreground text-xs" id={`${uid}-note`}>
           {current
             ? "Collection is paused now. Turn this off to resume new samples."
             : "Stops new metric samples from the observer and node collectors. Inventory and heartbeats continue, and stored history is preserved."}
+          {staged &&
+            (checked
+              ? " Staged: applying pauses collection after a confirmation."
+              : " Staged: applying resumes new samples.")}
         </p>
       </div>
     </div>
-  );
-}
-
-function ApplyBar({
-  changes,
-  problems,
-  pending,
-  onDiscard,
-}: {
-  changes: string[];
-  problems: string[];
-  pending: boolean;
-  onDiscard: () => void;
-}) {
-  const changed = changes.length > 0;
-  return (
-    <div className="space-y-3 border-t pt-4">
-      {changed && (
-        <div className="space-y-1">
-          <p className="font-medium text-xs">Changes to apply</p>
-          <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground text-xs">
-            {changes.map((change) => (
-              <li key={change}>{change}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {changed && problems.length > 0 && (
-        <ul aria-live="polite" className="space-y-1 text-warning-text text-xs">
-          {problems.map((problem) => (
-            <li className="flex items-start gap-1.5" key={problem}>
-              <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
-              {problem}
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          disabled={!changed || problems.length > 0 || pending}
-          type="submit"
-        >
-          {pending ? "Applying…" : "Apply changes"}
-        </Button>
-        {changed ? (
-          <Button
-            disabled={pending}
-            onClick={onDiscard}
-            type="button"
-            variant="ghost"
-          >
-            Discard changes
-          </Button>
-        ) : (
-          <span className="text-muted-foreground text-xs">
-            No changes to apply.
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PauseConfirm({
-  clusterName,
-  open,
-  onCancel,
-  onConfirm,
-}: {
-  clusterName: string;
-  open: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <Dialog
-      onOpenChange={(next) => {
-        if (!next) {
-          onCancel();
-        }
-      }}
-      open={open}
-    >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Pause collection for {clusterName}?</DialogTitle>
-          <DialogDescription>
-            New metric samples stop on the observer and every node collector
-            until you resume. Charts show a gap for this period; missing samples
-            are never shown as zero. Inventory, heartbeats and stored history
-            are kept.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button onClick={onCancel} variant="outline">
-            Keep collecting
-          </Button>
-          <Button onClick={onConfirm} variant="warning">
-            Pause and apply
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// Draft collection settings for one cluster. Nothing changes until Apply;
-// the parent sends the request and reports acknowledgments.
-export function ProfileForm({
-  view,
-  initialNodeUid,
-  pending,
-  onApply,
-}: {
-  view: ClusterView;
-  initialNodeUid?: string;
-  pending: boolean;
-  onApply: (draft: ProfileDraft) => void;
-}) {
-  const [confirming, setConfirming] = useState<ProfileDraft>();
-  const { now } = useDisplay();
-  const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
-  const nodeName = (uid: string) =>
-    nodes.find((node) => node.uid === uid)?.name ?? uid;
-  const known = knownNamespaces(view);
-  const inventory = new Set(
-    view.inventory.entities.flatMap((entity) => {
-      if (entity.kind === "Namespace") {
-        return [entity.name];
-      }
-      return entity.namespace ? [entity.namespace] : [];
-    })
-  );
-  const form = useForm({
-    defaultValues: draftFromProfile(
-      view.profile,
-      nodes.some((node) => node.uid === initialNodeUid)
-        ? initialNodeUid
-        : undefined,
-      now
-    ),
-    onSubmit: ({ value }) => {
-      if (value.paused && !view.profile.paused) {
-        setConfirming(value);
-        return;
-      }
-      onApply(value);
-    },
-  });
-  return (
-    <form
-      aria-label={`Collection settings for ${view.cluster.name}`}
-      className="space-y-5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        form.handleSubmit();
-      }}
-    >
-      <form.Field name="name">
-        {(field) => (
-          <ProfileChoices
-            onChange={field.handleChange}
-            profile={view.profile}
-            value={field.state.value}
-          />
-        )}
-      </form.Field>
-      <form.Subscribe selector={(state) => state.values.name}>
-        {(name) =>
-          name === "diagnostic" && (
-            <form.Field name="node">
-              {(node) => (
-                <form.Field name="extend">
-                  {(extend) => (
-                    <DiagnosticOptions
-                      extend={extend.state.value}
-                      nodes={nodes}
-                      onChange={node.handleChange}
-                      onExtendChange={extend.handleChange}
-                      profile={view.profile}
-                      value={node.state.value}
-                    />
-                  )}
-                </form.Field>
-              )}
-            </form.Field>
-          )
-        }
-      </form.Subscribe>
-      <form.Subscribe selector={(state) => state.values}>
-        {(values) => (
-          <NamespaceField
-            disabled={pending}
-            draft={values}
-            inventory={inventory}
-            known={known}
-            onChange={(next) => {
-              form.setFieldValue("scope", next.scope);
-              form.setFieldValue("namespaces", next.namespaces);
-            }}
-          />
-        )}
-      </form.Subscribe>
-      <form.Field name="paused">
-        {(field) => (
-          <PauseField
-            checked={field.state.value}
-            current={view.profile.paused}
-            onChange={field.handleChange}
-          />
-        )}
-      </form.Field>
-      <form.Subscribe selector={(state) => state.values}>
-        {(values) => (
-          <ApplyBar
-            changes={draftChanges(values, view.profile, nodeName, now)}
-            onDiscard={() => form.reset()}
-            pending={pending}
-            problems={draftProblems(values, nodes, view.profile, now)}
-          />
-        )}
-      </form.Subscribe>
-      <PauseConfirm
-        clusterName={view.cluster.name}
-        onCancel={() => setConfirming(undefined)}
-        onConfirm={() => {
-          if (confirming) {
-            onApply(confirming);
-          }
-          setConfirming(undefined);
-        }}
-        open={!!confirming}
-      />
-    </form>
   );
 }

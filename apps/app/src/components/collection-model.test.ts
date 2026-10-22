@@ -6,8 +6,11 @@ import {
   ackPollDelay,
   activeDiagnostic,
   awaitingAcknowledgment,
+  capabilityLabel,
   deliveryHealth,
   draftChanges,
+  draftFieldChanges,
+  draftFieldProblems,
   draftFromProfile,
   draftProblems,
   effectiveProfileName,
@@ -17,10 +20,14 @@ import {
   namespaceLimit,
   namespaceProblem,
   nodeAcknowledgments,
+  nodeNamer,
   observationFreshness,
   profileRequest,
+  progressSummary,
+  progressText,
   requestProgress,
   returnProfile,
+  validationText,
 } from "./collection-model";
 
 const now = Date.parse("2026-10-22T10:00:00.000Z");
@@ -341,17 +348,27 @@ describe("acknowledgments", () => {
   it("backs off acknowledgment refreshes within the patience window", () => {
     const delays: number[] = [];
     let elapsed = 0;
-    let delay = ackPollDelay(0, elapsed);
+    let delay = ackPollDelay(elapsed);
     while (delay !== undefined) {
       delays.push(delay);
       elapsed += delay;
-      delay = ackPollDelay(delays.length, elapsed);
+      delay = ackPollDelay(elapsed);
     }
     expect(delays).toEqual([
       10_000, 20_000, 30_000, 30_000, 30_000, 30_000, 30_000,
     ]);
     expect(elapsed).toBeLessThanOrEqual(ackPatienceMs);
-    expect(ackPollDelay(0, ackPatienceMs)).toBeUndefined();
+    expect(ackPollDelay(ackPatienceMs)).toBeUndefined();
+  });
+
+  it("keeps the refresh schedule across remounts", () => {
+    // A poller mounted 12 s after the request waits for the 30 s mark, not
+    // another 10 s from its own start.
+    expect(ackPollDelay(12_000)).toBe(18_000);
+    // A tick that fires slightly early does not repeat its mark.
+    expect(ackPollDelay(29_800)).toBe(30_200);
+    expect(ackPollDelay(ackPatienceMs - 1000)).toBe(1000);
+    expect(ackPollDelay(ackPatienceMs - 200)).toBeUndefined();
   });
 
   it("keeps refreshing only while a request can still be acknowledged", () => {
@@ -428,5 +445,67 @@ describe("acknowledgments", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(1536)).toBe("1.5 KiB");
     expect(formatBytes(8 * 1024 ** 2)).toBe("8.0 MiB");
+  });
+});
+
+describe("staged change support", () => {
+  it("reports each change with the setting it belongs to", () => {
+    const view = fixture();
+    const draft = {
+      ...draftFromProfile(view.profile),
+      name: "basic" as const,
+      scope: "all" as const,
+    };
+    expect(
+      draftFieldChanges(draft, view.profile).map((change) => change.field)
+    ).toEqual(["profile", "namespaces"]);
+    expect(draftChanges(draft, view.profile)).toEqual(
+      draftFieldChanges(draft, view.profile).map((change) => change.summary)
+    );
+  });
+
+  it("splits blocking problems by setting", () => {
+    const view = fixture();
+    const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
+    const draft = {
+      ...draftFromProfile(view.profile),
+      name: "diagnostic" as const,
+      namespaces: [],
+    };
+    const problems = draftFieldProblems(draft, nodes, view.profile, now);
+    expect(problems.profile[0]).toContain("Choose the node");
+    expect(problems.namespaces[0]).toContain("at least one namespace");
+    expect(draftProblems(draft, nodes, view.profile, now)).toEqual([
+      ...problems.profile,
+      ...problems.namespaces,
+    ]);
+  });
+
+  it("names nodes, sources and schema errors for people", () => {
+    const view = fixture();
+    expect(nodeNamer(view)("n2")).toBe("node-a");
+    expect(nodeNamer(view)("gone")).toBe("gone");
+    expect(capabilityLabel("metrics_api")).toBe("Metrics API");
+    expect(capabilityLabel("custom")).toBe("custom");
+    const parsed = profileSchema.safeParse({ name: "nope" });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(validationText(parsed.error)).toContain(
+        "The request is invalid: "
+      );
+    }
+  });
+
+  it("summarises acknowledgment progress briefly and in full", () => {
+    const view = fixture();
+    const waiting = requestProgress(view, 4, now);
+    expect(waiting.phase).toBe("partial");
+    expect(progressSummary(waiting)).toBe("1 of 2 nodes acknowledged");
+    expect(progressText(waiting, 4)).toContain("1 of 2 nodes acknowledged");
+    const syncing = requestProgress(view, 5, now);
+    expect(progressSummary(syncing)).toBe("Sent, loading the latest status…");
+    expect(progressText(syncing, 5)).toContain("Loading the latest status");
+    const stale = requestProgress(view, 4, now + 10 * 60_000);
+    expect(progressSummary(stale)).toContain("heartbeat stale");
   });
 });

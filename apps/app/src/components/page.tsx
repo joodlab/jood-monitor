@@ -31,37 +31,6 @@ export function PageHeader({
   );
 }
 
-export function Section({
-  title,
-  description,
-  action,
-  children,
-  className,
-}: {
-  title: string;
-  description?: ReactNode;
-  action?: ReactNode;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <section className={cn("space-y-3", className)}>
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h2 className="font-medium text-sm">{title}</h2>
-          {description && (
-            <p className="mt-0.5 text-muted-foreground text-xs">
-              {description}
-            </p>
-          )}
-        </div>
-        {action}
-      </div>
-      {children}
-    </section>
-  );
-}
-
 export function EmptyState({
   icon: Icon,
   title,

@@ -169,7 +169,7 @@ export function NodeAcknowledgments({
       {rows.length > collapsedRows && (
         <Button
           aria-expanded={expanded}
-          className="h-8"
+          className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setExpanded((value) => !value)}
           size="sm"
           variant="ghost"

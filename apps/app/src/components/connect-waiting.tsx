@@ -27,6 +27,7 @@ import {
   firstHeartbeatPatienceMs,
   issuedAt,
 } from "../lib/install-enrollment";
+import { type ConnectedTarget, connectedSearch } from "./connect-navigation";
 import { CommandBlock, DocLink, Notice, useNow } from "./connect-parts";
 import { TimeText } from "./time";
 
@@ -240,20 +241,8 @@ function Connected({
 }) {
   const navigate = useNavigate({ from: "/" });
   const { cluster } = enrollment;
-  const open = (view: string, mode?: string) =>
-    navigate({
-      search: (old) => ({
-        ...old,
-        view,
-        ...(mode ? { mode } : {}),
-        workspace: cluster.workspaceId,
-        cluster: cluster.id,
-        at: undefined,
-        resource: undefined,
-        resourceCluster: undefined,
-        diagnosticNode: undefined,
-      }),
-    });
+  const open = (target: ConnectedTarget) =>
+    navigate({ search: (old) => connectedSearch(old, cluster, target) });
   const inventory = delivery.state === "inventory";
   return (
     <div className="space-y-4">
@@ -278,7 +267,14 @@ function Connected({
             label="Heartbeat received by the hub"
             value={checks.firstHeartbeatAt ?? delivery.heartbeatAt}
           />
-          {delivery.version ? ` from observer ${delivery.version}` : ""}.
+          {delivery.version && (
+            <>
+              {" "}
+              from observer{" "}
+              <span className="break-all font-mono">{delivery.version}</span>
+            </>
+          )}
+          .
           {inventory
             ? " Node collectors acknowledge the collection profile separately."
             : " Inventory usually follows within a minute."}
@@ -290,13 +286,17 @@ function Connected({
           Connect another cluster
         </Button>
         <DialogClose
-          onClick={() => open("settings")}
+          onClick={() => open({ view: "settings" })}
           render={<Button className="h-9" variant="outline" />}
         >
           Collection settings
         </DialogClose>
         <DialogClose
-          onClick={() => open("infrastructure", "servers")}
+          onClick={() =>
+            // A search or problems filter left from earlier would hide the
+            // servers the notice just reported.
+            open({ view: "resources", tab: "servers", q: "", problems: false })
+          }
           render={<Button className="h-9" />}
         >
           View cluster
