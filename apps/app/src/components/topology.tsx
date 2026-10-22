@@ -52,7 +52,7 @@ import {
   resourceStatus,
   summarize,
 } from "../lib/infrastructure";
-import { freshness } from "../lib/metrics";
+import { inventoryFreshness } from "../lib/metrics";
 import {
   cardSize,
   chipSize,
@@ -763,7 +763,7 @@ function minimapColor(node: CardNode) {
 }
 
 function staleView(view: ClusterView, now: number) {
-  return freshness(view.inventory.sourceTime, now) !== "fresh";
+  return inventoryFreshness(view.inventory.sourceTime, now) !== "fresh";
 }
 
 export function Topology({

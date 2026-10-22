@@ -18,7 +18,7 @@ import {
   podReady,
   readinessLabel,
 } from "../lib/infrastructure";
-import { freshness, observedUsage } from "../lib/metrics";
+import { inventoryFreshness, observedUsage } from "../lib/metrics";
 import {
   groupByOwner,
   type PlacementHint,
@@ -193,7 +193,8 @@ function ServerTile({
   const { view, node } = server;
   const cpu = observedUsage(view, node, "cpu", referenceTime);
   const memory = observedUsage(view, node, "memory", referenceTime);
-  const stale = freshness(view.inventory.sourceTime, referenceTime) !== "fresh";
+  const stale =
+    inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
   return (
     <Card
       className={cn(

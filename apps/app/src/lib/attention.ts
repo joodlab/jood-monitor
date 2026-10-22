@@ -5,7 +5,7 @@ import {
   resourceStatus,
   workloadKinds,
 } from "./infrastructure";
-import { freshness, observedUsage } from "./metrics";
+import { freshness, inventoryFreshness, observedUsage } from "./metrics";
 
 // Attention items describe observed conditions, one row per real problem:
 // a cluster's observer, a node, a workload with its affected pods, or an
@@ -139,7 +139,7 @@ function clusterCondition(
     };
   }
   const sourceTime = view.inventory.sourceTime;
-  const inventory = freshness(sourceTime, now);
+  const inventory = inventoryFreshness(sourceTime, now);
   if (inventory === "unknown") {
     return {
       key: "inventory:missing",

@@ -8,7 +8,7 @@ import {
 } from "@jood-monitor/ui/sheet";
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
 import { useState } from "react";
-import { freshness } from "../lib/metrics";
+import { inventoryFreshness } from "../lib/metrics";
 import { CopyButton } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
 import { StatusBadge } from "./resource-status";
@@ -47,7 +47,8 @@ export function InspectorHeader({
   onInspect: (view: ClusterView, entity: Entity) => void;
 }) {
   const back = trail.at(-2);
-  const stale = freshness(view.inventory.sourceTime, referenceTime) !== "fresh";
+  const stale =
+    inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
   return (
     <header className="sticky top-0 z-10 space-y-2 border-b bg-popover px-4 pt-2 pb-3">
       <div className="-mx-2 flex items-center gap-1">
