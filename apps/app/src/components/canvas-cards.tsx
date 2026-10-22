@@ -249,6 +249,7 @@ function context(data: CardData): CardContext {
     selectorOnly: selectorOnly(data.item.view),
     stale: data.stale,
     sourceTime: data.item.view.inventory.sourceTime,
+    view: data.item.view,
   };
 }
 

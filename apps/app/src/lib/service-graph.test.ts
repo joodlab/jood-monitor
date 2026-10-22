@@ -1,5 +1,6 @@
-import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import { attentionItems, attentionSummary } from "./attention";
 import { cardStatus, podDetail, toneOf } from "./canvas-cards";
 import { summarize } from "./infrastructure";
 import {
@@ -161,6 +162,32 @@ function healthyFixture() {
   find(view, "checkout").ready = 2;
   return view;
 }
+// The attention model's node memory reason; the denominator's name may vary.
+const memoryText = /^Memory at 95\.0% of /;
+// A node memory sample taken `age` ms before now.
+function nodeMemory(uid: string, value: string, age = 10_000): Metric {
+  const sourceTime = new Date(now - age).toISOString();
+  return {
+    id: 1,
+    clusterId: "synthetic",
+    diagnostic: false,
+    integer: false,
+    monotonic: false,
+    receivedAt: sourceTime,
+    resource: "{}",
+    scope: "{}",
+    startTimeUnixNano: "0",
+    temporality: 0,
+    entityUid: uid,
+    name: "k8s.node.memory.usage",
+    value,
+    sourceTime,
+    timeUnixNano: String(BigInt(Date.parse(sourceTime)) * 1_000_000n),
+    attributes: "{}",
+    unit: "By",
+    kind: "gauge",
+  };
+}
 const options: ServiceGraphOptions = {
   search: "",
   namespace: "shop",
@@ -312,6 +339,35 @@ describe("problems-only topology", () => {
     expect(uids(graph.items)).toEqual(["node-b"]);
   });
 
+  it("seeds a node the badge counts for memory near full", () => {
+    const view = healthyFixture();
+    const node = find(view, "node-b");
+    node.capacityMemory = 1000;
+    view.metrics = [nodeMemory("node-b", "950")];
+    expect(attentionSummary(attentionItems([view], now)).actionable).toBe(1);
+    const problem = itemProblem({ view, entity: node }, now);
+    expect(problem).toBe(true);
+    const status = cardStatus(node, summarize(view, node, now), {
+      now,
+      problem,
+      stale: false,
+      view,
+    });
+    expect(status.tone).toBe("warning");
+    // The badge's own reason, never a bare "Ready" on a warning card.
+    expect(status.text).toMatch(memoryText);
+    const graph = serviceGraph([view], {
+      ...options,
+      namespace: "all",
+      problems: true,
+    });
+    expect(uids(graph.items)).toEqual(["node-b"]);
+    // A stale sample is unknown, not near full: no problem on either side.
+    view.metrics = [nodeMemory("node-b", "950", 600_000)];
+    expect(attentionSummary(attentionItems([view], now)).actionable).toBe(0);
+    expect(itemProblem({ view, entity: node }, now)).toBe(false);
+  });
+
   it("leaves finished failed pods out and counts them as history", () => {
     const view = healthyFixture();
     view.inventory.entities.push(
@@ -336,7 +392,8 @@ describe("problems-only topology", () => {
     expect(uids(live.items)).toContain("checkout-2");
     expect(uids(live.items)).not.toContain("report-1");
     expect(live.finishedFailed).toBe(2);
-    expect(serviceGraph([view], options).finishedFailed).toBe(0);
+    // Outside Problems only nothing is left out, so nothing is counted.
+    expect(serviceGraph([view], options).finishedFailed).toBeUndefined();
   });
 
   it("keeps a pod inside its start-up grace out of the problem view", () => {
@@ -753,6 +810,15 @@ describe("standalone pods", () => {
     for (const uid of ["cart", "checkout", "worker", "cart-svc", "cart-in"]) {
       expect(uids(graph.items)).toContain(uid);
     }
+    // An expanded card's pods are drawn ahead of the standalone ones.
+    const expanded = serviceGraph([view], {
+      ...options,
+      expanded: ["synthetic:cart"],
+    });
+    expect(expanded.items).toHaveLength(200);
+    expect(
+      uids(expanded.items.filter((item) => item.parent === "synthetic:cart"))
+    ).toEqual(["cart-1", "cart-2"]);
   });
 });
 

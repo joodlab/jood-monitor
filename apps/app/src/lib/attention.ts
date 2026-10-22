@@ -347,6 +347,15 @@ function nodeItems(
   return items;
 }
 
+// A node's first actionable item as the badge counts it (not ready, a
+// reported condition, memory near full), so the canvas and Problems only
+// flag the same nodes and can say why.
+export function nodeProblem(view: ClusterView, node: Entity, now: number) {
+  return nodeItems(view, node, now, false).find(
+    (item) => item.severity !== "info"
+  );
+}
+
 function podItem(view: ClusterView, pod: Entity, terminal: boolean): Attention {
   const node = nodeName(view, pod.nodeUid);
   return {

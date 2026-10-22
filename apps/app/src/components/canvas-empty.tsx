@@ -87,18 +87,19 @@ function hiddenCopy(props: EmptyProps): EmptyCopy {
       description: `${counted(count, "system namespace")} with resources ${verb} hidden by the current filters.`,
     };
   }
+  const history = historyText(props.graph.finishedFailed);
   if (props.search) {
     return {
       icon: props.problems ? TriangleAlert : Network,
       title: `No ${props.problems ? "problem resources" : "topology"} match “${props.search}” outside system namespaces`,
-      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.`,
+      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.${history}`,
     };
   }
   const notes = coverageNotes(props);
   return {
     icon: TriangleAlert,
     title: "Problems are in system namespaces",
-    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}`,
+    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}${history}`,
   };
 }
 
@@ -108,7 +109,7 @@ function scopeText(namespace: string) {
 
 // Finished pods that failed are history, named so the counts add up but
 // never presented as a problem.
-function historyText(finishedFailed: number) {
+function historyText(finishedFailed = 0) {
   if (!finishedFailed) {
     return "";
   }

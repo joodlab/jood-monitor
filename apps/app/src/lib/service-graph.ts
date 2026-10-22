@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem } from "./attention";
+import { livePodProblem, nodeProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
@@ -45,8 +45,8 @@ export interface ServiceGraphOptions {
 }
 export interface ServiceGraph {
   // Problems only: finished pods that failed, in scope and matching, left out
-  // as history rather than drawn as problems.
-  finishedFailed: number;
+  // as history rather than drawn as problems. Absent outside Problems only.
+  finishedFailed?: number;
   grouped: boolean;
   // Cards this filter would draw from hidden system namespaces: matching or
   // problem resources, or namespaces on the map. Counted only for an empty
@@ -192,11 +192,16 @@ export function graphSubject(
 
 // A problem now, as the attention model's actionable items: pods use its live
 // rule (start-up grace; finished pods, failed ones included, are history),
-// every other kind its reported status and conditions.
-function liveProblem(entity: Entity, now: number) {
-  return entity.kind === "Pod"
-    ? livePodProblem(entity, now)
-    : hasProblem(entity);
+// nodes its node rule (conditions and memory near full on a fresh sample),
+// every other kind its reported status.
+function liveProblem(view: ClusterView, entity: Entity, now: number) {
+  if (entity.kind === "Pod") {
+    return livePodProblem(entity, now);
+  }
+  if (entity.kind === "Node") {
+    return nodeProblem(view, entity, now) !== undefined;
+  }
+  return hasProblem(entity);
 }
 
 // Namespace cards carry the problems of what they contain, so the namespace
@@ -207,11 +212,12 @@ export function itemProblem(item: ResourceItem, now: number) {
   const { view, entity } = item;
   if (entity.kind === "Namespace") {
     return view.inventory.entities.some(
-      (member) => member.namespace === entity.name && liveProblem(member, now)
+      (member) =>
+        member.namespace === entity.name && liveProblem(view, member, now)
     );
   }
   return (
-    liveProblem(entity, now) ||
+    liveProblem(view, entity, now) ||
     (workloadKinds.has(entity.kind) &&
       relatedPods(view, entity).some((pod) => livePodProblem(pod, now)))
   );
@@ -388,7 +394,6 @@ function namespaceGraph(views: ClusterView[], showSystem: boolean) {
     links: [] as GraphLink[],
     grouped: true,
     unshown: 0,
-    finishedFailed: 0,
     hiddenSystem: items.length ? 0 : occupied.length,
   };
 }
@@ -405,7 +410,7 @@ function seedItems(
     if (!matches(entity, options.search)) {
       continue;
     }
-    if (options.problems && !liveProblem(entity, now)) {
+    if (options.problems && !liveProblem(view, entity, now)) {
       // Finished pods that failed are history: counted, never a problem.
       if (entity.kind === "Pod" && podPhase(entity) === "Failed") {
         finishedFailed++;
@@ -529,11 +534,7 @@ function selectIds(
   options: ServiceGraphOptions
 ) {
   if (!(options.search || options.problems)) {
-    return {
-      selected: new Set(candidates.keys()),
-      unshown: 0,
-      finishedFailed: 0,
-    };
+    return { selected: new Set(candidates.keys()), unshown: 0 };
   }
   const { seeds, unshown, finishedFailed } = seedItems(
     scoped,
@@ -545,7 +546,7 @@ function selectIds(
       ? problemContext(seeds, links)
       : searchContext(seeds, links),
     unshown,
-    finishedFailed,
+    finishedFailed: options.problems ? finishedFailed : undefined,
   };
 }
 
@@ -602,13 +603,14 @@ export function serviceGraph(
     options.expanded,
     new Set(scoped.filter((item) => item.entity.kind === "Pod").map(resourceId))
   );
-  // Within a lane, standalone pods follow the cards, so a namespace full of
-  // finished Job pods cannot push its workloads past the bound.
+  // Standalone pods follow every other card, expanded pod chips included, so
+  // a namespace full of finished Job pods cannot push its workloads, or the
+  // pods a card was expanded to show, past the bound.
   const bounded = items
     .sort(
       (a, b) =>
+        Number(standalone.has(a.id)) - Number(standalone.has(b.id)) ||
         a.lane - b.lane ||
-        Number(a.entity.kind === "Pod") - Number(b.entity.kind === "Pod") ||
         (a.entity.namespace ?? "").localeCompare(b.entity.namespace ?? "") ||
         a.entity.name.localeCompare(b.entity.name)
     )

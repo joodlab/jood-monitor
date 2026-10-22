@@ -6,6 +6,8 @@ import {
   failingMembers,
   namespaceStatus,
   namespaceSummary,
+  nodeStatusText,
+  podDetail,
   staleText,
   type Tone,
   toneOf,
@@ -28,22 +30,26 @@ function staleView(item: GraphItem, now: number) {
   return inventoryFreshness(item.view.inventory.sourceTime, now) !== "fresh";
 }
 
-function rowMeta(item: GraphItem, now: number) {
+// Pods and nodes read as their canvas cards do: a finished pod as history
+// with no readiness ("Finished · Failed · 0 restarts"), a node with the
+// reason it needs attention.
+export function rowMeta(item: GraphItem, now: number) {
   const { view, entity } = item;
   const parts = [cardSubtitle(entity, item.replicaSets?.length)];
   if (entity.kind === "Ingress") {
     parts.push(entity.hosts?.join(", ") || "no host rule");
-  } else {
-    parts.push(resourceStatus(entity));
-  }
-  if (entity.ready != null && entity.desired != null) {
-    parts.push(`${entity.ready}/${entity.desired} ready`);
-  }
-  if (entity.kind === "Pod") {
-    parts.push(`${entity.restarts ?? 0} restarts`);
+  } else if (entity.kind === "Pod") {
+    parts.push(podDetail(entity));
     const node = findEntity(view, entity.nodeUid)?.name;
     if (node) {
       parts.push(`on ${node}`);
+    }
+  } else if (entity.kind === "Node") {
+    parts.push(nodeStatusText(entity, view, now));
+  } else {
+    parts.push(resourceStatus(entity));
+    if (entity.ready != null && entity.desired != null) {
+      parts.push(`${entity.ready}/${entity.desired} ready`);
     }
   }
   if (item.autoscalers?.length) {

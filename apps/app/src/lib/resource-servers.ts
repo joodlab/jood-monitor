@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { livePodProblem } from "./attention";
 import {
   findEntity,
   hasProblem,
@@ -71,7 +71,8 @@ function podMatches(
   return (
     (filter.namespace === "all" || pod.namespace === filter.namespace) &&
     (includesSystem(filter) || !isSystem(pod)) &&
-    (!filter.problems || podProblem(pod, now)) &&
+    // Live problems only, as on the canvas: finished pods are history.
+    (!filter.problems || livePodProblem(pod, now)) &&
     matchesText(pod, filter.q, owningWorkload(view, pod)?.name)
   );
 }

@@ -783,6 +783,24 @@ describe("server placement", () => {
         .kind
     ).toBe("noMatch");
   });
+  it("leaves finished pods that failed out of Problems only", () => {
+    const view = placed();
+    Object.assign(find(view, "done"), {
+      status: "Failed / OOM observed",
+      nodeUid: "node-a",
+    });
+    const problems = { ...listFilter, problems: true };
+    const placement = serverPlacement([view], problems, now);
+    // The not-ready and the pending pod are live; the failed Job is history.
+    expect(placement.matchedPods).toBe(2);
+    expect(
+      placement.servers.flatMap((server) => [...(server.matched ?? [])])
+    ).not.toContain("done");
+    // History is still found without the filter.
+    expect(
+      serverPlacement([view], { ...listFilter, q: "done" }, now).matchedPods
+    ).toBe(1);
+  });
   it("names a pod tile's readiness, attention, staleness and match", () => {
     const view = placed();
     expect(

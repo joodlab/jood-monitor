@@ -1,9 +1,10 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem, podProblem } from "./attention";
+import { livePodProblem, nodeProblem, podProblem } from "./attention";
 import {
   compactCpu,
   compactMemory,
   isFinished,
+  nodeConditionProblems,
   oomObserved,
   podPhase,
   type ResourceSummary,
@@ -34,6 +35,8 @@ export interface CardContext {
   // Source time of the inventory the card was drawn from.
   sourceTime?: string;
   stale: boolean;
+  // The card's cluster, for problems judged on its metrics (node memory).
+  view?: ClusterView;
 }
 
 function plural(count: number, noun: string) {
@@ -113,19 +116,21 @@ const pressureNames: Record<string, string> = {
   NetworkUnavailable: "Network unavailable",
 };
 
-function nodeProblemText(node: Entity) {
+// A node's status, or why it is a problem: not ready, a reported condition,
+// else the attention model's reason, such as memory near full.
+export function nodeStatusText(
+  node: Entity,
+  view: ClusterView | undefined,
+  now: number
+) {
   if (node.status !== "True") {
     return resourceStatus(node);
   }
-  const pressure = (node.conditions ?? []).find(
-    (condition) =>
-      condition.status === "True" &&
-      (condition.type.endsWith("Pressure") ||
-        condition.type === "NetworkUnavailable")
-  );
-  return pressure
-    ? (pressureNames[pressure.type] ?? pressure.type)
-    : resourceStatus(node);
+  const [condition] = nodeConditionProblems(node);
+  if (condition) {
+    return pressureNames[condition.type] ?? condition.type;
+  }
+  return (view && nodeProblem(view, node, now)?.title) || resourceStatus(node);
 }
 
 // The most common status among failing pods, such as CrashLoopBackOff.
@@ -154,9 +159,14 @@ function shortfall(entity: Entity) {
   );
 }
 
-function problemText(entity: Entity, summary: ResourceSummary, now: number) {
+function problemText(
+  entity: Entity,
+  summary: ResourceSummary,
+  context: CardContext
+) {
+  const { now } = context;
   if (entity.kind === "Node") {
-    return nodeProblemText(entity);
+    return nodeStatusText(entity, context.view, now);
   }
   if (entity.kind === "Pod") {
     return resourceStatus(entity);
@@ -233,7 +243,7 @@ export function cardStatus(
   const failing = failingMembers(entity, summary.pods, context.now);
   const tone = toneOf(entity, context.problem, context.stale, failing.length);
   if (context.problem) {
-    const text = problemText(entity, summary, context.now);
+    const text = problemText(entity, summary, context);
     return { tone, text: context.stale ? `${text} · stale` : text };
   }
   if (context.stale) {
