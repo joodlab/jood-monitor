@@ -4,7 +4,10 @@ import { useMemo } from "react";
 import {
   cardSubtitle,
   failingMembers,
+  namespaceStatus,
+  namespaceSummary,
   staleText,
+  type Tone,
   toneOf,
 } from "../lib/canvas-cards";
 import { findEntity, relatedPods, resourceStatus } from "../lib/infrastructure";
@@ -52,6 +55,40 @@ function rowMeta(item: GraphItem, now: number) {
   return parts.join(" · ");
 }
 
+// A row's status icon and detail line. Namespaces read as their canvas card
+// does ("Healthy · 3/3 pods ready"), so phones get the same answer.
+function rowStatus(
+  item: GraphItem,
+  problem: boolean,
+  now: number
+): { meta: string; tone: Tone } {
+  const { view, entity } = item;
+  const stale = staleView(item, now);
+  if (entity.kind === "Namespace") {
+    const summary = namespaceSummary(view, entity.name, now);
+    const status = namespaceStatus(summary, {
+      now,
+      problem,
+      sourceTime: view.inventory.sourceTime,
+      stale,
+    });
+    const history = summary.finishedFailed
+      ? ` · ${summary.finishedFailed} finished with failures`
+      : "";
+    return { meta: `Namespace · ${status.text}${history}`, tone: status.tone };
+  }
+  const members = entity.kind === "Pod" ? [] : relatedPods(view, entity);
+  return {
+    meta: rowMeta(item, now),
+    tone: toneOf(
+      entity,
+      problem,
+      stale,
+      failingMembers(entity, members, now).length
+    ),
+  };
+}
+
 interface ListProps {
   expanded: string[];
   now: number;
@@ -63,17 +100,14 @@ interface ListProps {
 function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
   const { item } = entry;
   const { view, entity } = item;
-  const problem = itemProblem(item, props.now);
-  const members = ["Pod", "Namespace"].includes(entity.kind)
-    ? []
-    : relatedPods(view, entity);
-  const tone = toneOf(
-    entity,
-    problem,
-    staleView(item, props.now),
-    failingMembers(entity, members, props.now).length
+  const { meta, tone } = rowStatus(
+    item,
+    itemProblem(item, props.now),
+    props.now
   );
-  const pods = members.length;
+  const pods = ["Pod", "Namespace"].includes(entity.kind)
+    ? 0
+    : relatedPods(view, entity).length;
   const open = props.expanded.includes(item.id);
   return (
     <li>
@@ -92,8 +126,8 @@ function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
             <span className="block truncate font-semibold text-sm">
               {entity.name}
             </span>
-            <span className="block truncate text-muted-foreground text-xs">
-              {rowMeta(item, props.now)}
+            <span className="line-clamp-2 text-muted-foreground text-xs">
+              {meta}
             </span>
           </span>
           <StatusIcon tone={tone} />

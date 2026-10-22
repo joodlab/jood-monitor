@@ -309,10 +309,11 @@ interface PanelProps {
   views: ClusterView[];
 }
 
-// The live problem count, toned by the worst severity among them.
+// The problems that need action, toned by the worst of them: the same count
+// as the Observability tab. Info and history stay in the list itself.
 export function AttentionCount({ attention }: { attention: Attention[] }) {
   const summary = attentionSummary(attention);
-  const live = summary.critical + summary.warning + summary.info;
+  const live = summary.actionable;
   if (!(live > 0 && summary.worst)) {
     return null;
   }
