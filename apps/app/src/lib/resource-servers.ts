@@ -3,9 +3,11 @@ import { livePodProblem } from "./attention";
 import {
   findEntity,
   hasProblem,
+  isFinished,
   isSystem,
   matchesText,
   owningWorkload,
+  percent,
   readinessLabel,
   relatedPods,
   resourceId,
@@ -315,4 +317,118 @@ export function podTileLabel(
   ]
     .filter(Boolean)
     .join(", ");
+}
+
+export type CapacityField = "cpu" | "memory";
+
+function allocatableOf(node: Entity, field: CapacityField) {
+  return (
+    (field === "cpu" ? node.allocatableCpu : node.allocatableMemory) ??
+    undefined
+  );
+}
+
+// Measured usage against allocatable, the share pods may use. Capacity also
+// counts system reserves, so it is a fallback the caller must label.
+export interface UsageShare {
+  basis: "allocatable" | "capacity";
+  percent?: number;
+  total?: number;
+}
+
+export function usageShare(
+  node: Entity,
+  field: CapacityField,
+  used?: number
+): UsageShare {
+  const allocatable = allocatableOf(node, field);
+  const capacity =
+    (field === "cpu" ? node.capacityCpu : node.capacityMemory) ?? undefined;
+  if (!allocatable && capacity) {
+    return {
+      basis: "capacity",
+      total: capacity,
+      percent: percent(used, capacity),
+    };
+  }
+  return {
+    basis: "allocatable",
+    total: allocatable,
+    percent: percent(used, allocatable),
+  };
+}
+
+// Configured requests against allocatable for one resource: what the
+// scheduler reserves, not usage.
+export interface RequestShare {
+  allocatable?: number;
+  // requested / allocatable × 100, above 100 when the node is overcommitted.
+  // Absent when either side is unknown, so it never reads as 0%.
+  percent?: number;
+  // Sum over the node's active pods; absent when any lacks a request.
+  requested?: number;
+  // Why the share is unknown, when it is.
+  unknown?: string;
+}
+
+export interface NodeRequests {
+  cpu: RequestShare;
+  memory: RequestShare;
+  // Active pods bound to the node, in every namespace.
+  pods: number;
+}
+
+function allocatableGap(allocatable: number | undefined) {
+  if (allocatable == null) {
+    return "Allocatable not reported";
+  }
+  return allocatable > 0 ? "" : "Allocatable reported as 0";
+}
+
+function requestShare(
+  pods: Entity[],
+  node: Entity,
+  field: CapacityField
+): RequestShare {
+  const values = pods.map((pod) =>
+    field === "cpu" ? pod.requestedCpu : pod.requestedMemory
+  );
+  const missing = values.filter((value) => value == null).length;
+  // A request of 0 is a reported value (BestEffort); only absence is unknown.
+  const requested = missing
+    ? undefined
+    : values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  const allocatable = allocatableOf(node, field);
+  const share = percent(requested, allocatable);
+  if (share != null) {
+    return { requested, allocatable, percent: share };
+  }
+  const reasons = [
+    missing
+      ? `Request unknown for ${missing} of ${pods.length} pod${pods.length === 1 ? "" : "s"}`
+      : "",
+    allocatableGap(allocatable),
+  ];
+  return {
+    requested,
+    allocatable,
+    unknown: reasons.filter(Boolean).join(" · "),
+  };
+}
+
+// The observer appends " / OOM observed" to a pod's phase; judge the phase.
+function holdsRequests(pod: Entity) {
+  return !isFinished({ ...pod, status: pod.status.split(" / ")[0] });
+}
+
+// Requests of every active pod bound to the node, whatever its namespace or
+// the view's filters, as the scheduler counts them. Finished pods reserve
+// nothing.
+export function nodeRequests(view: ClusterView, node: Entity): NodeRequests {
+  const pods = relatedPods(view, node).filter(holdsRequests);
+  return {
+    pods: pods.length,
+    cpu: requestShare(pods, node, "cpu"),
+    memory: requestShare(pods, node, "memory"),
+  };
 }

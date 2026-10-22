@@ -21,7 +21,6 @@ import {
   compactCpu,
   compactMemory,
   isFinished,
-  percent,
   podReady,
   readinessLabel,
 } from "../lib/infrastructure";
@@ -30,15 +29,19 @@ import {
   type EmptyServers,
   emptyServers,
   groupByOwner,
+  nodeRequests,
   placementHint,
   podTileLabel,
   type ServerCard,
   type ServerFilter,
   type ServerPlacement,
   serverPlacement,
+  type UsageShare,
+  usageShare,
 } from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
 import { EmptyState } from "./page";
+import { RequestBar } from "./request-bar";
 import {
   KindTile,
   MetricBar,
@@ -223,9 +226,10 @@ function Legend({
 }
 
 // A server card in the manner of a Railway service card: icon tile, name and
-// role line, usage, pod placement, and a status line at the foot. The name
-// button stretches over the card so the whole card opens the inspector;
-// pod tiles and times sit above that layer and keep their own actions.
+// role line, usage, requests, pod placement, and a status line at the foot.
+// The name button stretches over the card so the whole card opens the
+// inspector; pod tiles and times sit above that layer and keep their own
+// actions.
 function ServerTile({
   server,
   onInspect,
@@ -238,6 +242,8 @@ function ServerTile({
   const { view, node } = server;
   const cpu = observedUsage(view, node, "cpu", referenceTime);
   const memory = observedUsage(view, node, "memory", referenceTime);
+  const cpuShare = usageShare(node, "cpu", cpu);
+  const memoryShare = usageShare(node, "memory", memory);
   const stale = inventoryStale(view, referenceTime);
   const addresses = node.addresses?.join(", ");
   return (
@@ -268,16 +274,17 @@ function ServerTile({
       </div>
       <div className="grid grid-cols-2 gap-4">
         <MetricBar
-          detail={`${compactCpu(cpu)} / ${compactCpu(node.capacityCpu ?? undefined)}`}
+          detail={usageDetail(compactCpu, cpu, cpuShare)}
           label="CPU"
-          value={percent(cpu, node.capacityCpu)}
+          value={cpuShare.percent}
         />
         <MetricBar
-          detail={`${compactMemory(memory)} / ${compactMemory(node.capacityMemory ?? undefined)}`}
+          detail={usageDetail(compactMemory, memory, memoryShare)}
           label="Memory"
-          value={percent(memory, node.capacityMemory)}
+          value={memoryShare.percent}
         />
       </div>
+      <Requests node={node} stale={stale} view={view} />
       <div className="relative z-10 flex-1">
         <Placement
           onInspect={onInspect}
@@ -294,6 +301,48 @@ function ServerTile({
         >
           {addresses || "Address unavailable"}
         </span>
+      </div>
+    </div>
+  );
+}
+
+// Names the denominator: capacity appears only when allocatable is missing.
+function usageDetail(
+  format: (value?: number) => string,
+  used: number | undefined,
+  share: UsageShare
+) {
+  return `${format(used)} / ${format(share.total)} ${share.basis}`;
+}
+
+// Requests come from the inventory, every namespace included, so a stale
+// inventory greys them like the pod tiles and says they were last reported.
+function Requests({
+  view,
+  node,
+  stale,
+}: {
+  view: ClusterView;
+  node: Entity;
+  stale: boolean;
+}) {
+  const requests = nodeRequests(view, node);
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
+        <span>
+          Requested / allocatable · {plural(requests.pods, "pod")}
+          {stale && " · last reported"}
+        </span>
+        <span>configured, not usage</span>
+      </div>
+      <div className={cn("grid grid-cols-2 gap-4", stale && "grayscale")}>
+        <RequestBar format={compactCpu} label="CPU" share={requests.cpu} />
+        <RequestBar
+          format={compactMemory}
+          label="Memory"
+          share={requests.memory}
+        />
       </div>
     </div>
   );

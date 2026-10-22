@@ -318,16 +318,19 @@ function nodeItems(
       reason: `${condition.type}=True${condition.reason ? ` · ${condition.reason}` : ""}`,
     });
   }
+  // Allocatable is what pods may use; capacity also counts system reserves,
+  // so it stands in, and is named, only when allocatable is not reported.
+  const basis = node.allocatableMemory ? "allocatable" : "capacity";
   const memory = percent(
     observedUsage(view, node, "memory", now),
-    node.capacityMemory
+    node.allocatableMemory || node.capacityMemory
   );
   if (memory != null && memory >= 90) {
     items.push({
       ...base,
       id: `${view.cluster.id}:${node.uid}:memory`,
       severity: "warning",
-      title: `Memory at ${memory.toFixed(1)}% of capacity`,
+      title: `Memory at ${memory.toFixed(1)}% of ${basis}`,
       reason: "Latest fresh node measurement",
     });
   }

@@ -1,14 +1,22 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { useDisplay } from "../hooks/display";
-import { hasProblem, percent } from "../lib/infrastructure";
+import { compactCpu, compactMemory, hasProblem } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
+import {
+  type CapacityField,
+  nodeRequests,
+  type RequestShare,
+  usageShare,
+} from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
 import type { AttentionActions } from "./attention-list";
+import { RequestBar } from "./request-bar";
 import { MetricBar, StatusBadge } from "./resource-status";
 import { Widget, WidgetLink } from "./widget-card";
 
 // Compact server list: status, CPU and memory per node, problems first.
-// Usage bars use only fresh node samples; a missing sample says so.
+// Usage bars use only fresh node samples against allocatable; a missing
+// sample says so. Request bars are configured requests, not usage.
 
 const PREVIEW = 6;
 
@@ -35,6 +43,38 @@ function serverRows(views: ClusterView[], now: number): ServerRow[] {
     );
 }
 
+// Measured usage over configured requests for one resource. Capacity is
+// named only when it stands in for unreported allocatable.
+function Resource({
+  row,
+  field,
+  label,
+  format,
+  requests,
+}: {
+  row: ServerRow;
+  field: CapacityField;
+  label: string;
+  format: (value?: number) => string;
+  requests: RequestShare;
+}) {
+  const { referenceTime } = useDisplay();
+  const usage = usageShare(
+    row.node,
+    field,
+    observedUsage(row.view, row.node, field, referenceTime)
+  );
+  return (
+    <span className="grid min-w-0 gap-2">
+      <MetricBar
+        label={usage.basis === "capacity" ? `${label} (capacity)` : label}
+        value={usage.percent}
+      />
+      <RequestBar compact format={format} label="Requested" share={requests} />
+    </span>
+  );
+}
+
 function Row({
   row,
   showCluster,
@@ -44,12 +84,12 @@ function Row({
   showCluster: boolean;
   onInspect: AttentionActions["onInspect"];
 }) {
-  const { referenceTime } = useDisplay();
   const { view, node } = row;
+  const requests = nodeRequests(view, node);
   return (
     <li>
       <button
-        className="grid w-full gap-x-4 gap-y-2 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:items-center sm:px-5"
+        className="grid w-full gap-x-4 gap-y-2 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:grid-cols-[minmax(0,1fr)_8rem_8rem] sm:items-center sm:px-5"
         onClick={() => onInspect(view, node)}
         type="button"
       >
@@ -64,19 +104,19 @@ function Row({
             )}
           </span>
         </span>
-        <MetricBar
+        <Resource
+          field="cpu"
+          format={compactCpu}
           label="CPU"
-          value={percent(
-            observedUsage(view, node, "cpu", referenceTime),
-            node.capacityCpu
-          )}
+          requests={requests.cpu}
+          row={row}
         />
-        <MetricBar
+        <Resource
+          field="memory"
+          format={compactMemory}
           label="Memory"
-          value={percent(
-            observedUsage(view, node, "memory", referenceTime),
-            node.capacityMemory
-          )}
+          requests={requests.memory}
+          row={row}
         />
       </button>
     </li>
@@ -110,7 +150,7 @@ export function ServersWidget({
       description={
         rows.length > PREVIEW
           ? `Problems first · ${PREVIEW} of ${rows.length} servers`
-          : "Kubernetes Ready condition and fresh node measurements."
+          : "Ready condition, fresh usage and configured requests, each against allocatable."
       }
       title={
         <>
