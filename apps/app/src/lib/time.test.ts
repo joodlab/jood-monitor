@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { age, formatClock, formatDateTime, relativeTime } from "./time";
+import {
+  age,
+  formatClock,
+  formatDateTime,
+  knownTime,
+  relativeTime,
+} from "./time";
 
 describe("display times", () => {
   const now = Date.parse("2026-10-22T12:00:00Z");
@@ -24,6 +30,13 @@ describe("display times", () => {
     expect(formatClock("2026-10-22T12:00:00Z", "Asia/Riyadh")).toBe("15:00:00");
     expect(formatDateTime("2026-10-22T12:00:00Z", "UTC")).toContain("Oct 22");
     expect(formatClock(undefined, "UTC")).toBe("Unknown");
+  });
+  it("treats missing and zero-value times as never observed", () => {
+    expect(knownTime("2026-10-22T12:00:00Z")).toBe(now);
+    expect(knownTime("0001-01-01T00:00:00Z")).toBeUndefined();
+    expect(knownTime("")).toBeUndefined();
+    expect(knownTime(null)).toBeUndefined();
+    expect(formatDateTime("0001-01-01T00:00:00Z", "UTC")).toBe("Unknown");
   });
 });
 

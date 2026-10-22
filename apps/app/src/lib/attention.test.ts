@@ -1,6 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
-import { attentionItems, attentionSummary } from "./attention";
+import {
+  attentionItems,
+  attentionSummary,
+  clusterStatus,
+  coverageGap,
+  dataAge,
+  observationCoverage,
+} from "./attention";
 
 const now = Date.parse("2026-10-22T12:00:00Z");
 const fresh = new Date(now - 10_000).toISOString();
@@ -152,5 +159,82 @@ describe("attention", () => {
     expect(item.entity).toBeUndefined();
     expect(item.severity).toBe("critical");
     expect(attentionItems([stale], now, true)).toHaveLength(0);
+  });
+});
+
+function unsaved() {
+  const empty = view([]);
+  empty.inventory.sourceTime = "0001-01-01T00:00:00Z";
+  empty.cluster.heartbeatAt = null;
+  return empty;
+}
+
+describe("saved observation coverage", () => {
+  it("flags a cluster with no saved inventory instead of reporting no problems", () => {
+    const items = attentionItems([unsaved()], now, true);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      scope: "cluster",
+      severity: "warning",
+      title: "No saved observation at this time",
+    });
+    expect(attentionSummary(items).worst).toBe("warning");
+  });
+  it("flags saved inventory that predates the selected time", () => {
+    const old = view([]);
+    old.inventory.sourceTime = new Date(now - 30 * 60_000).toISOString();
+    const [item] = attentionItems([old], now, true);
+    expect(item.id).toBe("c1:inventory:stale");
+    expect(item.since?.at).toBe(old.inventory.sourceTime);
+  });
+  it("never calls an unobserved cluster healthy or awaiting an observer when frozen", () => {
+    const empty = unsaved();
+    const summary = attentionSummary(attentionItems([empty], now, true));
+    expect(clusterStatus(empty, summary, now, true)).toEqual({
+      covered: false,
+      label: "No saved observation",
+    });
+    const live = attentionSummary(attentionItems([empty], now));
+    expect(clusterStatus(empty, live, now, false)).toEqual({
+      covered: false,
+      label: "Awaiting observer",
+    });
+    const healthy = view([]);
+    expect(
+      clusterStatus(healthy, attentionSummary([]), now, false)
+    ).toMatchObject({ covered: true, label: "Healthy" });
+  });
+  it("counts clusters without inventory", () => {
+    expect(observationCoverage([view([]), unsaved()], now)).toEqual({
+      total: 2,
+      observed: 1,
+      missing: 1,
+    });
+  });
+});
+
+describe("data age", () => {
+  it("uses inventory source time and counts clusters that never reported", () => {
+    const age = dataAge([view([]), unsaved()], now);
+    expect(age).toMatchObject({ oldest: fresh, state: "fresh", missing: 1 });
+    expect(coverageGap(age)).toBe("1 of 2 clusters not reporting");
+  });
+  it("ignores heartbeat receipt times and judges inventory on its own budget", () => {
+    const quiet = view([]);
+    quiet.cluster.heartbeatAt = new Date(now - 5000).toISOString();
+    quiet.inventory.sourceTime = new Date(now - 150_000).toISOString();
+    const age = dataAge([quiet], now);
+    expect(age.oldest).toBe(quiet.inventory.sourceTime);
+    expect(age.state).toBe("fresh");
+    expect(coverageGap(age)).toBeUndefined();
+    quiet.inventory.sourceTime = new Date(now - 10 * 60_000).toISOString();
+    expect(dataAge([quiet], now).state).toBe("stale");
+  });
+  it("reports no samples as unknown rather than current", () => {
+    const age = dataAge([unsaved()], now, true);
+    expect(age).toMatchObject({ oldest: undefined, state: "unknown" });
+    expect(coverageGap(age, true)).toBe(
+      "1 of 1 cluster without a saved observation"
+    );
   });
 });

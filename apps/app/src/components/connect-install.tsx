@@ -3,7 +3,6 @@ import { Input } from "@jood-monitor/ui/input";
 import { Label } from "@jood-monitor/ui/label";
 import {
   ArrowRight,
-  BookOpen,
   CircleAlert,
   Eye,
   EyeOff,
@@ -15,7 +14,13 @@ import { useDisplay } from "../hooks/display";
 import { hubOriginProblem, installSteps } from "../lib/install-commands";
 import { countdown, type Enrollment } from "../lib/install-enrollment";
 import { formatClock, timeZoneLabel } from "../lib/time";
-import { CommandBlock, CopyButton, Notice, useNow } from "./connect-parts";
+import {
+  CommandBlock,
+  CopyButton,
+  DocLink,
+  Notice,
+  useNow,
+} from "./connect-parts";
 
 function TokenPanel({
   enrollment,
@@ -78,7 +83,6 @@ function TokenPanel({
           value={enrollment.enrollmentToken}
         />
         <Button
-          aria-pressed={revealed}
           className="h-8"
           onClick={() => setRevealed((value) => !value)}
           size="sm"
@@ -110,11 +114,11 @@ export function ConnectInstall({
   const [fullSteps, setFullSteps] = useState(false);
   const origin = window.location.origin;
   const originProblem = hubOriginProblem(origin);
-  const kind = enrollment.kind === "recover" && !fullSteps ? "recover" : "new";
   const steps = installSteps({
     origin,
     clusterId: enrollment.cluster.id,
-    kind,
+    kind: enrollment.kind,
+    fullInstall: enrollment.kind === "new" || fullSteps,
   });
   return (
     <div className="space-y-4">
@@ -152,7 +156,6 @@ export function ConnectInstall({
       </ol>
       {enrollment.kind === "recover" && (
         <Button
-          aria-pressed={fullSteps}
           className="h-8 px-0"
           onClick={() => setFullSteps((value) => !value)}
           size="sm"
@@ -165,23 +168,15 @@ export function ConnectInstall({
         </Button>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
-        <a
-          className="inline-flex items-center gap-1.5 text-primary text-xs underline underline-offset-2"
-          href="/docs/agents#enrollment"
-          rel="noopener"
-          target="_blank"
-        >
-          <BookOpen aria-hidden className="size-3.5" />
-          Enrollment guide
-        </a>
+        <DocLink href="/docs/agents#enrollment">Enrollment guide</DocLink>
         <Button onClick={onContinue} type="button">
           I've run these commands
           <ArrowRight />
         </Button>
       </div>
       <p className="text-muted-foreground text-xs">
-        The hub is already checking for the first heartbeat and moves on as soon
-        as it arrives.
+        After you continue, the hub checks for the first heartbeat automatically
+        and moves on as soon as it arrives.
       </p>
     </div>
   );

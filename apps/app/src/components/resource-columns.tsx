@@ -2,7 +2,7 @@ import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CircleCheck, CircleHelp, TriangleAlert } from "lucide-react";
+import { CircleCheck, CircleHelp, Clock, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   compactCpu,
@@ -17,7 +17,12 @@ import {
   type TablePreset,
   usageDisplay,
 } from "../lib/resource-table";
-import { MetricBar, StatusBadge, UsageValue } from "./resource-status";
+import {
+  MetricBar,
+  StatusBadge,
+  staleTitle,
+  UsageValue,
+} from "./resource-status";
 import { TimeText } from "./time";
 
 // Column sets per table preset. Cells read only from the row, so the column
@@ -39,7 +44,7 @@ function nameColumn(context: ColumnContext): Column {
     cell: ({ row: { original } }) => (
       <div className="flex min-w-0 max-w-72 flex-col items-start">
         <Button
-          className="h-auto max-w-full justify-start p-0 text-left font-mono text-xs focus-visible:ring-2"
+          className="h-auto max-w-full justify-start p-0 text-left font-mono text-xs focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => context.onInspect(original.view, original.entity)}
           variant="link"
         >
@@ -80,14 +85,25 @@ const namespaceColumn: Column = {
     ),
 };
 
+function statusRank(row: ResourceRow) {
+  if (row.problem) {
+    return 0;
+  }
+  return row.stale ? 1 : 2;
+}
+
 const statusColumn: Column = {
   id: "status",
   header: "Status",
-  // Problems sort ahead of healthy rows, then by status text.
+  // Problems sort first, then stale rows, then the rest by status text.
   accessorFn: (row) =>
-    `${row.problem ? 0 : 1}${resourceStatus(row.entity).toLowerCase()}`,
+    `${statusRank(row)}${resourceStatus(row.entity).toLowerCase()}`,
   cell: ({ row }) => (
-    <StatusBadge entity={row.original.entity} problem={row.original.problem} />
+    <StatusBadge
+      entity={row.original.entity}
+      problem={row.original.problem}
+      stale={row.original.stale}
+    />
   ),
 };
 
@@ -150,7 +166,21 @@ function restartsColumn(pod: boolean): Column {
   };
 }
 
-function PodReadiness({ pod }: { pod: Entity }) {
+// A value from an inventory that is not current: neutral, never a green or
+// warning state, with the last reported value after "Stale".
+function StaleValue({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-muted-foreground tabular-nums"
+      title={staleTitle}
+    >
+      <Clock aria-hidden className="size-3.5 shrink-0" />
+      Stale · {children}
+    </span>
+  );
+}
+
+function PodReadiness({ pod, stale }: { pod: Entity; stale: boolean }) {
   if (isFinished(pod)) {
     return <span className="text-muted-foreground">Finished</span>;
   }
@@ -162,6 +192,9 @@ function PodReadiness({ pod }: { pod: Entity }) {
         Unknown
       </span>
     );
+  }
+  if (stale) {
+    return <StaleValue>{ready ? "Ready" : "Not ready"}</StaleValue>;
   }
   return ready ? (
     <span className="inline-flex items-center gap-1 text-success-text">
@@ -189,20 +222,32 @@ const podReadyColumn: Column = {
     }
     return ready ? 1 : 0;
   },
-  cell: ({ row }) => <PodReadiness pod={row.original.entity} />,
+  cell: ({ row }) => (
+    <PodReadiness pod={row.original.entity} stale={row.original.stale} />
+  ),
 };
 
 function ReplicaCount({
   ready,
   desired,
   unit,
+  stale,
 }: {
   ready?: number;
   desired?: number;
   unit?: string;
+  stale: boolean;
 }) {
   if (ready == null || desired == null) {
     return <span className="text-muted-foreground text-xs">Unknown</span>;
+  }
+  if (stale) {
+    return (
+      <StaleValue>
+        {ready}/{desired}
+        {unit && <span className="text-xs">{unit}</span>}
+      </StaleValue>
+    );
   }
   const short = ready < desired;
   return (
@@ -233,6 +278,7 @@ const replicasColumn: Column = {
     <ReplicaCount
       desired={row.original.entity.desired ?? undefined}
       ready={row.original.entity.ready ?? undefined}
+      stale={row.original.stale}
     />
   ),
 };
@@ -254,7 +300,7 @@ function nodeColumn(context: ColumnContext): Column {
       }
       return (
         <Button
-          className="h-auto max-w-48 justify-start p-0 font-mono text-xs"
+          className="h-auto max-w-48 justify-start p-0 font-mono text-xs focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => context.onInspect(original.view, node)}
           variant="link"
         >
@@ -306,10 +352,11 @@ function EndpointReadiness({ row }: { row: ResourceRow }) {
   );
   const { ready, desired } = row.summary;
   if (desired === 0) {
-    return (
-      <span className="text-muted-foreground text-xs">
-        {selector ? "No selected pods" : "No endpoints"}
-      </span>
+    const none = selector ? "No selected pods" : "No endpoints";
+    return row.stale ? (
+      <StaleValue>{none}</StaleValue>
+    ) : (
+      <span className="text-muted-foreground text-xs">{none}</span>
     );
   }
   return (
@@ -323,6 +370,7 @@ function EndpointReadiness({ row }: { row: ResourceRow }) {
       <ReplicaCount
         desired={desired}
         ready={ready}
+        stale={row.stale}
         unit={selector ? "selected" : undefined}
       />
     </span>
@@ -446,7 +494,10 @@ export function cardFacts(row: ResourceRow, preset: TablePreset): CardFact[] {
     case "pods":
       return [
         { label: "Namespace", value: entity.namespace },
-        { label: "Ready", value: <PodReadiness pod={entity} /> },
+        {
+          label: "Ready",
+          value: <PodReadiness pod={entity} stale={row.stale} />,
+        },
         { label: "Restarts", value: <Restarts value={entity.restarts ?? 0} /> },
         { label: "Node", value: row.node?.name ?? "Not scheduled" },
         { label: "CPU", value: usage("cpu") },
@@ -461,6 +512,7 @@ export function cardFacts(row: ResourceRow, preset: TablePreset): CardFact[] {
             <ReplicaCount
               desired={entity.desired ?? undefined}
               ready={entity.ready ?? undefined}
+              stale={row.stale}
             />
           ),
         },

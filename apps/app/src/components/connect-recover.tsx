@@ -9,12 +9,12 @@ import {
   SelectValue,
 } from "@jood-monitor/ui/select";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, CircleAlert, Info, TriangleAlert } from "lucide-react";
+import { CircleAlert, Info, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { recoverEnrollmentFn } from "../functions/clusters";
 import type { Enrollment } from "../lib/install-enrollment";
 import { requestError } from "../lib/install-errors";
-import { Notice } from "./connect-parts";
+import { DocLink, Notice } from "./connect-parts";
 import { TimeText } from "./time";
 
 type Cluster = ClusterView["cluster"];
@@ -31,10 +31,16 @@ function RenewalHint({ cluster }: { cluster: Cluster }) {
     );
   }
   if (!cluster.heartbeatAt) {
+    // The operator view cannot tell whether a helper already exchanged the
+    // token, so this must not promise that renewal will succeed.
     return (
-      <p className="flex items-start gap-1.5 text-muted-foreground text-xs">
-        <Info aria-hidden className="mt-px size-3.5 shrink-0" />
-        Never reported. Renewal replaces an unused or expired token.
+      <p className="flex items-start gap-1.5 text-warning-text text-xs">
+        <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
+        <span>
+          Never reported. Renewal replaces an unused or expired token. If the
+          helper already saved a credential, the hub refuses renewal until it is
+          revoked; install the observer with that saved credential instead.
+        </span>
       </p>
     );
   }
@@ -156,13 +162,9 @@ export function ConnectRecover({
         >
           <p>{error.message}</p>
           {error.kind === "active-credential" && (
-            <a
-              className="inline-flex items-center gap-1.5 text-primary text-xs underline underline-offset-2"
-              href="/docs/agents#credential-recovery"
-            >
-              <BookOpen aria-hidden className="size-3.5" />
-              Credential recovery guide
-            </a>
+            <DocLink href="/docs/agents#revoke-credential">
+              Revoke an active credential
+            </DocLink>
           )}
         </Notice>
       )}

@@ -95,7 +95,7 @@ function NavigationMenu({
         {item.id === "attention" && attention.count > 0 && attention.worst && (
           <span
             className={cn(
-              "rounded-full px-1.5 font-medium text-[11px] tabular-nums",
+              "rounded-full px-1.5 font-medium text-xs tabular-nums",
               badgeTone[attention.worst]
             )}
           >
@@ -175,13 +175,16 @@ export function AppSidebar({
           </Select>
         </div>
         <Button
+          aria-keyshortcuts="Control+K Meta+K"
           className="h-9 justify-start gap-2 text-muted-foreground"
           onClick={onSearch}
           variant="outline"
         >
           <Search className="size-4" />
           <span className="flex-1 text-left">Find resource</span>
-          <kbd className="rounded border px-1 text-[11px]">⌘K</kbd>
+          <kbd aria-hidden className="rounded border px-1 text-xs">
+            Ctrl/⌘ K
+          </kbd>
         </Button>
       </SidebarHeader>
       <SidebarContent>
@@ -323,10 +326,14 @@ export function AppHeader({
               ))}
             </SelectContent>
           </Select>
+          {/* Rendered at every width so changes are announced. Phones show
+              only the dot while live; the text appears whenever the stream
+              is reconnecting or the view is frozen. */}
           <span
             className={cn(
-              "hidden items-center gap-1.5 rounded-md border px-2 py-1 text-xs sm:flex",
-              frozen && "border-info/40 text-info-text"
+              "flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+              frozen && "border-info/40 text-info-text",
+              !(frozen || connected) && "border-warning/40 text-warning-text"
             )}
             role="status"
           >
@@ -339,8 +346,12 @@ export function AppHeader({
                 !(frozen || connected) && "bg-warning"
               )}
             />
-            {frozen && "Frozen"}
-            {!frozen && (connected ? "Live" : "Reconnecting…")}
+            <span
+              className={cn(!frozen && connected && "sr-only sm:not-sr-only")}
+            >
+              {frozen && "Frozen"}
+              {!frozen && (connected ? "Live" : "Reconnecting…")}
+            </span>
           </span>
           <Button
             className="h-8 gap-1.5 text-xs"

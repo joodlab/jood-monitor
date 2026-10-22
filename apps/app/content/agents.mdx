@@ -8,21 +8,65 @@ receives authorized node telemetry and sends batches outbound to the hub. A
 DaemonSet collector gathers supported host metrics on eligible nodes. Neither
 component performs application remediation or arbitrary shell execution.
 
-## Enrollment
+## Enrollment [#enrollment]
 
-Create a workspace and cluster in the hub. An enrollment token expires after
-thirty minutes and can be consumed once. Save it in a private file, then use
-the helper without placing it in command history:
+Create a workspace and cluster in the hub with **Connect a cluster**. An
+enrollment token expires after thirty minutes and can be exchanged once. Run
+the steps below from a checkout of this repository in bash or zsh, with
+Python 3. The private files use names that match the repository's `.secrets.*`
+ignore rule, and each is deleted only after the step that consumes it
+succeeds. Never place the token in a command, ticket or screenshot.
+
+### Save the token privately [#save-token]
+
+Run this line on its own, paste the token at the prompt and press Enter. The
+token is not echoed and never enters shell history or command text.
 
 ```sh
-chmod 600 enrollment-token.txt
-python scripts/enroll-agent.py https://monitor.example.com my-cluster enrollment-token.txt hub-credential.txt
+(umask 077; printf 'Paste the enrollment token, then press Enter: ' >&2; IFS= read -rs token && printf '%s\n' "$token" > .secrets.enrollment-token); echo
 ```
 
-The helper saves a scoped credential privately and refuses to overwrite an
-existing credential. Store the credential in a Kubernetes Secret. Keep the
-cluster ID, observer TLS certificate and key, trusted CA, dedicated service
-accounts and projected token audience aligned with the chart.
+### Exchange the token [#exchange-token]
+
+```sh
+chmod 600 .secrets.enrollment-token
+python3 scripts/enroll-agent.py https://monitor.example.com my-cluster .secrets.enrollment-token .secrets.hub-credential-my-cluster && rm -f .secrets.enrollment-token
+```
+
+The helper saves a scoped credential privately, prints “Scoped credential
+saved privately” and refuses to overwrite an existing credential file. It
+rejects a token file that holds anything besides the token on one line. HTTP
+401 means the token expired or another run already exchanged it; the token
+file is kept so you can investigate before renewing.
+
+### Install the observer [#install-observer]
+
+Store the credential and observer TLS material, then install the chart. The
+observer certificate must be valid for
+`jood-monitor-observer.<namespace>.svc`; node collectors verify it with the CA.
+Keep the certificate files outside this checkout. The names below are the
+chart's `credentialSecret`, `observerTLSSecret` and `observerCAConfigMap`
+defaults.
+
+```sh
+kubectl create namespace jood-monitor
+kubectl -n jood-monitor create secret generic jood-monitor-hub --from-file=credential=.secrets.hub-credential-my-cluster && rm -f .secrets.hub-credential-my-cluster
+kubectl -n jood-monitor create secret tls jood-monitor-observer-tls --cert=observer.crt --key=observer.key
+kubectl -n jood-monitor create configmap jood-monitor-observer-ca --from-file=ca.crt=observer-ca.crt
+```
+
+Once the Secret exists, the local credential file is removed and the Secret is
+its only stored copy.
+
+```sh
+helm upgrade --install jood-monitor deploy/helm/jood-monitor \
+  --namespace jood-monitor \
+  --set hubURL=https://monitor.example.com \
+  --set image.digest=sha256:<reviewed-agent-digest>
+```
+
+Keep the cluster ID, observer TLS certificate and key, trusted CA, dedicated
+service accounts and projected token audience aligned with the chart.
 
 The chart requires an immutable agent image digest. Review its RBAC, placement,
 resource budgets and network policy against your environment before installation.
@@ -68,13 +112,56 @@ bound Pod, service account and node identity. Collectors communicate with the
 observer over verified TLS. The observer authenticates to the hub using its
 scoped credential.
 
-## Credential recovery
+## Credential recovery [#credential-recovery]
 
-Renew enrollment for an unfinished or revoked cluster using the same ID.
-An active credential must be explicitly revoked before renewal. Rotation and
-revocation are operator actions; upgrades do not perform them automatically.
+Renew enrollment for an unfinished or revoked cluster using the same ID, from
+**Connect a cluster → Renew an existing enrollment**. Renewal issues a new
+one-time token and keeps history, workspace and collection settings. The hub
+refuses renewal while the cluster has an active credential: if a helper saved
+that credential, install the observer with it instead. Rotation and revocation
+are operator actions; renewal and upgrades never perform them automatically.
 Preserve verifier continuity during a hub migration.
 
-If the observer uses an `emptyDir` spool, recreating its Pod can discard pending
-batches. Verify an empty queue and safe handoff or provide persistent spool
-storage before a rollout. Deployment readiness alone does not prove this.
+For a renewal, save and exchange the new token as in
+[Enrollment](#enrollment). The helper writes
+`.secrets.hub-credential-my-cluster-renewed`, a separate file, so a credential
+file left from the original install does not block it. If a renewed file
+remains from an earlier attempt, move it aside first. Then replace the stored
+credential in place:
+
+```sh
+kubectl -n jood-monitor create secret generic jood-monitor-hub \
+  --from-file=credential=.secrets.hub-credential-my-cluster-renewed \
+  --dry-run=client -o yaml | kubectl apply -f - && rm -f .secrets.hub-credential-my-cluster-renewed
+```
+
+Kubernetes refreshes the mounted file within about a minute and the observer
+reads it for each request, so no restart is needed. If the observer uses an
+`emptyDir` spool, recreating its Pod can discard pending batches. Verify an
+empty queue and safe handoff or provide persistent spool storage before a
+rollout. Deployment readiness alone does not prove this.
+
+### Revoke an active credential [#revoke-credential]
+
+Revoke a credential only when it is lost or compromised, with authorization
+from the cluster's owner. The dashboard has no revoke control; revocation is an
+explicit call to the operator API. curl prompts for the operator password, so
+it stays out of shell history and logs:
+
+```sh
+curl -u '<operator-user>' -X POST \
+  -H 'Origin: https://monitor.example.com' \
+  -H 'X-Jood-CSRF: 1' \
+  https://monitor.example.com/api/v1/clusters/my-cluster/revoke
+```
+
+- `Origin` must exactly match the hub's serving origin (`APP_ORIGIN` when set).
+- A successful call returns `{"status":"revoked"}` and also cancels any unused
+  enrollment token. An already revoked cluster answers 404
+  `active cluster missing`.
+- The running observer stops authenticating immediately. Its bounded spool
+  holds pending batches only within its limits, so coordinate with the cluster
+  owner and expect a reporting gap until the renewed credential is stored.
+  The hub shows that gap as missing data, never as zero.
+- Then renew the enrollment with the same cluster ID and replace the stored
+  credential as described above.

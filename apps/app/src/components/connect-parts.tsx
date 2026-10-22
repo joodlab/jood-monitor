@@ -1,6 +1,6 @@
 import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
-import { Check, CircleAlert, Copy } from "lucide-react";
+import { BookOpen, Check, CircleAlert, Copy } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
 // Small building blocks shared by the connect-cluster steps.
@@ -131,6 +131,28 @@ export function CommandBlock({
         <code>{command}</code>
       </pre>
     </div>
+  );
+}
+
+// A documentation link that opens beside the dialog, so its token and
+// progress stay in place.
+export function DocLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: ReactNode;
+}) {
+  return (
+    <a
+      className="inline-flex items-center gap-1.5 rounded-sm text-primary text-xs underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      href={href}
+      rel="noopener"
+      target="_blank"
+    >
+      <BookOpen aria-hidden className="size-3.5 shrink-0" />
+      {children}
+    </a>
   );
 }
 

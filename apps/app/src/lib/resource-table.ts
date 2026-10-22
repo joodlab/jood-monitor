@@ -14,6 +14,7 @@ import {
   summarize,
   workloadKinds,
 } from "./infrastructure";
+import { inventoryFreshness } from "./metrics";
 
 // Pure filtering, ordering and presentation rules for resource tables. Rows
 // keep missing measurements explicit; nothing here invents a zero.
@@ -44,8 +45,21 @@ export interface ResourceRow {
   // The node a pod is scheduled on, when it is in the same inventory.
   node?: Entity;
   problem: boolean;
+  // The cluster's inventory is not current: the row is its last report.
+  stale: boolean;
   summary: ResourceSummary;
   view: ClusterView;
+}
+
+// Inventory past its reconciliation budget, or without a usable source time,
+// is not current. Judged against the reference time so saved views compare
+// with the moment they show.
+export function inventoryStale(view: ClusterView, now: number) {
+  return inventoryFreshness(view.inventory.sourceTime, now) !== "fresh";
+}
+
+export function staleViews(views: ClusterView[], now: number) {
+  return views.filter((view) => inventoryStale(view, now));
 }
 
 export function presetFor(kinds?: string[]): TablePreset {
@@ -132,6 +146,7 @@ function toRow({ view, entity }: Candidate, now: number): ResourceRow {
     entity,
     summary,
     problem: rowProblem(entity, summary, now),
+    stale: inventoryStale(view, now),
     node: entity.kind === "Pod" ? findEntity(view, entity.nodeUid) : undefined,
   };
 }
@@ -183,14 +198,28 @@ interface Relaxation {
   patch: Partial<ResourceFilter>;
 }
 
+// Leaving an explicitly chosen system namespace keeps system resources in
+// view; otherwise the relaxed view would hide matches it was counted with.
+export function allNamespacesPatch(namespace: string) {
+  return isSystemNamespace(namespace)
+    ? { namespace: "all", system: true }
+    : { namespace: "all" };
+}
+
+export function otherNamespacesLabel(namespace: string) {
+  return isSystemNamespace(namespace)
+    ? "in other namespaces, including system namespaces"
+    : "in other namespaces";
+}
+
 function relaxations(filter: ResourceFilter, kinds?: string[]) {
   const options: Relaxation[] = [];
   if (filter.namespace !== "all") {
     options.push({
-      patch: { namespace: "all" },
+      patch: allNamespacesPatch(filter.namespace),
       action: "Show all namespaces",
       describe: (matches) =>
-        `No matches in ${filter.namespace} · ${matches} in other namespaces`,
+        `No matches in ${filter.namespace} · ${matches} ${otherNamespacesLabel(filter.namespace)}`,
     });
   }
   if (!includesSystem(filter)) {

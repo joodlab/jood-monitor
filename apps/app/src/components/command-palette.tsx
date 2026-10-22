@@ -7,11 +7,18 @@ import {
 } from "@jood-monitor/ui/dialog";
 import { cn } from "@jood-monitor/ui/utils";
 import { CornerDownLeft, Search } from "lucide-react";
-import { type KeyboardEvent, useEffect, useId, useMemo, useState } from "react";
+import {
+  type KeyboardEvent,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { resourceStatus } from "../lib/infrastructure";
 
-// Keyboard-first jump to any page, cluster or observed resource (⌘K / Ctrl+K
-// or "/"). Results come from the already loaded snapshot; nothing is fetched.
+// Keyboard-first jump to any page, cluster or observed resource (⌘K /
+// Ctrl+K). Results come from the already loaded snapshot; nothing is fetched.
 
 export interface PaletteTarget {
   id: string;
@@ -193,13 +200,28 @@ export function CommandPalette({
     });
   }, [query, pages, views, onInspect, onCluster, onOpenChange]);
   const selected = Math.min(active, Math.max(0, results.length - 1));
+  // Keyboard moves keep the active option in view. Mouse hover never scrolls,
+  // so a half-visible row under the pointer does not jump. Wrapping to the
+  // first option scrolls to the top so its group heading stays visible.
+  const list = useRef<HTMLDivElement>(null);
+  function move(next: number) {
+    setActive(next);
+    if (next === 0 && list.current) {
+      list.current.scrollTop = 0;
+      return;
+    }
+    document
+      .getElementById(`${listId}-${next}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
+    const count = Math.max(1, results.length);
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((selected + 1) % Math.max(1, results.length));
+      move((selected + 1) % count);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive((selected - 1 + results.length) % Math.max(1, results.length));
+      move((selected - 1 + count) % count);
     } else if (event.key === "Enter") {
       event.preventDefault();
       results[selected]?.run();
@@ -240,20 +262,21 @@ export function CommandPalette({
             className="h-12 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             onChange={(event) => {
               setQuery(event.target.value);
-              setActive(0);
+              move(0);
             }}
             onKeyDown={keyDown}
             placeholder="Find servers, workloads, pods, services, clusters…"
             role="combobox"
             value={query}
           />
-          <kbd className="hidden rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground sm:inline">
+          <kbd className="hidden rounded border px-1.5 py-0.5 text-muted-foreground text-xs sm:inline">
             Esc
           </kbd>
         </div>
         <div
           className="max-h-[min(60vh,420px)] overflow-y-auto p-1"
           id={listId}
+          ref={list}
           role="listbox"
         >
           {groups.map(([group, items]) => (

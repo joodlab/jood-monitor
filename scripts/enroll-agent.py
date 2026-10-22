@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Exchange a private one-use enrollment token without printing the cluster credential."""
 import argparse
 import json
@@ -27,6 +28,8 @@ def main():
     if os.name == "posix" and args.token_file.stat().st_mode & 0o077:
         parser.error("enrollment token file must be private (chmod 600)")
     token = args.token_file.read_text().strip()
+    if any(character.isspace() for character in token):
+        parser.error("enrollment token file must hold only the token, on one line")
     request = urllib.request.Request(args.origin+"/machine/v1/enroll", data=json.dumps({"clusterId":args.cluster_id}).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer "+token}, method="POST")
     opener = urllib.request.build_opener(NoRedirect())
     with opener.open(request,timeout=20) as response:

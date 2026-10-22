@@ -108,9 +108,11 @@ export function InspectorHeader({
         </SheetTitle>
         <CopyButton label={`Copy name ${entity.name}`} value={entity.name} />
         {entity.namespace && (
+          // The visible words lead the accessible name so voice control
+          // ("click copy ns/name") reaches it; the full value follows.
           <CopyButton
-            label={`Copy ${entity.namespace}/${entity.name}`}
-            text="ns/name"
+            label={`Copy ns/name ${entity.namespace}/${entity.name}`}
+            text="Copy ns/name"
             value={`${entity.namespace}/${entity.name}`}
           />
         )}
@@ -168,7 +170,7 @@ function Trail({
                 ) : (
                   <button
                     aria-label={`${crumb.entity.kind} ${crumb.entity.name}`}
-                    className="h-8 min-w-0 max-w-[8rem] truncate rounded px-1 font-mono text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="h-8 min-w-0 max-w-[8rem] truncate rounded px-1 font-mono text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => onInspect(crumb.view, crumb.entity)}
                     title={`${crumb.entity.kind} ${crumb.entity.name}`}
                     type="button"

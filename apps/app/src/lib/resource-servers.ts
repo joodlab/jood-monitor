@@ -6,10 +6,17 @@ import {
   isSystem,
   matchesText,
   owningWorkload,
+  readinessLabel,
   relatedPods,
   resourceId,
 } from "./infrastructure";
-import { includesSystem, type ResourceFilter } from "./resource-table";
+import {
+  allNamespacesPatch,
+  includesSystem,
+  inventoryStale,
+  otherNamespacesLabel,
+  type ResourceFilter,
+} from "./resource-table";
 
 // Servers view placement. Search, namespace and "Problems only" filter pods;
 // the view then shows the servers hosting matching pods. Placement is the
@@ -201,6 +208,8 @@ export function groupByOwner(view: ClusterView, pods: Entity[]) {
 
 export interface PlacementHint {
   action: string;
+  // Pods the relaxed filter finds.
+  count: number;
   message: string;
   patch: Partial<ServerFilter>;
 }
@@ -218,9 +227,9 @@ export function placementHint(
   }[] = [];
   if (filter.namespace !== "all") {
     options.push({
-      patch: { namespace: "all" },
+      patch: allNamespacesPatch(filter.namespace),
       action: "Show all namespaces",
-      where: "in other namespaces",
+      where: otherNamespacesLabel(filter.namespace),
     });
   }
   if (!includesSystem(filter)) {
@@ -247,8 +256,62 @@ export function placementHint(
       return {
         patch: option.patch,
         action: option.action,
+        count: matched,
         message: `${matched} matching pod${matched === 1 ? "" : "s"} ${option.where}`,
       };
     }
   }
+}
+
+export type EmptyServers =
+  // No Node in scope: neither placement nor problems can be evaluated.
+  | { kind: "unobserved" }
+  // "Problems only" found problem pods, but only in hidden system namespaces.
+  | { hint: PlacementHint; kind: "hiddenProblems" }
+  // No problems, but in an inventory that is not current.
+  | { kind: "staleHealthy" }
+  | { kind: "healthy" }
+  | { hint?: PlacementHint; kind: "noMatch" };
+
+// What an empty Servers view can truthfully say. "Problems only" without any
+// other pod scope claims health only when servers are observed, every
+// inventory is current and no problem pod is hidden in a system namespace.
+export function emptyServers(
+  views: ClusterView[],
+  filter: ServerFilter,
+  hint: PlacementHint | undefined,
+  now: number
+): EmptyServers {
+  const observed = views.some((view) =>
+    view.inventory.entities.some((entity) => entity.kind === "Node")
+  );
+  if (!observed) {
+    return { kind: "unobserved" };
+  }
+  if (!(filter.problems && !filter.q && filter.namespace === "all")) {
+    return { kind: "noMatch", hint };
+  }
+  if (hint?.patch.system) {
+    return { kind: "hiddenProblems", hint };
+  }
+  return views.some((view) => inventoryStale(view, now))
+    ? { kind: "staleHealthy" }
+    : { kind: "healthy" };
+}
+
+// A pod tile's accessible name carries everything its colour, mark and
+// dimming show: readiness, attention, staleness and the filter match.
+export function podTileLabel(
+  pod: Entity,
+  state: { dimmed: boolean; problem: boolean; stale: boolean }
+) {
+  const readiness = readinessLabel(pod);
+  return [
+    `Pod ${pod.name}${pod.namespace ? ` in ${pod.namespace}` : ""}`,
+    state.stale ? `last reported ${readiness}, inventory stale` : readiness,
+    state.problem ? "needs attention" : "",
+    state.dimmed ? "does not match the current filter" : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
 }

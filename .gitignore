@@ -23,6 +23,9 @@ output/playwright/
 .cf-preview/
 .cloudflare/
 .secrets.*
+# Enrollment files named by older install instructions.
+/enrollment-token.txt
+/hub-credential*.txt
 __pycache__/
 *.pyc
 apps/app/.claude/

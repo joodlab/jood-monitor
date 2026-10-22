@@ -7,7 +7,15 @@ import {
   TooltipTrigger,
 } from "@jood-monitor/ui/tooltip";
 import { cn } from "@jood-monitor/ui/utils";
-import { ArrowUpRight, CircleCheck, SearchX, Server } from "lucide-react";
+import {
+  ArrowUpRight,
+  CircleCheck,
+  Clock,
+  type LucideIcon,
+  SearchX,
+  Server,
+  TriangleAlert,
+} from "lucide-react";
 import { useMemo } from "react";
 import { podProblem } from "../lib/attention";
 import {
@@ -18,18 +26,25 @@ import {
   podReady,
   readinessLabel,
 } from "../lib/infrastructure";
-import { inventoryFreshness, observedUsage } from "../lib/metrics";
+import { observedUsage } from "../lib/metrics";
 import {
+  type EmptyServers,
+  emptyServers,
   groupByOwner,
-  type PlacementHint,
   placementHint,
+  podTileLabel,
   type ServerCard,
   type ServerFilter,
   type ServerPlacement,
   serverPlacement,
 } from "../lib/resource-servers";
+import { inventoryStale } from "../lib/resource-table";
 import { EmptyState } from "./page";
-import { MetricBar, StatusBadge } from "./resource-status";
+import {
+  MetricBar,
+  StaleInventoryNotice,
+  StatusBadge,
+} from "./resource-status";
 
 const TILE_LIMIT = 60;
 
@@ -67,14 +82,29 @@ export function Servers({
         : undefined,
     [placement.basis, views, filter, referenceTime]
   );
+  const notice = (
+    <StaleInventoryNotice referenceTime={referenceTime} views={views} />
+  );
   if (placement.basis === "none") {
-    return <NoServers filter={filter} hint={hint} onRelax={onRelax} />;
+    return (
+      <div className="space-y-3">
+        {notice}
+        <NoServers
+          onRelax={onRelax}
+          state={emptyServers(views, filter, hint, referenceTime)}
+        />
+      </div>
+    );
   }
+  const stale = placement.servers.some((server) =>
+    inventoryStale(server.view, referenceTime)
+  );
   return (
     <div className="space-y-3">
+      {notice}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <PlacementSummary placement={placement} />
-        <Legend highlighted={placement.basis === "pods"} />
+        <Legend highlighted={placement.basis === "pods"} stale={stale} />
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {placement.servers.map((server) => (
@@ -151,7 +181,13 @@ function TileMark({ state }: { state: keyof typeof tileTones }) {
   ) : null;
 }
 
-function Legend({ highlighted }: { highlighted: boolean }) {
+function Legend({
+  highlighted,
+  stale,
+}: {
+  highlighted: boolean;
+  stale: boolean;
+}) {
   const items = [
     { state: "ready" as const, label: "Ready" },
     { state: "notReady" as const, label: "Not ready" },
@@ -177,6 +213,7 @@ function Legend({ highlighted }: { highlighted: boolean }) {
         </li>
       ))}
       {highlighted && <li>Dimmed tiles do not match the filter</li>}
+      {stale && <li>Grey tiles are from a stale inventory</li>}
     </ul>
   );
 }
@@ -193,8 +230,7 @@ function ServerTile({
   const { view, node } = server;
   const cpu = observedUsage(view, node, "cpu", referenceTime);
   const memory = observedUsage(view, node, "memory", referenceTime);
-  const stale =
-    inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
+  const stale = inventoryStale(view, referenceTime);
   return (
     <Card
       className={cn(
@@ -239,6 +275,7 @@ function ServerTile({
           onInspect={onInspect}
           referenceTime={referenceTime}
           server={server}
+          stale={stale}
         />
         <p className="truncate border-t pt-3 text-muted-foreground text-xs">
           <span className="font-mono">
@@ -269,10 +306,12 @@ function Placement({
   server,
   onInspect,
   referenceTime,
+  stale,
 }: {
   server: ServerCard;
   onInspect: (view: ClusterView, entity: Entity) => void;
   referenceTime: number;
+  stale: boolean;
 }) {
   const active = server.pods.filter((pod) => !isFinished(pod));
   const groups = groupByOwner(server.view, active);
@@ -281,10 +320,19 @@ function Placement({
   return (
     <div>
       <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
-        <span>Pod placement · {plural(active.length, "pod")}</span>
+        <span>
+          Pod placement · {plural(active.length, "pod")}
+          {stale && " · last reported"}
+        </span>
         {note && <span>{note}</span>}
       </div>
-      <div className="flex min-h-6 flex-wrap gap-x-2.5 gap-y-1.5">
+      <div
+        className={cn(
+          "flex min-h-6 flex-wrap gap-x-2.5 gap-y-1.5",
+          // Stale readiness is not current, so it is not drawn green.
+          stale && "grayscale"
+        )}
+      >
         {groups.map((group) => {
           const shown = group.pods.slice(0, Math.max(0, remaining));
           remaining -= shown.length;
@@ -309,6 +357,7 @@ function Placement({
                     owner={group.owner}
                     pod={pod}
                     referenceTime={referenceTime}
+                    stale={stale}
                     view={server.view}
                   />
                 </li>
@@ -349,6 +398,7 @@ function PodTile({
   owner,
   view,
   dimmed,
+  stale,
   referenceTime,
   onInspect,
 }: {
@@ -356,6 +406,7 @@ function PodTile({
   owner?: Entity;
   view: ClusterView;
   dimmed: boolean;
+  stale: boolean;
   referenceTime: number;
   onInspect: () => void;
 }) {
@@ -366,11 +417,11 @@ function PodTile({
       <TooltipTrigger
         render={
           <button
-            aria-label={`Pod ${pod.name}, ${readinessLabel(pod)}${problem ? ", needs attention" : ""}`}
+            aria-label={podTileLabel(pod, { problem, stale, dimmed })}
             className={cn(
               "flex size-5 items-center justify-center rounded-[3px] border outline-none transition-[opacity,box-shadow] hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring sm:size-4",
               tileTones[state],
-              dimmed && "opacity-30 hover:opacity-100"
+              dimmed && "opacity-30 hover:opacity-100 focus-visible:opacity-100"
             )}
             onClick={onInspect}
             type="button"
@@ -386,9 +437,11 @@ function PodTile({
           {owner ? ` · ${owner.kind} ${owner.name}` : ""}
         </p>
         <p>
+          {stale ? "Last reported " : ""}
           {readinessLabel(pod)} · {pod.restarts ?? 0} restart
           {pod.restarts === 1 ? "" : "s"}
         </p>
+        {dimmed && <p>Does not match the current filter</p>}
         <p className="tabular-nums">
           CPU {usageText(view, pod, "cpu", referenceTime)} · Memory{" "}
           {usageText(view, pod, "memory", referenceTime)}
@@ -398,32 +451,66 @@ function PodTile({
   );
 }
 
+interface EmptyCopy {
+  description: string;
+  icon: LucideIcon;
+  title: string;
+}
+
+function emptyCopy(state: EmptyServers): EmptyCopy {
+  switch (state.kind) {
+    case "unobserved":
+      return {
+        icon: Server,
+        title: "No servers observed",
+        description:
+          "No Node has been reported in this scope, so placement and problems cannot be evaluated.",
+      };
+    case "hiddenProblems":
+      return {
+        icon: TriangleAlert,
+        title: "Problems are in system namespaces",
+        description: `${plural(state.hint.count, "problem pod")} in system namespaces ${state.hint.count === 1 ? "is" : "are"} hidden by the current filters. No other pod or server needs attention.`,
+      };
+    case "staleHealthy":
+      return {
+        icon: Clock,
+        title: "No problems in the last inventory",
+        description:
+          "The inventory is stale, so the current state is unknown. No failing pods or unready servers in the last inventory.",
+      };
+    case "healthy":
+      return {
+        icon: CircleCheck,
+        title: "No problem pods or servers",
+        description:
+          "No observed pod or server currently needs attention. Missing measurements are not counted as healthy; check data age in the header.",
+      };
+    default:
+      return {
+        icon: SearchX,
+        title: "No servers match",
+        description:
+          state.hint?.message ??
+          "No pods or server names match these filters in the selected clusters.",
+      };
+  }
+}
+
 function NoServers({
-  filter,
-  hint,
+  state,
   onRelax,
 }: {
-  filter: ServerFilter;
-  hint?: PlacementHint;
+  state: EmptyServers;
   onRelax?: (patch: Partial<ServerFilter>) => void;
 }) {
-  if (filter.problems && !filter.q && filter.namespace === "all") {
-    return (
-      <EmptyState
-        description="No observed pod or server currently needs attention. Missing measurements are not counted as healthy; check data age in the header."
-        icon={CircleCheck}
-        title="No problem pods or servers"
-      />
-    );
-  }
+  const copy = emptyCopy(state);
+  const hint = "hint" in state ? state.hint : undefined;
   return (
     <EmptyState
-      description={
-        hint?.message ??
-        "No pods or server names match these filters in the selected clusters."
-      }
-      icon={SearchX}
-      title="No servers match"
+      description={copy.description}
+      icon={copy.icon}
+      title={copy.title}
     >
       {hint && onRelax && (
         <Button

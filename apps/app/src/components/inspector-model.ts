@@ -198,3 +198,17 @@ export function relationText(link: Relationship, entity: Entity) {
     ? `This ${entity.kind} ${relation} ${other}`
     : `${other} ${relation} this ${entity.kind}`;
 }
+
+// Live history is refreshed by stream notifications, so polling is only the
+// safety net: every two minutes while the stream is connected and every 30 s
+// while it is down. A saved observation never polls. Without a reported
+// stream state the inspector assumes the stream is carrying updates.
+export function historyRefetchInterval(
+  at: string | undefined,
+  connection = "connected"
+) {
+  if (at) {
+    return false;
+  }
+  return connection === "connected" ? 120_000 : 30_000;
+}

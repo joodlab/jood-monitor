@@ -9,11 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@jood-monitor/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@jood-monitor/ui/tooltip";
 import { cn } from "@jood-monitor/ui/utils";
 import {
   List,
@@ -25,7 +20,14 @@ import {
   SquareCheck,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { isSystemNamespace } from "../lib/infrastructure";
 import {
   type KindSummary,
@@ -35,8 +37,9 @@ import {
 import type { SearchState } from "../schemas/monitor";
 
 // One filter bar for Infrastructure and Workloads. Every filter stays
-// visible; one that cannot apply to the current mode is disabled and says
-// why, so no hidden value silently narrows the results.
+// visible; one that cannot apply to the current mode is disabled and a
+// visible note, linked with aria-describedby, says why, so no hidden value
+// silently narrows the results.
 
 type Update = (next: Partial<SearchState>, replace?: boolean) => void;
 
@@ -76,6 +79,22 @@ export function ResourceFilterBar({
     [listMode, views, search.q, search.namespace, search.system]
   );
   const replace = (next: Partial<SearchState>) => update(next, true);
+  const kindNote = useId();
+  const systemNote = useId();
+  const systemNamespace = isSystemNamespace(search.namespace);
+  const notes: FilterNote[] = [];
+  if (infrastructure && !listMode) {
+    notes.push({
+      id: kindNote,
+      text: "The kind filter applies to the List view.",
+    });
+  }
+  if (systemNamespace) {
+    notes.push({
+      id: systemNote,
+      text: "System resources are shown because a system namespace is selected.",
+    });
+  }
   return (
     <div className="space-y-2">
       {infrastructure && (
@@ -95,6 +114,7 @@ export function ResourceFilterBar({
         />
         {infrastructure && (
           <KindSelect
+            describedBy={listMode ? undefined : kindNote}
             disabled={!listMode}
             onChange={(kind) => replace({ kind })}
             summary={kinds}
@@ -102,13 +122,10 @@ export function ResourceFilterBar({
           />
         )}
         <FilterToggle
-          disabledReason={
-            isSystemNamespace(search.namespace)
-              ? "A system namespace is selected, so its resources are shown."
-              : undefined
-          }
+          describedBy={systemNamespace ? systemNote : undefined}
+          disabled={systemNamespace}
           onChange={(system) => replace({ system })}
-          pressed={search.system || isSystemNamespace(search.namespace)}
+          pressed={search.system || systemNamespace}
         >
           System resources
         </FilterToggle>
@@ -119,6 +136,7 @@ export function ResourceFilterBar({
           Problems only
         </FilterToggle>
       </div>
+      <FilterNotes notes={notes} />
       <ActiveFilters
         kinds={listMode ? kinds : undefined}
         onClear={(patch) => replace(patch)}
@@ -314,18 +332,42 @@ function kindLabel(value?: string) {
   return value === "all" ? "All kinds" : value;
 }
 
+interface FilterNote {
+  id: string;
+  text: string;
+}
+
+// Why a filter is disabled, as visible text rather than a hover tooltip, so
+// touch, keyboard and screen-reader users get the same explanation.
+function FilterNotes({ notes }: { notes: FilterNote[] }) {
+  if (!notes.length) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground text-xs">
+      {notes.map((note) => (
+        <p id={note.id} key={note.id}>
+          {note.text}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function KindSelect({
   value,
   summary,
   disabled,
+  describedBy,
   onChange,
 }: {
   value?: string;
   summary?: KindSummary;
   disabled: boolean;
+  describedBy?: string;
   onChange: (kind?: string) => void;
 }) {
-  const select = (
+  return (
     <Select
       disabled={disabled}
       onValueChange={(next) =>
@@ -333,7 +375,11 @@ function KindSelect({
       }
       value={value ?? COMMON_KINDS}
     >
-      <SelectTrigger aria-label="Kind" className={selectClass}>
+      <SelectTrigger
+        aria-describedby={describedBy}
+        aria-label="Kind"
+        className={selectClass}
+      >
         <SelectValue>{kindLabel(value)}</SelectValue>
       </SelectTrigger>
       <SelectContent>
@@ -358,36 +404,29 @@ function KindSelect({
       </SelectContent>
     </Select>
   );
-  if (!disabled) {
-    return select;
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="block sm:inline-block" />}>
-        {select}
-      </TooltipTrigger>
-      <TooltipContent>The kind filter applies to the List view.</TooltipContent>
-    </Tooltip>
-  );
 }
 
 function FilterToggle({
   pressed,
   onChange,
-  disabledReason,
+  disabled = false,
+  describedBy,
   children,
 }: {
   pressed: boolean;
   onChange: (pressed: boolean) => void;
-  disabledReason?: string;
+  disabled?: boolean;
+  // The visible note that explains a disabled toggle.
+  describedBy?: string;
   children: ReactNode;
 }) {
   const Icon = pressed ? SquareCheck : Square;
-  const button = (
+  return (
     <Button
+      aria-describedby={describedBy}
       aria-pressed={pressed}
       className="h-9 w-full justify-start text-xs sm:h-8 sm:w-auto"
-      disabled={!!disabledReason}
+      disabled={disabled}
       onClick={() => onChange(!pressed)}
       size="sm"
       variant={pressed ? "secondary" : "outline"}
@@ -395,17 +434,6 @@ function FilterToggle({
       <Icon aria-hidden className="size-3.5" />
       {children}
     </Button>
-  );
-  if (!disabledReason) {
-    return button;
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="block sm:inline-block" />}>
-        {button}
-      </TooltipTrigger>
-      <TooltipContent>{disabledReason}</TooltipContent>
-    </Tooltip>
   );
 }
 

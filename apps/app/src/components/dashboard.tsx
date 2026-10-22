@@ -190,17 +190,15 @@ function useDashboardNavigation() {
   return { update, go, inspect, closeInspector, openCluster, actions };
 }
 
-// ⌘K / Ctrl+K anywhere, or "/" outside text fields, opens the finder.
+// ⌘K / Ctrl+K opens the finder. There is no single-key shortcut, so speech
+// and switch input cannot open it by accident (WCAG 2.1.4).
 function usePaletteShortcut(open: () => void) {
   useEffect(() => {
     function key(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      const typing =
-        target?.isContentEditable ||
-        ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "");
-      const command =
-        event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey);
-      if (command || (event.key === "/" && !typing)) {
+      if (event.defaultPrevented || event.altKey) {
+        return;
+      }
+      if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         open();
       }
@@ -225,7 +223,14 @@ function PageBody({
 }) {
   switch (search.view) {
     case "attention":
-      return <AttentionPage actions={actions} attention={data.attention} />;
+      return (
+        <AttentionPage
+          actions={actions}
+          attention={data.attention}
+          clusterFilter={search.cluster}
+          views={data.views}
+        />
+      );
     case "infrastructure":
     case "workloads":
       return (
@@ -371,12 +376,7 @@ function DashboardContent() {
                 {pageDescriptions[search.view] && (
                   <span className="text-xs">{counts}</span>
                 )}
-                <DataAge
-                  times={views.flatMap((view) => [
-                    view.cluster.heartbeatAt,
-                    view.inventory.sourceTime,
-                  ])}
-                />
+                {snapshot.data && <DataAge views={views} />}
               </span>
             }
             title={page?.name ?? "Overview"}
@@ -449,6 +449,7 @@ function DashboardContent() {
       </Dialog>
       <ResourceInspector
         at={search.at}
+        connection={connection}
         inspected={inspected}
         onClose={closeInspector}
         onCollection={(view, node) =>
@@ -462,7 +463,9 @@ function DashboardContent() {
         range={search.range}
         referenceTime={referenceTime}
       />
-      {search.resource && !inspected && !snapshot.isLoading && (
+      {/* Absence is only claimed against a loaded snapshot; while the hub is
+          unreachable the link stays in the URL and Retry reopens it. */}
+      {search.resource && !inspected && snapshot.isSuccess && (
         <Dialog
           onOpenChange={(open) => {
             if (!open) {

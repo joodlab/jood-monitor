@@ -7,7 +7,16 @@ import type { ClusterView } from "@jood-monitor/api-client";
 export const enrollmentLifetimeMs = 30 * 60_000;
 // After this long without a first heartbeat, show troubleshooting help.
 export const firstHeartbeatPatienceMs = 2 * 60_000;
-export const pollIntervalMs = 5000;
+
+// The First heartbeat step checks the hub every 10 seconds for ten minutes,
+// then every 30 seconds, measured from when the step started.
+export const fastCheckMs = 10_000;
+export const slowCheckMs = 30_000;
+export const slowCheckAfterMs = 10 * 60_000;
+// Automatic checks stop this long after the token expired with no heartbeat.
+export const expiryGraceMs = 2 * 60_000;
+// After a heartbeat, inventory checks stay slow and stop after this long.
+export const inventoryPatienceMs = 10 * 60_000;
 
 export const idRule = "Lowercase letters, digits and hyphens, 1–64 characters.";
 export const environmentSuggestions = [
@@ -113,6 +122,40 @@ export function firstDelivery(
     heartbeatAt: view.cluster.heartbeatAt ?? undefined,
     version: view.heartbeat.version || undefined,
   };
+}
+
+// How often the First heartbeat step checks the hub right now, or false once
+// automatic checks have stopped. Both the query interval and the "Checking
+// every N seconds" text come from here. Each stop leaves "Check now" in place.
+export function deliveryCheckInterval({
+  state,
+  startedAt,
+  expiresAt,
+  heartbeatAt,
+  now,
+}: {
+  state: DeliveryState;
+  startedAt: number;
+  expiresAt: string;
+  heartbeatAt?: string;
+  now: number;
+}): number | false {
+  if (state === "inventory") {
+    return false;
+  }
+  if (state === "heartbeat") {
+    const heartbeat = heartbeatAt ? Date.parse(heartbeatAt) : Number.NaN;
+    const since = Math.max(
+      startedAt,
+      Number.isFinite(heartbeat) ? heartbeat : 0
+    );
+    return now - since < inventoryPatienceMs ? slowCheckMs : false;
+  }
+  const expiry = Date.parse(expiresAt);
+  if (!Number.isFinite(expiry) || now >= expiry + expiryGraceMs) {
+    return false;
+  }
+  return now - startedAt < slowCheckAfterMs ? fastCheckMs : slowCheckMs;
 }
 
 // "29:41" for a countdown; "0:00" once passed.

@@ -1,20 +1,36 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import { idSchema } from "../schemas/clusters";
-import { hubOriginProblem, installSteps } from "./install-commands";
+import {
+  credentialFile,
+  hubOriginProblem,
+  installSteps,
+  tokenFile,
+} from "./install-commands";
 import {
   countdown,
+  deliveryCheckInterval,
   elapsed,
   enrollmentLifetimeMs,
+  expiryGraceMs,
+  fastCheckMs,
   firstDelivery,
   idProblem,
+  inventoryPatienceMs,
   issuedAt,
   minutesLeft,
+  slowCheckAfterMs,
+  slowCheckMs,
   slugify,
 } from "./install-enrollment";
 import { requestError } from "./install-errors";
 
 const secretLike = /Bearer|token=/i;
+const readsStdin = /\bread\b|\bcat\s*>/;
+const fromFile = /--from-file=credential=(\S+)/;
+const helperOutput = /enroll-agent\.py \S+ \S+ \S+ (\S+)/;
+const tokenRemoval = / && rm -f \.secrets\.enrollment-token$/;
+const credentialRemoval = / && rm -f \.secrets\.hub-credential-synthetic-a$/;
 
 function view(
   times: { heartbeatAt?: string | null; receivedAt?: string | null },
@@ -145,8 +161,14 @@ describe("install commands", () => {
       clusterId: "synthetic-a",
     });
     const text = steps.map((step) => step.command).join("\n");
+    expect(steps.map((step) => step.id)).toEqual([
+      "token",
+      "credential",
+      "secrets",
+      "chart",
+    ]);
     expect(text).toContain(
-      "python scripts/enroll-agent.py https://monitor.example.com synthetic-a enrollment-token.txt hub-credential.txt"
+      "python3 scripts/enroll-agent.py https://monitor.example.com synthetic-a .secrets.enrollment-token .secrets.hub-credential-synthetic-a && rm -f .secrets.enrollment-token"
     );
     expect(text).toContain("--set hubURL=https://monitor.example.com");
     expect(text).toContain("jood-monitor-hub --from-file=credential=");
@@ -159,11 +181,47 @@ describe("install commands", () => {
     expect(hubOriginProblem("https://monitor.example.com")).toBeUndefined();
     expect(hubOriginProblem("http://127.0.0.1:3040")).toContain("HTTPS");
     expect(hubOriginProblem("https://monitor.example.com/app")).toBeDefined();
-    const [step] = installSteps({
+    const [, step] = installSteps({
       origin: "http://127.0.0.1:3040",
       clusterId: "synthetic-a",
     });
+    expect(step.id).toBe("credential");
     expect(step.command).toContain("https://<hub-origin> synthetic-a");
+  });
+
+  it("reads the token alone on one silent line", () => {
+    for (const kind of ["new", "recover"] as const) {
+      const steps = installSteps({
+        origin: "https://monitor.example.com",
+        clusterId: "synthetic-a",
+        kind,
+      });
+      const reading = steps.filter((step) => readsStdin.test(step.command));
+      expect(reading.map((step) => step.id)).toEqual(["token"]);
+      expect(reading[0].command.split("\n")).toHaveLength(1);
+      expect(reading[0].command).toContain("umask 077");
+      expect(reading[0].command).toContain("read -rs");
+      expect(reading[0].command).toContain(`> ${tokenFile}`);
+    }
+  });
+
+  it("keeps private files ignored and removes them only after success", () => {
+    const steps = installSteps({
+      origin: "https://monitor.example.com",
+      clusterId: "synthetic-a",
+    });
+    const lines = steps.flatMap((step) => step.command.split("\n"));
+    const removals = lines.filter((line) => line.includes("rm "));
+    expect(removals).toHaveLength(2);
+    expect(removals[0]).toMatch(tokenRemoval);
+    expect(removals[1]).toMatch(credentialRemoval);
+    for (const file of [
+      tokenFile,
+      credentialFile("synthetic-a", "new"),
+      credentialFile("synthetic-a", "recover"),
+    ]) {
+      expect(file.startsWith(".secrets.")).toBe(true);
+    }
   });
 
   it("replaces the credential in place for a renewal", () => {
@@ -172,9 +230,87 @@ describe("install commands", () => {
       clusterId: "synthetic-a",
       kind: "recover",
     });
-    expect(steps.map((step) => step.id)).toEqual(["credential", "replace"]);
-    expect(steps[1].command).toContain("kubectl apply -f -");
-    expect(steps[1].command).not.toContain("rollout restart");
+    expect(steps.map((step) => step.id)).toEqual([
+      "token",
+      "credential",
+      "replace",
+    ]);
+    const replace = steps[2].command;
+    expect(replace).toContain(
+      "kubectl apply -f - && rm -f .secrets.hub-credential-synthetic-a-renewed"
+    );
+    expect(replace).not.toContain("rollout restart");
+  });
+
+  it("gives a renewal its own credential file end to end", () => {
+    const output = (kind: "new" | "recover", fullInstall?: boolean) => {
+      const text = installSteps({
+        origin: "https://monitor.example.com",
+        clusterId: "synthetic-a",
+        kind,
+        fullInstall,
+      })
+        .map((step) => step.command)
+        .join("\n");
+      return {
+        helper: helperOutput.exec(text)?.[1],
+        stored: fromFile.exec(text)?.[1],
+      };
+    };
+    const fresh = output("new");
+    const renewed = output("recover");
+    expect(fresh.helper).toBe(".secrets.hub-credential-synthetic-a");
+    expect(renewed.helper).toBe(".secrets.hub-credential-synthetic-a-renewed");
+    expect(fresh.stored).toBe(fresh.helper);
+    expect(renewed.stored).toBe(renewed.helper);
+    // The full installation for a renewal still uses the renewed file.
+    expect(output("recover", true)).toEqual(renewed);
+  });
+});
+
+describe("first delivery checks", () => {
+  const expiresAt = "2026-10-22T10:30:00.000Z";
+  const expiry = Date.parse(expiresAt);
+  const startedAt = expiry - 20 * 60_000;
+  const plan = (
+    now: number,
+    state: "waiting" | "heartbeat" | "inventory" = "waiting",
+    heartbeatAt?: string
+  ) => deliveryCheckInterval({ state, startedAt, expiresAt, heartbeatAt, now });
+
+  it("checks every 10 seconds, then every 30 after ten minutes", () => {
+    expect(fastCheckMs).toBe(10_000);
+    expect(slowCheckMs).toBe(30_000);
+    expect(plan(startedAt)).toBe(fastCheckMs);
+    expect(plan(startedAt + slowCheckAfterMs - 1)).toBe(fastCheckMs);
+    expect(plan(startedAt + slowCheckAfterMs)).toBe(slowCheckMs);
+  });
+
+  it("stops once the token expired plus grace with no heartbeat", () => {
+    expect(plan(expiry + expiryGraceMs - 1)).toBe(slowCheckMs);
+    expect(plan(expiry + expiryGraceMs)).toBe(false);
+    expect(
+      deliveryCheckInterval({
+        state: "waiting",
+        startedAt,
+        expiresAt: "not a time",
+        now: startedAt,
+      })
+    ).toBe(false);
+  });
+
+  it("checks slowly for inventory after a heartbeat, for a bounded time", () => {
+    // The token was exchanged a minute before it expired.
+    const heartbeat = expiry - 60_000;
+    const at = new Date(heartbeat).toISOString();
+    // A heartbeat keeps checks going past the token's expiry.
+    expect(plan(expiry + expiryGraceMs, "heartbeat", at)).toBe(slowCheckMs);
+    expect(plan(heartbeat + inventoryPatienceMs - 1, "heartbeat", at)).toBe(
+      slowCheckMs
+    );
+    expect(plan(heartbeat + inventoryPatienceMs, "heartbeat", at)).toBe(false);
+    expect(plan(startedAt + inventoryPatienceMs, "heartbeat")).toBe(false);
+    expect(plan(startedAt, "inventory")).toBe(false);
   });
 });
 
@@ -189,7 +325,10 @@ describe("request errors", () => {
           "active credential must be revoked before renewing enrollment"
         )
       )
-    ).toMatchObject({ kind: "active-credential" });
+    ).toMatchObject({
+      kind: "active-credential",
+      message: expect.stringContaining("Revoke an active credential"),
+    });
     expect(
       requestError(new Error("profile changed concurrently; refresh")).kind
     ).toBe("concurrent-profile");

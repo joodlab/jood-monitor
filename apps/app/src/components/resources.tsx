@@ -56,7 +56,7 @@ import {
 import { defaultPageSize, pageSizes } from "../schemas/monitor";
 import { EmptyState } from "./page";
 import { cardFacts, resourceColumns } from "./resource-columns";
-import { StatusBadge } from "./resource-status";
+import { StaleInventoryNotice, StatusBadge } from "./resource-status";
 
 const nouns: Record<TablePreset, [string, string]> = {
   list: ["resource", "resources"],
@@ -123,17 +123,20 @@ export function Resources({
     views.map((view) => view.cluster.id).join(","),
   ].join("|");
   return (
-    <ResourceTable
-      data={data}
-      hidden={hidden}
-      multiCluster={views.length > 1}
-      onInspect={onInspect}
-      onPageSizeChange={onPageSizeChange}
-      onRelax={onRelax}
-      pageSize={pageSize}
-      preset={table}
-      scope={scope}
-    />
+    <div className="space-y-3">
+      <StaleInventoryNotice referenceTime={referenceTime} views={views} />
+      <ResourceTable
+        data={data}
+        hidden={hidden}
+        multiCluster={views.length > 1}
+        onInspect={onInspect}
+        onPageSizeChange={onPageSizeChange}
+        onRelax={onRelax}
+        pageSize={pageSize}
+        preset={table}
+        scope={scope}
+      />
+    </div>
   );
 }
 
@@ -355,7 +358,7 @@ function ResourceCard({
 }) {
   return (
     <button
-      className="w-full rounded-lg border bg-card p-3 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/50 data-[problem=true]:border-warning/40"
+      className="w-full rounded-lg border bg-card p-3 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring data-[problem=true]:border-warning/40 focus-visible:data-[problem=true]:border-ring"
       data-problem={row.problem}
       onClick={() => inspect(row.view, row.entity)}
       type="button"
@@ -369,7 +372,11 @@ function ResourceCard({
             {row.entity.kind} · {row.view.cluster.name}
           </span>
         </span>
-        <StatusBadge entity={row.entity} problem={row.problem} />
+        <StatusBadge
+          entity={row.entity}
+          problem={row.problem}
+          stale={row.stale}
+        />
       </span>
       <span className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
         {cardFacts(row, preset).map((fact) => (

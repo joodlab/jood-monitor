@@ -159,8 +159,43 @@ function clusterCondition(
   }
 }
 
-function clusterItems(view: ClusterView, now: number): Attention[] {
-  const condition = clusterCondition(view, now);
+// A saved observation keeps inventory source times but not observer
+// heartbeats, so only inventory coverage is judged against the selected time.
+function savedCondition(
+  view: ClusterView,
+  at: number
+): ClusterCondition | undefined {
+  const sourceTime = view.inventory.sourceTime;
+  const inventory = inventoryFreshness(sourceTime, at);
+  if (inventory === "unknown") {
+    return {
+      key: "inventory:unsaved",
+      severity: "warning",
+      title: "No saved observation at this time",
+      reason:
+        "Nothing was archived for this cluster at or before the selected time",
+    };
+  }
+  if (inventory === "stale") {
+    return {
+      key: "inventory:stale",
+      severity: "warning",
+      title: "Saved inventory is older than the selected time",
+      reason:
+        "The newest archived inventory predates this time; later changes are missing",
+      since: { at: sourceTime, label: "inventory sampled" },
+    };
+  }
+}
+
+function clusterItems(
+  view: ClusterView,
+  now: number,
+  frozen: boolean
+): Attention[] {
+  const condition = frozen
+    ? savedCondition(view, now)
+    : clusterCondition(view, now);
   if (!condition) {
     return [];
   }
@@ -360,7 +395,7 @@ export function attentionItems(
 ): Attention[] {
   const items: Attention[] = [];
   for (const view of views) {
-    const cluster = frozen ? [] : clusterItems(view, now);
+    const cluster = clusterItems(view, now, frozen);
     items.push(...cluster);
     const observerHealthy = !cluster.some(
       (item) => item.severity !== "info" || !view.cluster.heartbeatAt
@@ -405,4 +440,111 @@ export function attentionSummary(items: Attention[]) {
     finished: items.length - live.length,
     worst,
   };
+}
+
+export type AttentionSummary = ReturnType<typeof attentionSummary>;
+
+// Inventory was observed (live) or saved (frozen) for this view at `now`.
+// Without it nothing can be called healthy.
+function inventoryObserved(view: ClusterView, now: number) {
+  return inventoryFreshness(view.inventory.sourceTime, now) !== "unknown";
+}
+
+export function observationCoverage(views: ClusterView[], now: number) {
+  const observed = views.filter((view) => inventoryObserved(view, now)).length;
+  return { total: views.length, observed, missing: views.length - observed };
+}
+
+export interface ClusterStatus {
+  // True only when inventory backs the status; otherwise show a neutral state.
+  covered: boolean;
+  label: string;
+  severity?: Severity;
+}
+
+export function clusterStatus(
+  view: ClusterView,
+  summary: AttentionSummary,
+  now: number,
+  frozen: boolean
+): ClusterStatus {
+  const covered = inventoryObserved(view, now);
+  if (frozen && !covered) {
+    return { covered, label: "No saved observation" };
+  }
+  if (!frozen && freshness(view.cluster.heartbeatAt, now) === "unknown") {
+    return { covered: false, label: "Awaiting observer" };
+  }
+  if (summary.critical) {
+    return {
+      covered,
+      label: `${summary.critical} critical`,
+      severity: "critical",
+    };
+  }
+  if (summary.warning) {
+    return {
+      covered,
+      label: `${summary.warning} warning${summary.warning === 1 ? "" : "s"}`,
+      severity: "warning",
+    };
+  }
+  if (summary.info) {
+    return {
+      covered,
+      label: `No problems · ${summary.info} info`,
+      severity: "info",
+    };
+  }
+  return { covered, label: covered ? "Healthy" : "No inventory observed" };
+}
+
+export interface DataAgeSummary {
+  // Clusters without inventory (and, live, without any heartbeat).
+  missing: number;
+  // Oldest inventory source time in scope. Heartbeat receipt is a different
+  // clock and is judged by the attention model, not merged in here.
+  oldest?: string;
+  state: ReturnType<typeof inventoryFreshness>;
+  total: number;
+}
+
+export function dataAge(
+  views: ClusterView[],
+  now: number,
+  frozen = false
+): DataAgeSummary {
+  let oldest: string | undefined;
+  let missing = 0;
+  for (const view of views) {
+    const observed = inventoryObserved(view, now);
+    const silent =
+      !frozen && freshness(view.cluster.heartbeatAt, now) === "unknown";
+    if (!observed || silent) {
+      missing++;
+    }
+    const sourceTime = view.inventory.sourceTime;
+    if (observed && (!oldest || Date.parse(sourceTime) < Date.parse(oldest))) {
+      oldest = sourceTime;
+    }
+  }
+  return {
+    oldest,
+    state: inventoryFreshness(oldest, now),
+    missing,
+    total: views.length,
+  };
+}
+
+export function coverageGap(
+  { missing, total }: Pick<DataAgeSummary, "missing" | "total">,
+  frozen = false
+) {
+  if (!missing) {
+    return;
+  }
+  const clusters = `${missing} of ${total} cluster${total === 1 ? "" : "s"}`;
+  return frozen
+    ? `${clusters} without a saved observation`
+    : `${clusters} not reporting`;
 }

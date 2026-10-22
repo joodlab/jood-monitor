@@ -1,34 +1,45 @@
-import type { Entity } from "@jood-monitor/api-client";
+import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Badge } from "@jood-monitor/ui/badge";
 import { cn } from "@jood-monitor/ui/utils";
-import { TriangleAlert } from "lucide-react";
+import { Clock, TriangleAlert } from "lucide-react";
 import { hasProblem, percentage, resourceStatus } from "../lib/infrastructure";
-import type { UsageDisplay } from "../lib/resource-table";
+import { inventoryFreshness } from "../lib/metrics";
+import { staleViews, type UsageDisplay } from "../lib/resource-table";
+import { TimeText } from "./time";
 
-type Tone = "neutral" | "ok" | "problem";
+type Tone = "neutral" | "ok" | "problem" | "stale";
 
+// Stale data is never shown as healthy. A last reported problem keeps its
+// warning so staleness does not hide it; the label says it is stale either way.
 function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
   const status = resourceStatus(entity);
   if (
-    stale ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
     ["Unknown", "Observed"].includes(status) ||
     entity.kind === "Service" ||
     entity.kind === "Ingress"
   ) {
-    return "neutral";
+    return stale ? "stale" : "neutral";
   }
-  return (problem ?? hasProblem(entity)) ? "problem" : "ok";
+  if (problem ?? hasProblem(entity)) {
+    return "problem";
+  }
+  return stale ? "stale" : "ok";
 }
 
 const badgeTones: Record<Tone, string> = {
   ok: "text-success-text",
   problem: "border-warning/40 bg-warning/10 text-warning-text",
   neutral: "text-muted-foreground",
+  stale: "border-muted-foreground/50 border-dashed text-muted-foreground",
 };
 
+export const staleTitle =
+  "The inventory is stale: this is the last reported state and the current state is unknown.";
+
 // Status text is always shown; the mark's shape (dot, warning triangle,
-// hollow ring) repeats the tone so colour is never the only signal.
+// hollow ring, clock) repeats the tone so colour is never the only signal.
+// Stale badges keep the last reported status after "Stale".
 export function StatusBadge({
   entity,
   stale = false,
@@ -43,7 +54,11 @@ export function StatusBadge({
 }) {
   const tone = statusTone(entity, stale, problem);
   return (
-    <Badge className={cn(badgeTones[tone], className)} variant="outline">
+    <Badge
+      className={cn(badgeTones[tone], className)}
+      title={stale ? staleTitle : undefined}
+      variant="outline"
+    >
       {tone === "problem" && <TriangleAlert aria-hidden />}
       {tone === "ok" && (
         <span aria-hidden className="size-1.5 rounded-full bg-success" />
@@ -54,7 +69,8 @@ export function StatusBadge({
           className="size-1.5 rounded-full border border-muted-foreground"
         />
       )}
-      {stale ? "Stale" : statusLabel(entity)}
+      {tone === "stale" && <Clock aria-hidden />}
+      {stale ? `Stale · ${statusLabel(entity)}` : statusLabel(entity)}
     </Badge>
   );
 }
@@ -168,5 +184,80 @@ export function UsageValue({
     >
       {display.text}
     </span>
+  );
+}
+
+const NOTICE_CLUSTERS = 3;
+
+function InventoryAge({
+  view,
+  referenceTime,
+}: {
+  view: ClusterView;
+  referenceTime: number;
+}) {
+  const state = inventoryFreshness(view.inventory.sourceTime, referenceTime);
+  if (state === "unknown") {
+    return <>no inventory time</>;
+  }
+  if (state === "clock skew") {
+    return <>inventory time is ahead of this clock</>;
+  }
+  return (
+    <>
+      inventory{" "}
+      <TimeText
+        label="Inventory source time"
+        value={view.inventory.sourceTime}
+      />
+    </>
+  );
+}
+
+// Names the clusters whose inventory is not current, so rows, tiles and
+// badges from them read as their last report rather than the present.
+export function StaleInventoryNotice({
+  views,
+  referenceTime,
+  className,
+}: {
+  views: ClusterView[];
+  referenceTime: number;
+  className?: string;
+}) {
+  const stale = staleViews(views, referenceTime);
+  if (!stale.length) {
+    return null;
+  }
+  const shown = stale.slice(0, NOTICE_CLUSTERS);
+  const more = stale.length - shown.length;
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2 rounded-lg border border-muted-foreground/40 border-dashed px-3 py-2 text-sm",
+        className
+      )}
+      role="note"
+    >
+      <Clock
+        aria-hidden
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+      />
+      <p>
+        <span className="font-medium">Stale inventory</span> from{" "}
+        {shown.map((view, index) => (
+          <span key={view.cluster.id}>
+            {index > 0 && ", "}
+            <span className="font-medium">{view.cluster.name}</span> (
+            <InventoryAge referenceTime={referenceTime} view={view} />)
+          </span>
+        ))}
+        {more > 0 && ` and ${more} more`}.{" "}
+        <span className="text-muted-foreground">
+          Their resources show the last reported state; the current state is
+          unknown.
+        </span>
+      </p>
+    </div>
   );
 }

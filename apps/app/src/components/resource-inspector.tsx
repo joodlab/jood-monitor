@@ -32,6 +32,7 @@ import {
   type Coverage,
   type Crumb,
   exposure,
+  historyRefetchInterval,
   ingressesFor,
   inspectionKey,
   placement,
@@ -62,6 +63,8 @@ export function ResourceInspector({
   referenceTime,
   range,
   at,
+  connection,
+  scope,
   onCollection,
 }: {
   inspected: Inspected;
@@ -70,6 +73,13 @@ export function ResourceInspector({
   referenceTime: number;
   range: string;
   at?: string;
+  // The dashboard's monitoring stream state; slows history polling while
+  // stream notifications are arriving.
+  connection?: string;
+  // The dashboard scope (a workspace id or "global"), so stream
+  // notifications for that scope refresh the history; defaults to the
+  // resource's own workspace.
+  scope?: string;
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -80,8 +90,9 @@ export function ResourceInspector({
     }
   }, [key]);
   const trail = useInspectionTrail(inspected);
-  const cpu = useHistory(inspected, "cpu", range, at, referenceTime);
-  const memory = useHistory(inspected, "memory", range, at, referenceTime);
+  const live = { at, connection, scope, range, referenceTime };
+  const cpu = useHistory(inspected, "cpu", live);
+  const memory = useHistory(inspected, "memory", live);
   return (
     <Sheet
       onOpenChange={(open) => {
@@ -114,17 +125,27 @@ export function ResourceInspector({
   );
 }
 
+interface HistoryWindow {
+  at?: string;
+  connection?: string;
+  range: string;
+  referenceTime: number;
+  scope?: string;
+}
+
 function useHistory(
   inspected: Inspected,
   field: UsageField,
-  range: string,
-  at: string | undefined,
-  referenceTime: number
+  { at, connection, scope, range, referenceTime }: HistoryWindow
 ) {
+  const workspace = inspected?.view.cluster.workspaceId;
   return useQuery({
+    // The scope leads the key so the stream's per-scope invalidation
+    // reaches it, including the all-workspaces view.
     queryKey: [
       "history",
-      inspected?.view.cluster.workspaceId,
+      scope ?? workspace,
+      workspace,
       inspected?.view.cluster.id,
       inspected?.entity.uid,
       field,
@@ -136,14 +157,14 @@ function useHistory(
       !!inspected &&
       ["Node", "Pod"].includes(inspected.entity.kind) &&
       referenceTime > 0,
-    refetchInterval: at ? false : 30_000,
+    refetchInterval: historyRefetchInterval(at, connection),
     queryFn: async () => {
       // The chart's time axis is exactly the queried window.
       const to = at ? Date.parse(at) : Date.now();
       const from = to - Number(range) * 3_600_000;
       const samples = await getHistoryFn({
         data: {
-          workspace: inspected?.view.cluster.workspaceId ?? "",
+          workspace: workspace ?? "",
           cluster: inspected?.view.cluster.id ?? "",
           entity: inspected?.entity.uid,
           name: usageName(inspected?.entity, field),

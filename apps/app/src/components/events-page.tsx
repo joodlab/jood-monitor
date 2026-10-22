@@ -91,10 +91,11 @@ export function EventsPage({
         starts at enrollment; application logs are not collected.
       </p>
       <div className="flex flex-wrap items-center gap-2">
+        {/* biome-ignore lint/a11y/useSemanticElements: a labelled group of toggle buttons, not a form fieldset. */}
         <div
           aria-label="Filter by change type"
           className="flex flex-wrap gap-2"
-          role="toolbar"
+          role="group"
         >
           {categories.map((item) => (
             <Button
@@ -109,9 +110,9 @@ export function EventsPage({
             </Button>
           ))}
         </div>
+        {/* The label states the action, so it carries no pressed state. */}
         {hiddenRollouts > 0 && (
           <Button
-            aria-pressed={rollouts}
             className="h-8 text-xs"
             onClick={() => setRollouts((value) => !value)}
             size="sm"

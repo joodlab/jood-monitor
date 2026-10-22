@@ -29,14 +29,16 @@ export function timeZoneLabel(timeZone: string, at = Date.now()) {
   }
 }
 
-function valid(value: string | number | null | undefined) {
+// Epoch milliseconds, or undefined for missing, unparsable and zero-value
+// timestamps (for example Go's 0001-01-01), which mean "never set".
+export function knownTime(value: string | number | null | undefined) {
   if (value == null) {
     return;
   }
   const time = typeof value === "number" ? value : Date.parse(value);
-  // Zero-value timestamps (for example Go's 0001-01-01) mean "never set".
   return Number.isFinite(time) && time >= 0 ? time : undefined;
 }
+const valid = knownTime;
 
 export function formatClock(
   value: string | number | null | undefined,

@@ -28,7 +28,7 @@ const known: [string, RequestErrorKind, string][] = [
   [
     "active credential must be revoked",
     "active-credential",
-    "This cluster still has an active credential, so its enrollment cannot be renewed. Revoke the credential first (see credential recovery). Renewal never revokes or rotates credentials for you.",
+    "This cluster still has an active credential, so its enrollment cannot be renewed. If a helper saved that credential, install the observer with it instead. If it is lost or compromised, an authorized operator revokes it with the operator API first (see “Revoke an active credential”), then renews. Renewal never revokes or rotates credentials for you.",
   ],
   [
     "profile changed concurrently",

@@ -53,6 +53,12 @@ function contextParts(item: Attention) {
   return parts;
 }
 
+// Screen-reader punctuation, so the row's name (built from its content) reads
+// as separate phrases rather than run-together words.
+function Spoken({ text }: { text: string }) {
+  return <span className="sr-only">{text}</span>;
+}
+
 function AttentionRow({
   item,
   actions,
@@ -67,20 +73,28 @@ function AttentionRow({
   return (
     <li className="border-b last:border-b-0">
       <div className="flex items-stretch">
+        {/* The accessible name is the row's visible content: severity, title,
+            reason, location, subject and evidence time. */}
         <button
-          aria-label={`${severityLabels[item.severity]}: ${item.title}. ${item.location.join(", ")}`}
-          className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
+          className="flex min-w-0 flex-1 items-start gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
           onClick={() => open(item, actions)}
           type="button"
         >
-          <SeverityIcon className="mt-0.5" severity={item.severity} />
+          <Spoken text={`${severityLabels[item.severity]}: `} />
+          <SeverityIcon
+            className="mt-0.5"
+            decorative
+            severity={item.severity}
+          />
           <span className="min-w-0 flex-1">
             <span className="block font-medium text-sm leading-snug">
               {item.title}
+              <Spoken text=". " />
             </span>
             {item.reason && (
               <span className="mt-0.5 block text-muted-foreground text-xs">
                 {item.reason}
+                <Spoken text=". " />
               </span>
             )}
             <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground text-xs">
@@ -89,7 +103,12 @@ function AttentionRow({
                   className="flex max-w-full items-center gap-1.5"
                   key={part.key}
                 >
-                  {index > 0 && <span aria-hidden>·</span>}
+                  {index > 0 && (
+                    <>
+                      <Spoken text=", " />
+                      <span aria-hidden>·</span>
+                    </>
+                  )}
                   {part.node}
                 </span>
               ))}
@@ -120,7 +139,7 @@ function AttentionRow({
           {members.map((pod) => (
             <li key={pod.uid}>
               <button
-                className="flex w-full items-center gap-3 px-4 py-2 pl-11 text-left text-xs outline-none hover:bg-muted/50 focus-visible:bg-muted/60"
+                className="flex w-full items-center gap-3 px-4 py-2 pl-11 text-left text-xs outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 onClick={() => actions.onInspect(item.view, pod)}
                 type="button"
               >

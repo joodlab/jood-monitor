@@ -10,8 +10,10 @@ import {
 } from "./infrastructure";
 import { nodeTotals, observedUsage } from "./metrics";
 import {
+  emptyServers,
   groupByOwner,
   placementHint,
+  podTileLabel,
   serverPlacement,
 } from "./resource-servers";
 import {
@@ -22,6 +24,7 @@ import {
   pageRange,
   presetFor,
   resourceRows,
+  staleViews,
   usageDisplay,
 } from "./resource-table";
 import { serviceGraph, stablePositions, validPosition } from "./service-graph";
@@ -569,6 +572,69 @@ describe("resource tables", () => {
       hiddenMatches([view], { ...listFilter, q: "absent" }, now)
     ).toBeUndefined();
   });
+  it("marks rows from a stale or undated inventory as stale", () => {
+    const view = placed();
+    const current = resourceRows([view], listFilter, now, ["Pod"]);
+    expect(current.length).toBeGreaterThan(0);
+    expect(current.some((row) => row.stale)).toBe(false);
+    // Inventory reconciles about once a minute, so two minutes is current.
+    expect(
+      resourceRows([view], listFilter, now + 120_000, ["Pod"]).some(
+        (row) => row.stale
+      )
+    ).toBe(false);
+    const late = resourceRows([view], listFilter, now + 241_000, ["Pod"]);
+    expect(late.length).toBeGreaterThan(0);
+    expect(late.every((row) => row.stale)).toBe(true);
+    const undated = placed();
+    undated.inventory.sourceTime = "0001-01-01T00:00:00Z";
+    expect(resourceRows([undated], listFilter, now)[0].stale).toBe(true);
+    const stale = staleViews([view, undated], now);
+    expect(stale).toHaveLength(1);
+    expect(stale[0]).toBe(undated);
+  });
+  it("keeps system resources when relaxing a chosen system namespace", () => {
+    const view = placed();
+    view.inventory.entities.push(
+      entity("observer", "Pod", {
+        namespace: "jood-monitor",
+        status: "Running",
+        ready: 1,
+        desired: 1,
+        nodeUid: "node-a",
+      })
+    );
+    // The browser includes system resources for a chosen system namespace,
+    // while the URL keeps system=false.
+    const url = { ...listFilter, q: "observer" };
+    const filter = { ...url, namespace: "kube-system", system: true };
+    expect(resourceRows([view], filter, now)).toHaveLength(0);
+    const hidden = hiddenMatches([view], filter, now);
+    expect(hidden).toMatchObject({
+      count: 1,
+      patch: { namespace: "all", system: true },
+    });
+    expect(hidden?.message).toContain("including system namespaces");
+    // The relaxed URL shows exactly the matches the hint counted.
+    expect(
+      resourceRows([view], { ...url, ...hidden?.patch }, now)
+    ).toHaveLength(1);
+    const hint = placementHint([view], filter, now);
+    expect(hint).toMatchObject({
+      count: 1,
+      patch: { namespace: "all", system: true },
+    });
+    expect(
+      serverPlacement([view], { ...url, ...hint?.patch }, now).matchedPods
+    ).toBe(1);
+    expect(
+      hiddenMatches(
+        [view],
+        { ...listFilter, q: "pod1", namespace: "checkout" },
+        now
+      )?.patch
+    ).toEqual({ namespace: "all" });
+  });
   it("keeps page ranges inside the data", () => {
     expect(pageRange(1, 25, 96)).toEqual({ from: 26, to: 50 });
     expect(pageRange(3, 25, 96)).toEqual({ from: 76, to: 96 });
@@ -620,6 +686,62 @@ describe("server placement", () => {
       system: true,
     });
   });
+  it("claims a healthy problems-only view only when observed, current and complete", () => {
+    const view = placed();
+    const problems = { ...listFilter, problems: true };
+    find(view, "pod2").ready = 1;
+    find(view, "pending").createdAt = new Date(now - 10_000).toISOString();
+    // A crash-looping system pod on a Ready node, hidden by default.
+    Object.assign(find(view, "dns"), { status: "CrashLoopBackOff", ready: 0 });
+    expect(serverPlacement([view], problems, now).basis).toBe("none");
+    const hint = placementHint([view], problems, now);
+    expect(hint).toMatchObject({ count: 1, patch: { system: true } });
+    expect(emptyServers([view], problems, hint, now)).toMatchObject({
+      kind: "hiddenProblems",
+    });
+
+    Object.assign(find(view, "dns"), { status: "Running", ready: 1 });
+    const healthyHint = placementHint([view], problems, now);
+    expect(healthyHint?.patch).toEqual({ problems: false });
+    expect(emptyServers([view], problems, healthyHint, now).kind).toBe(
+      "healthy"
+    );
+    view.inventory.sourceTime = new Date(now - 300_000).toISOString();
+    expect(emptyServers([view], problems, healthyHint, now).kind).toBe(
+      "staleHealthy"
+    );
+
+    const bare = fixture();
+    expect(emptyServers([bare], problems, undefined, now).kind).toBe(
+      "unobserved"
+    );
+    expect(emptyServers([], listFilter, undefined, now).kind).toBe(
+      "unobserved"
+    );
+    expect(
+      emptyServers([placed()], { ...problems, q: "absent" }, undefined, now)
+        .kind
+    ).toBe("noMatch");
+  });
+  it("names a pod tile's readiness, attention, staleness and match", () => {
+    const view = placed();
+    expect(
+      podTileLabel(find(view, "pod1"), {
+        problem: false,
+        stale: false,
+        dimmed: true,
+      })
+    ).toBe("Pod pod1 in app, Ready, does not match the current filter");
+    expect(
+      podTileLabel(find(view, "pod2"), {
+        problem: true,
+        stale: true,
+        dimmed: false,
+      })
+    ).toBe(
+      "Pod pod2 in app, last reported Not ready, inventory stale, needs attention"
+    );
+  });
   it("groups pods on a server by owning workload", () => {
     const view = placed();
     const pods = relatedPods(view, find(view, "node-b"));
@@ -643,5 +765,11 @@ describe("resource URL state", () => {
       view: "infrastructure",
       mode: "list",
     });
+  });
+  it("keeps a valid topology layout choice and drops anything else", () => {
+    expect(validateMonitorSearch({ layout: "list" }).layout).toBe("list");
+    expect(validateMonitorSearch({ layout: "graph" }).layout).toBe("graph");
+    expect(validateMonitorSearch({ layout: "grid" }).layout).toBeUndefined();
+    expect(validateMonitorSearch({}).layout).toBeUndefined();
   });
 });

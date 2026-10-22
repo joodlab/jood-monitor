@@ -5,6 +5,7 @@ import {
   conditionAbnormal,
   conditionGroups,
   exposure,
+  historyRefetchInterval,
   nextTrail,
   placement,
   podCoverage,
@@ -173,5 +174,24 @@ describe("configured structure", () => {
     expect(exposure(view, [service])).toEqual([
       { service, ingresses: [ingress] },
     ]);
+  });
+});
+
+describe("history polling", () => {
+  it("slows to the two-minute safety net while the stream is connected", () => {
+    expect(historyRefetchInterval(undefined, "connected")).toBe(120_000);
+    expect(historyRefetchInterval(undefined)).toBe(120_000);
+  });
+  it("polls every 30 s while the stream is down or reconnecting", () => {
+    expect(historyRefetchInterval(undefined, "connecting")).toBe(30_000);
+    expect(historyRefetchInterval(undefined, "reconnecting")).toBe(30_000);
+  });
+  it("never polls a saved observation", () => {
+    expect(historyRefetchInterval("2026-10-22T11:00:00Z", "connected")).toBe(
+      false
+    );
+    expect(historyRefetchInterval("2026-10-22T11:00:00Z", "frozen")).toBe(
+      false
+    );
   });
 });

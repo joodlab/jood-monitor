@@ -307,7 +307,7 @@ export function PodList({
         return (
           <li key={pod.uid}>
             <button
-              className="flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
+              className="flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
               onClick={() => onInspect(view, pod)}
               type="button"
             >

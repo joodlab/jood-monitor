@@ -2,9 +2,14 @@ import type { ClusterView, Lifecycle } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { ArrowRight, CircleCheck, Server } from "lucide-react";
+import { ArrowRight, Server } from "lucide-react";
 import { useDisplay } from "../hooks/display";
-import { type Attention, attentionSummary } from "../lib/attention";
+import {
+  type Attention,
+  attentionSummary,
+  clusterStatus,
+  observationCoverage,
+} from "../lib/attention";
 import { describeEvent } from "../lib/events";
 import {
   compactCpu,
@@ -13,7 +18,7 @@ import {
   percentage,
   podReady,
 } from "../lib/infrastructure";
-import { freshness, nodeTotals } from "../lib/metrics";
+import { freshness, inventoryFreshness, nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
 import { type AttentionActions, AttentionList } from "./attention-list";
 import { Section } from "./page";
@@ -86,7 +91,7 @@ function Tile({
   }
   return (
     <button
-      className="group rounded-lg border bg-card p-4 text-left outline-none transition-colors hover:border-ring/50 focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="group rounded-lg border bg-card p-4 text-left outline-none transition-colors hover:border-ring/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
       onClick={onClick}
       type="button"
     >
@@ -108,21 +113,57 @@ function severityCounts(summary: ReturnType<typeof attentionSummary>) {
     .join(" · ");
 }
 
+type Coverage = ReturnType<typeof observationCoverage>;
+
+function panelHeading(coverage: Coverage, problems: number) {
+  if (!coverage.observed) {
+    return "No observations in scope";
+  }
+  return problems ? "Needs attention" : "No problems observed";
+}
+
+// Green only when every cluster in scope has observed inventory.
+function NoProblems({
+  coverage,
+  frozen,
+}: {
+  coverage: Coverage;
+  frozen: boolean;
+}) {
+  const scope = coverage.total === 1 ? "cluster" : "clusters";
+  if (coverage.missing) {
+    return (
+      <p className="flex items-center gap-2 px-4 py-4 text-muted-foreground text-sm">
+        <SeverityIcon decorative />
+        {coverage.observed
+          ? `No problems in the ${coverage.observed} observed ${coverage.observed === 1 ? "cluster" : "clusters"}; ${coverage.missing} without ${frozen ? "a saved observation" : "inventory"} cannot be evaluated.`
+          : `Nothing is ${frozen ? "saved for this time" : "observed yet"}, so problems cannot be evaluated.`}
+      </p>
+    );
+  }
+  return (
+    <p className="flex items-center gap-2 px-4 py-4 text-muted-foreground text-sm">
+      <SeverityIcon covered decorative />
+      {`No readiness, pressure${frozen ? "" : " or freshness"} problems in the observed ${scope}.`}
+    </p>
+  );
+}
+
 function AttentionPanel({
   attention,
-  clusters,
+  views,
   actions,
   onNavigate,
 }: {
   attention: Attention[];
-  clusters: number;
+  views: ClusterView[];
   actions: AttentionActions;
   onNavigate: Navigate;
 }) {
-  const { frozen } = useDisplay();
+  const { frozen, referenceTime } = useDisplay();
   const summary = attentionSummary(attention);
   const live = attention.filter((item) => !item.terminal);
-  const scope = clusters === 1 ? "cluster" : "clusters";
+  const coverage = observationCoverage(views, referenceTime);
   return (
     <section
       aria-labelledby="attention-heading"
@@ -133,8 +174,11 @@ function AttentionPanel({
           className="flex items-center gap-2 font-medium text-sm"
           id="attention-heading"
         >
-          <SeverityIcon severity={summary.worst} />
-          {live.length ? "Needs attention" : "No problems observed"}
+          <SeverityIcon
+            covered={!coverage.missing}
+            severity={coverage.observed ? summary.worst : undefined}
+          />
+          {panelHeading(coverage, live.length)}
           <span className="font-normal text-muted-foreground">
             {severityCounts(summary)}
           </span>
@@ -154,12 +198,7 @@ function AttentionPanel({
       {live.length > 0 && (
         <AttentionList actions={actions} items={live.slice(0, 5)} />
       )}
-      {!live.length && (
-        <p className="flex items-center gap-2 px-4 py-4 text-muted-foreground text-sm">
-          <CircleCheck aria-hidden className="size-4 text-success-text" />
-          {`No readiness, pressure${frozen ? "" : " or freshness"} problems in the observed ${scope}.`}
-        </p>
-      )}
+      {!live.length && <NoProblems coverage={coverage} frozen={frozen} />}
       {(live.length > 5 || summary.finished > 0) && (
         <p className="border-t px-4 py-2 text-muted-foreground text-xs">
           {live.length > 5 && `${live.length - 5} more problems. `}
@@ -367,8 +406,8 @@ export function FleetOverview({
       <AttentionPanel
         actions={actions}
         attention={attention}
-        clusters={views.length}
         onNavigate={onNavigate}
+        views={views}
       />
       <OverviewTiles onNavigate={onNavigate} views={views} />
       <Section
@@ -424,6 +463,25 @@ export function FleetOverview({
   );
 }
 
+// Without observed inventory there is nothing to count: show a gap, never 0/0.
+function readyCount(
+  covered: boolean,
+  {
+    ready,
+    total,
+    known = total,
+  }: { ready: number; total: number; known?: number }
+) {
+  if (!covered) {
+    return (
+      <>
+        —<span className="sr-only">not observed</span>
+      </>
+    );
+  }
+  return known === total ? `${ready}/${total}` : "Unknown";
+}
+
 function ClusterRow({
   view,
   attention,
@@ -442,25 +500,27 @@ function ClusterRow({
   const totals = nodeTotals([view], referenceTime);
   const nodes = nodeCounts([view]);
   const pods = podCounts([view]);
-  const heartbeat = freshness(view.cluster.heartbeatAt, referenceTime);
-  let status = "Healthy";
-  if (!view.cluster.heartbeatAt) {
-    status = "Awaiting observer";
-  } else if (summary.critical) {
-    status = `${summary.critical} critical`;
-  } else if (summary.warning) {
-    status = `${summary.warning} warning${summary.warning === 1 ? "" : "s"}`;
-  }
+  const status = clusterStatus(view, summary, referenceTime, frozen);
+  const current =
+    freshness(view.cluster.heartbeatAt, referenceTime) === "fresh" &&
+    inventoryFreshness(view.inventory.sourceTime, referenceTime) === "fresh";
   return (
     <li className="grid gap-4 p-4 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center">
       <div className="min-w-0">
         <p className="flex items-center gap-2 font-medium text-sm">
-          <SeverityIcon severity={summary.worst} />
+          <SeverityIcon
+            covered={status.covered}
+            decorative
+            severity={status.severity}
+          />
           <span className="truncate">{view.cluster.name}</span>
           <span
-            className={cn("font-normal text-xs", severityTone(summary.worst))}
+            className={cn(
+              "font-normal text-xs",
+              severityTone(status.severity, status.covered)
+            )}
           >
-            {status}
+            {status.label}
           </span>
         </p>
         <p className="mt-1 truncate text-muted-foreground text-xs">
@@ -471,9 +531,7 @@ function ClusterRow({
           <p
             className={cn(
               "mt-1 text-xs",
-              heartbeat === "fresh"
-                ? "text-muted-foreground"
-                : "text-warning-text"
+              current ? "text-muted-foreground" : "text-warning-text"
             )}
           >
             {view.cluster.heartbeatAt ? (
@@ -499,15 +557,13 @@ function ClusterRow({
         <div>
           <dt className="text-muted-foreground">Servers ready</dt>
           <dd className="mt-0.5 font-medium tabular-nums">
-            {nodes.ready}/{nodes.total}
+            {readyCount(status.covered, nodes)}
           </dd>
         </div>
         <div>
           <dt className="text-muted-foreground">Pods ready</dt>
           <dd className="mt-0.5 font-medium tabular-nums">
-            {pods.known === pods.total
-              ? `${pods.ready}/${pods.total}`
-              : "Unknown"}
+            {readyCount(status.covered, pods)}
           </dd>
         </div>
       </dl>
