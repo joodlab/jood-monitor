@@ -30,6 +30,7 @@ import {
   hiddenRolloutSteps,
   hiddenStepsText,
   liveAttention,
+  quietAttention,
   quietChangesText,
   subjectName,
 } from "../lib/canvas-activity";
@@ -150,14 +151,13 @@ function NeedsAttention({
   const more =
     Math.max(0, problems.length - attentionLimit) +
     Math.max(0, notes.length - noteLimit);
-  const covered =
-    views.length > 0 && observationCoverage(views, referenceTime).missing === 0;
+  const quiet = quietAttention(observationCoverage(views, referenceTime));
   return (
     <section>
       <SectionTitle count={summary.actionable}>Needs attention</SectionTitle>
       {problems.length === 0 && (
         <p className="flex items-center gap-2 px-3.5 py-2 text-muted-foreground text-sm">
-          {covered ? (
+          {quiet.covered ? (
             <CircleCheck
               aria-hidden="true"
               className="size-4 shrink-0 text-success-text"
@@ -165,9 +165,7 @@ function NeedsAttention({
           ) : (
             <CircleDashed aria-hidden="true" className="size-4 shrink-0" />
           )}
-          {covered
-            ? "No live problems in the observed clusters"
-            : "Nothing to evaluate until inventory arrives"}
+          {quiet.text}
         </p>
       )}
       <ul>

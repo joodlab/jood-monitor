@@ -10,6 +10,36 @@ export function liveAttention(items: Attention[]) {
   return items.filter((item) => !item.terminal);
 }
 
+function clusterNoun(count: number) {
+  return count === 1 ? "cluster" : "clusters";
+}
+
+// The Needs attention line when no live problem is listed. It is green only
+// when every cluster in scope was evaluated; when some were, it says how
+// many were not, so a partial view never reads as all clear.
+export function quietAttention(coverage: {
+  missing: number;
+  observed: number;
+}) {
+  const { observed, missing } = coverage;
+  if (observed === 0) {
+    return {
+      covered: false,
+      text: "Nothing to evaluate until inventory arrives",
+    };
+  }
+  if (missing > 0) {
+    return {
+      covered: false,
+      text: `No live problems in the ${observed} observed ${clusterNoun(observed)}; ${missing} not reporting`,
+    };
+  }
+  return {
+    covered: true,
+    text: `No live problems in the observed ${clusterNoun(observed)}`,
+  };
+}
+
 export interface ActivityRow {
   event: Lifecycle;
   // The changed resource when it is still in the current inventory.
