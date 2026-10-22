@@ -1,5 +1,6 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { useDisplay } from "../hooks/display";
+import { nodeUsageGap } from "../lib/collection-state";
 import { compactCpu, compactMemory, hasProblem } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
 import {
@@ -17,7 +18,7 @@ import { Widget, WidgetLink } from "./widget-card";
 
 // Compact server list: status, CPU and memory per node, problems first.
 // Usage bars use only fresh node samples against allocatable; a missing
-// sample says so. Request bars are configured requests, not usage.
+// sample says so, and why when the hub knows. Request bars are configured requests, not usage.
 
 const PREVIEW = 6;
 // Shown with any number of servers, so no bar reads as something it is not.
@@ -63,14 +64,17 @@ function Resource({
   requests: RequestShare;
 }) {
   const { referenceTime } = useDisplay();
-  const usage = usageShare(
-    row.node,
-    field,
-    observedUsage(row.view, row.node, field, referenceTime)
-  );
+  const used = observedUsage(row.view, row.node, field, referenceTime);
+  const usage = usageShare(row.node, field, used);
+  const gap =
+    used == null ? nodeUsageGap(row.view, row.node, referenceTime) : undefined;
   return (
     <span className="grid min-w-0 gap-2">
-      <MetricBar label={usageLabel(label, usage)} value={usage.percent} />
+      <MetricBar
+        gap={gap}
+        label={usageLabel(label, usage)}
+        value={usage.percent}
+      />
       <RequestBar
         compact
         format={format}

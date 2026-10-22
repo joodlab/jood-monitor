@@ -2,7 +2,7 @@ import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import { ChevronRight, CircleDashed } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { podProblem } from "../lib/attention";
 import { formatUsage } from "../lib/chart-scale";
 import { gapLabel, gapReason, podUsageGap } from "../lib/collection-state";
@@ -139,7 +139,17 @@ function PodSection({
   onInspect: Inspect;
 }) {
   const [all, setAll] = useState(false);
+  const list = useRef<HTMLUListElement>(null);
   const shown = capped && !all ? pods.slice(0, ROW_LIMIT) : pods;
+  // The expanding button is gone once every row shows; focus moves to the
+  // first row it revealed rather than falling back to the page.
+  useEffect(() => {
+    if (all) {
+      list.current
+        ?.querySelectorAll<HTMLButtonElement>(":scope > li > button")
+        [ROW_LIMIT]?.focus();
+    }
+  }, [all]);
   return (
     <section aria-labelledby={`pods-${id}`} className="space-y-2">
       <h3
@@ -148,7 +158,7 @@ function PodSection({
       >
         {title} · {pods.length}
       </h3>
-      <ul className="space-y-2">
+      <ul className="space-y-2" ref={list}>
         {shown.map((pod) => (
           <PodRow
             frozen={frozen}
@@ -164,6 +174,7 @@ function PodSection({
       </ul>
       {shown.length < pods.length && (
         <Button
+          aria-label={`Show all ${pods.length} ${title.toLowerCase()} pods`}
           className="focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setAll(true)}
           size="sm"
@@ -186,7 +197,7 @@ function readySummary(summary: ResourceSummary) {
 }
 
 // A pod with neither sample names the reason when the hub knows it.
-function podUsage(
+export function podUsage(
   view: ClusterView,
   pod: Entity,
   now: number,
@@ -275,27 +286,7 @@ function PodRow({
             </span>
           </span>
         </span>
-        {usage.finished && (
-          <span className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
-            <CircleDashed aria-hidden className="size-3.5" />
-            Finished · not reporting
-          </span>
-        )}
-        {usage.gap && (
-          <span
-            className="max-w-40 shrink-0 text-right text-muted-foreground text-xs"
-            title={gapReason(usage.gap)}
-          >
-            <span className="block">CPU · Memory</span>
-            <span className="block">{gapLabel(usage.gap)}</span>
-          </span>
-        )}
-        {!(usage.finished || usage.gap) && (
-          <span className="grid shrink-0 grid-cols-[auto_auto] gap-x-4 text-right text-xs tabular-nums">
-            <UsageCell field="cpu" label="CPU" value={usage.cpu} />
-            <UsageCell field="memory" label="Memory" value={usage.memory} />
-          </span>
-        )}
+        <PodUsage usage={usage} />
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
@@ -305,7 +296,38 @@ function PodRow({
   );
 }
 
-export function UsageCell({
+// A pod's current CPU and memory, the known reason for neither, or that a
+// finished pod no longer reports. Shared by the Pods and Metrics tabs so
+// both say the same thing about one pod.
+export function PodUsage({ usage }: { usage: ReturnType<typeof podUsage> }) {
+  if (usage.finished) {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
+        <CircleDashed aria-hidden className="size-3.5" />
+        Finished · not reporting
+      </span>
+    );
+  }
+  if (usage.gap) {
+    return (
+      <span
+        className="max-w-40 shrink-0 text-right text-muted-foreground text-xs"
+        title={gapReason(usage.gap)}
+      >
+        <span className="block">CPU · Memory</span>
+        <span className="block">{gapLabel(usage.gap)}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="grid shrink-0 grid-cols-[auto_auto] gap-x-4 text-right text-xs tabular-nums">
+      <UsageCell field="cpu" label="CPU" value={usage.cpu} />
+      <UsageCell field="memory" label="Memory" value={usage.memory} />
+    </span>
+  );
+}
+
+function UsageCell({
   field,
   label,
   value,

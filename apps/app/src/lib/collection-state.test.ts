@@ -1,6 +1,6 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
-import { usageValue } from "./canvas-cards";
+import { usageFields, usageValue } from "./canvas-cards";
 import {
   collectionNotice,
   collectionState,
@@ -8,6 +8,7 @@ import {
   gapLabel,
   nodeUsageGap,
   podUsageGap,
+  podUsageText,
   profileKnown,
   settingGap,
   usageGap,
@@ -248,6 +249,31 @@ describe("gap labels in usage cells", () => {
     expect(usageValue(shopPod, pod, "cpu")).toMatchObject({ value: "—" });
     expect(gapLabel("not-collected-basic")).toBe("Not collected (Basic)");
   });
+  it("says a shared reason once on a card, in its short form", () => {
+    const view = fixture({ namespaces: ["batch"] });
+    const cohort = summarize(view, deployment, now);
+    expect(usageFields(deployment, cohort, "namespace-excluded")).toEqual([
+      {
+        label: "CPU · Mem",
+        value: "Namespace not selected",
+        title:
+          "No fresh CPU or memory measurement. Pod metrics are collected only in the selected namespaces, and this namespace is not one of them.",
+        reason:
+          "Pod metrics are collected only in the selected namespaces, and this namespace is not one of them.",
+      },
+    ]);
+    expect(usageFields(deployment, cohort).map((field) => field.value)).toEqual(
+      ["—", "—"]
+    );
+  });
+  it("gives the Servers tooltip the reason for a pod with no sample", () => {
+    expect(podUsageText(fixture({ namespaces: ["shop"] }), batchPod, now)).toBe(
+      "CPU · Memory Namespace not selected"
+    );
+    expect(podUsageText(fixture(), shopPod, now)).toBe(
+      "CPU no sample · Memory no sample"
+    );
+  });
   it("never replaces a measured value", () => {
     const view = fixture({ paused: true });
     view.metrics = [
@@ -305,5 +331,22 @@ describe("collection state", () => {
     const paused = collectionState(fixture({ paused: true }), now);
     expect(paused).toMatchObject({ label: "Standard", paused: true });
     expect(collectionNotice(paused, now)).toBe("Paused");
+  });
+  it("shows no countdown for a saved observation", () => {
+    const view = fixture({
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      returnProfile: "standard",
+      paused: true,
+      expiresAt: new Date(now + 7 * 60_000).toISOString(),
+    });
+    const state = collectionState(view, now);
+    expect(collectionNotice(state, now)).toBe(
+      "Paused · Diagnostic on node-a, 7 min left, then Standard"
+    );
+    expect(collectionNotice(state, now, true)).toBe("Paused at this time");
+    expect(
+      collectionNotice(collectionState(fixture(), now), now, true)
+    ).toBeUndefined();
   });
 });

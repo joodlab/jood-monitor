@@ -13,14 +13,14 @@ import {
   type UsageField,
 } from "../lib/chart-scale";
 import type { ResourceSummary } from "../lib/infrastructure";
-import { observedUsage, usageName } from "../lib/metrics";
+import { usageName } from "../lib/metrics";
 import {
   type Coverage,
   historyRefetchInterval,
   podGroups,
 } from "./inspector-model";
 import { CoverageNote } from "./inspector-sections";
-import { UsageCell } from "./panel-pods";
+import { PodUsage, podUsage } from "./panel-pods";
 import { RangeSelect } from "./range-select";
 import { StatusBadge } from "./resource-status";
 
@@ -117,6 +117,7 @@ export function MetricsTab({
   onRange,
   now,
   stale,
+  frozen = false,
   profile,
   onShowPods,
   onPodHistory,
@@ -132,6 +133,8 @@ export function MetricsTab({
   onRange?: (range: string) => void;
   now: number;
   stale: boolean;
+  // A saved observation, whose collection settings may not be retained.
+  frozen?: boolean;
   profile?: string;
   onShowPods: () => void;
   onPodHistory: (pod: Entity) => void;
@@ -174,6 +177,7 @@ export function MetricsTab({
       <CoverageNote coverage={coverage} profile={profile} />
       <MemberHistoryHint onShowPods={onShowPods} pods={summary.pods.length} />
       <MemberUsage
+        frozen={frozen}
         now={now}
         onPodHistory={onPodHistory}
         pods={summary.pods}
@@ -219,12 +223,14 @@ function MemberUsage({
   pods,
   now,
   stale,
+  frozen,
   onPodHistory,
 }: {
   view: ClusterView;
   pods: readonly Entity[];
   now: number;
   stale: boolean;
+  frozen: boolean;
   onPodHistory: (pod: Entity) => void;
 }) {
   const groups = podGroups(pods, now);
@@ -253,18 +259,7 @@ function MemberUsage({
                 {pod.name}
               </span>
             </span>
-            <span className="grid shrink-0 grid-cols-[auto_auto] gap-x-4 text-right text-xs tabular-nums">
-              <UsageCell
-                field="cpu"
-                label="CPU"
-                value={observedUsage(view, pod, "cpu", now)}
-              />
-              <UsageCell
-                field="memory"
-                label="Memory"
-                value={observedUsage(view, pod, "memory", now)}
-              />
-            </span>
+            <PodUsage usage={podUsage(view, pod, now, frozen)} />
             <Button
               aria-label={`CPU and memory history for pod ${pod.name}`}
               className="h-8 focus-visible:ring-2 focus-visible:ring-ring"

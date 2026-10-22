@@ -268,6 +268,7 @@ function InspectorBody({
                 coverage={coverage}
                 cpu={cpu}
                 entity={entity}
+                frozen={frozen}
                 memory={memory}
                 now={referenceTime}
                 onPodHistory={(pod) => {

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 import { podProblem } from "../lib/attention";
+import { nodeUsageGap, podUsageText } from "../lib/collection-state";
 import {
   compactCpu,
   compactMemory,
@@ -308,6 +309,8 @@ function Usage({
   const memory = observedUsage(view, node, "memory", referenceTime);
   const cpuShare = usageShare(node, "cpu", cpu);
   const memoryShare = usageShare(node, "memory", memory);
+  // Saved observations carry their capture record, which the gap reads.
+  const gap = nodeUsageGap(view, node, referenceTime);
   const basis =
     cpuShare.basis === memoryShare.basis
       ? cpuShare.basis
@@ -321,11 +324,13 @@ function Usage({
       <div className="grid grid-cols-2 gap-4">
         <MetricBar
           detail={`${compactCpu(cpu)} / ${compactCpu(cpuShare.total)}`}
+          gap={cpu == null ? gap : undefined}
           label={usageLabel("CPU", cpuShare)}
           value={cpuShare.percent}
         />
         <MetricBar
           detail={`${compactMemory(memory)} / ${compactMemory(memoryShare.total)}`}
+          gap={memory == null ? gap : undefined}
           label={usageLabel("Memory", memoryShare)}
           value={memoryShare.percent}
         />
@@ -462,19 +467,6 @@ function Placement({
   );
 }
 
-function usageText(
-  view: ClusterView,
-  pod: Entity,
-  field: "cpu" | "memory",
-  now: number
-) {
-  const value = observedUsage(view, pod, field, now);
-  if (value == null) {
-    return "no sample";
-  }
-  return field === "cpu" ? compactCpu(value) : compactMemory(value);
-}
-
 function PodTile({
   pod,
   owner,
@@ -524,10 +516,7 @@ function PodTile({
           {pod.restarts === 1 ? "" : "s"}
         </p>
         {dimmed && <p>Does not match the current filter</p>}
-        <p className="tabular-nums">
-          CPU {usageText(view, pod, "cpu", referenceTime)} · Memory{" "}
-          {usageText(view, pod, "memory", referenceTime)}
-        </p>
+        <p className="tabular-nums">{podUsageText(view, pod, referenceTime)}</p>
       </TooltipContent>
     </Tooltip>
   );

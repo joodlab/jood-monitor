@@ -438,6 +438,8 @@ function nodeUsageColumn(field: "cpu" | "memory"): Column {
         <MetricBar
           className="w-36"
           detail={`${format(original.summary[field])} / ${format(usage.total)}`}
+          // A sample against an unknown capacity is not a missing sample.
+          gap={original.summary[field] == null ? original.gap : undefined}
           label={usage.basis}
           value={usage.percent}
         />

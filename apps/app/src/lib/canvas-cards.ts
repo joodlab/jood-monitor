@@ -310,6 +310,39 @@ export function usageValue(
   return { value: "—", title: `No fresh ${name} measurement` };
 }
 
+interface UsageLineField extends UsageValue {
+  label: string;
+  // The reason in words, for assistive technology; `title` is hover only.
+  reason?: string;
+}
+
+// A card's usage line. Both values missing for the same known reason say it
+// once, in the short form, so the reason fits the card instead of being cut
+// off twice.
+export function usageFields(
+  entity: Entity,
+  summary: ResourceSummary,
+  gap?: UsageGap
+): UsageLineField[] {
+  const cpu = usageValue(entity, summary, "cpu", gap);
+  const memory = usageValue(entity, summary, "memory", gap);
+  if (gap && summary.cpu == null && summary.memory == null && !cpu.partial) {
+    const reason = gapReason(gap);
+    return [
+      {
+        label: "CPU · Mem",
+        value: gapLabel(gap),
+        title: `No fresh CPU or memory measurement. ${reason}`,
+        reason,
+      },
+    ];
+  }
+  return [
+    { label: "CPU", ...cpu },
+    { label: "Mem", ...memory },
+  ];
+}
+
 // The attached pods sub-card: "3 pods", "2 endpoint pods" (or "2
 // selector-matched pods" without endpoint discovery) or "12 pods scheduled"
 // on a Node.

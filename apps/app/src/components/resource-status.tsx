@@ -17,6 +17,7 @@ import {
   Server,
   TriangleAlert,
 } from "lucide-react";
+import { gapLabel, gapReason, type UsageGap } from "../lib/collection-state";
 import {
   hasProblem,
   isFinished,
@@ -203,31 +204,37 @@ function statusLabel(entity: Entity) {
   return reasons.length ? `${status} · ${reasons.join(", ")}` : status;
 }
 
-// A utilisation bar. A missing value draws an empty dashed track and says so
-// instead of a zero-width bar that would read as 0%.
+// A utilisation bar. A missing value draws an empty dashed track and says so,
+// with the reason when the hub knows it, instead of a zero-width bar that
+// would read as 0%.
 export function MetricBar({
   label,
   value,
   detail,
+  gap,
   className,
 }: {
   label?: string;
   value?: number;
   detail?: string;
+  // Why the sample is missing; shown only while `value` is.
+  gap?: UsageGap;
   className?: string;
 }) {
   const missing = value == null;
+  const reason = missing ? gap : undefined;
   return (
     <div className={cn("min-w-0 space-y-1.5", className)}>
       <div className="flex items-center justify-between gap-3 text-xs">
         {label && <span className="text-muted-foreground">{label}</span>}
         <span
           className={cn(
-            "tabular-nums",
+            "text-right tabular-nums",
             missing ? "text-muted-foreground" : "font-medium"
           )}
+          title={reason && gapReason(reason)}
         >
-          {missing ? "No sample" : percentage(value)}
+          {barText(value, reason)}
         </span>
       </div>
       <div
@@ -253,6 +260,13 @@ export function MetricBar({
       )}
     </div>
   );
+}
+
+function barText(value?: number, gap?: UsageGap) {
+  if (value != null) {
+    return percentage(value);
+  }
+  return gap ? gapLabel(gap) : "No sample";
 }
 
 function barTone(value: number) {

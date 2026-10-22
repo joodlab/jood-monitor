@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { formatUsage, type UsageField } from "../lib/chart-scale";
-import { collectionState } from "../lib/collection-state";
+import { collectionState, profileKnown } from "../lib/collection-state";
 import {
   owningWorkload,
   type ResourceSummary,
@@ -76,11 +76,7 @@ export function DetailsTab({
       <ContainerResources entity={entity} />
       <ObservationFooter entity={entity} frozen={frozen} view={view} />
       <InspectorSection
-        description={
-          frozen
-            ? "Unavailable for a saved observation; collection status is not retained historically."
-            : "Profiles, per-node acknowledgments and time-boxed diagnostics for this cluster."
-        }
+        description={collectionDescription(view, frozen)}
         icon={Settings2}
         title="Collection"
       >
@@ -378,20 +374,31 @@ function nodeRows(entity: Entity): MetaRow[] {
   ];
 }
 
+// A saved observation states the settings it was captured with, if any;
+// per-node acknowledgments are live only.
 function collectionLabel(
   view: ClusterView,
   entity: Entity,
   now: number,
   frozen: boolean
 ) {
-  if (frozen) {
+  if (!profileKnown(view, frozen)) {
     return "Not retained historically";
   }
-  if (entity.kind === "Node") {
+  if (entity.kind === "Node" && !frozen) {
     return nodeProfileOutcome(view, entity.uid, now);
   }
   const state = collectionState(view, now);
   return `${state.label} profile${state.paused ? " · paused" : ""}`;
+}
+
+function collectionDescription(view: ClusterView, frozen: boolean) {
+  if (!frozen) {
+    return "Profiles, per-node acknowledgments and time-boxed diagnostics for this cluster.";
+  }
+  return profileKnown(view, frozen)
+    ? "Settings as captured with this saved observation; the controls are available on the live view."
+    : "Unavailable for a saved observation; collection status is not retained historically.";
 }
 
 function ContainerResources({ entity }: { entity: Entity }) {

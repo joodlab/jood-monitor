@@ -47,7 +47,7 @@ import {
   type StatusLine,
   type Tone,
   toneOf,
-  usageValue,
+  usageFields,
 } from "../lib/canvas-cards";
 import { type UsageGap, usageGap } from "../lib/collection-state";
 import {
@@ -270,10 +270,7 @@ function UsageLine({
       </p>
     );
   }
-  const fields = [
-    { label: "CPU", ...usageValue(entity, summary, "cpu", gap) },
-    { label: "Mem", ...usageValue(entity, summary, "memory", gap) },
-  ];
+  const fields = usageFields(entity, summary, gap);
   return (
     <p className="flex min-w-0 items-center gap-3 text-muted-foreground text-xs tabular-nums">
       {fields.map((field) => (
@@ -287,6 +284,7 @@ function UsageLine({
           >
             {field.value}
           </span>
+          {field.reason && <span className="sr-only">. {field.reason}</span>}
         </span>
       ))}
       {!!summary.restarts && (

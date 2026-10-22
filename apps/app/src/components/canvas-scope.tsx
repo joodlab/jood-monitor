@@ -186,8 +186,8 @@ function CanvasSearch({
 }
 
 // Collection that is not running as configured: paused, or a Diagnostic
-// with its countdown. Named per cluster when the canvas shows several. The
-// display clock is zero until hydration, so the chip waits for it.
+// with its countdown (live only). Named per cluster when the canvas shows
+// several. The display clock is zero until hydration, so the chip waits.
 function CollectionChips({ views }: { views: ClusterView[] }) {
   const { referenceTime, frozen } = useDisplay();
   if (!referenceTime) {
@@ -198,7 +198,7 @@ function CollectionChips({ views }: { views: ClusterView[] }) {
       return [];
     }
     const state = collectionState(view, referenceTime);
-    const text = collectionNotice(state, referenceTime);
+    const text = collectionNotice(state, referenceTime, frozen);
     return text
       ? [
           {

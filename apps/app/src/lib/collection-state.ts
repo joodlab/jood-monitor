@@ -5,9 +5,9 @@ import {
   nodeNamer,
   profileLabel,
 } from "../components/collection-model";
-import { isFinished } from "./infrastructure";
+import { compactCpu, compactMemory, isFinished } from "./infrastructure";
 import { minutesLeft } from "./install-enrollment";
-import { freshness } from "./metrics";
+import { freshness, observedUsage } from "./metrics";
 
 // What the hub knows about collection, and why it expects no usage sample
 // for a resource. A gap explains a missing value; it never stands in for one,
@@ -121,6 +121,26 @@ export function podUsageGap(
     : undefined;
 }
 
+// One line for a pod's current usage: both values, or the reason the hub
+// knows for neither. A missing value without a reason says so, never zero.
+export function podUsageText(
+  view: ClusterView,
+  pod: Entity,
+  now: number,
+  frozen = false
+) {
+  const cpu = observedUsage(view, pod, "cpu", now);
+  const memory = observedUsage(view, pod, "memory", now);
+  const gap =
+    cpu == null && memory == null
+      ? podUsageGap(view, pod, now, frozen)
+      : undefined;
+  if (gap) {
+    return `CPU · Memory ${gapLabel(gap)}`;
+  }
+  return `CPU ${cpu == null ? "no sample" : compactCpu(cpu)} · Memory ${memory == null ? "no sample" : compactMemory(memory)}`;
+}
+
 // Every profile samples nodes, so only a pause or a Metrics API outage
 // explains a missing node sample.
 export function nodeUsageGap(
@@ -213,8 +233,16 @@ export function diagnosticText(
 }
 
 // A short state for compact headers: "Paused", "Diagnostic on …", both, or
-// nothing while collection runs as configured.
-export function collectionNotice(state: CollectionState, now: number) {
+// nothing while collection runs as configured. A saved observation states a
+// pause as of its time and has no countdown to show.
+export function collectionNotice(
+  state: CollectionState,
+  now: number,
+  frozen = false
+) {
+  if (frozen) {
+    return state.paused ? "Paused at this time" : undefined;
+  }
   const parts = [
     state.paused ? "Paused" : undefined,
     state.diagnostic ? diagnosticText(state.diagnostic, now) : undefined,
