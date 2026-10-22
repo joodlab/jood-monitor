@@ -310,14 +310,15 @@ describe("problems-only topology", () => {
       (item) => item.uid === "cart"
     ) as Entity;
     expect(itemProblem({ view, entity: cart }, now)).toBe(false);
-    // The card still never calls it healthy beside the failed pod.
+    // The card still never calls it healthy beside the failed pod, and names
+    // it as history rather than as a failing pod.
     const status = cardStatus(cart, summarize(view, cart, now), {
       now,
       problem: false,
       stale: false,
     });
     expect(status.tone).toBe("neutral");
-    expect(status.text).toBe("2/2 ready · Failed · 1 of 3 pods");
+    expect(status.text).toBe("2/2 ready · 1 finished with failures");
   });
 
   it("seeds a ready node whose network is unavailable", () => {

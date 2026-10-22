@@ -9,7 +9,6 @@ import {
   clusterStatus,
 } from "../lib/attention";
 import { collectionState } from "../lib/collection-state";
-import { percent } from "../lib/infrastructure";
 import { nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
 import { MetricBar } from "./resource-status";
@@ -19,6 +18,8 @@ import { Widget } from "./widget-card";
 import {
   clusterCurrent,
   fleetTiles,
+  fleetUsage,
+  fleetUsageLabel,
   nodeCounts,
   podCounts,
   type StatTile,
@@ -200,6 +201,10 @@ function ClusterRow({
   const { referenceTime, frozen } = useDisplay();
   const summary = attentionSummary(attention);
   const totals = nodeTotals([view], referenceTime);
+  // Against allocatable, as on the server cards; the label names capacity
+  // wherever it stands in.
+  const cpu = fleetUsage(totals, "cpu");
+  const memory = fleetUsage(totals, "memory");
   const status = clusterStatus(view, summary, referenceTime, frozen);
   const current = clusterCurrent(view, referenceTime, frozen);
   const collection = collectionState(view, referenceTime);
@@ -255,13 +260,10 @@ function ClusterRow({
         </div>
       </dl>
       <div className="grid grid-cols-2 gap-3">
+        <MetricBar label={fleetUsageLabel("CPU", cpu)} value={cpu.percent} />
         <MetricBar
-          label="CPU"
-          value={percent(totals.usedCpu, totals.coveredCpuCapacity)}
-        />
-        <MetricBar
-          label="Memory"
-          value={percent(totals.usedMemory, totals.coveredMemoryCapacity)}
+          label={fleetUsageLabel("Memory", memory)}
+          value={memory.percent}
         />
       </div>
       <div className="flex gap-2 lg:flex-col">
@@ -308,7 +310,7 @@ export function ClustersWidget({
   return (
     <Widget
       className={className}
-      description="Observer and inventory freshness, readiness and measured usage per cluster."
+      description="Observer and inventory freshness, readiness and measured usage per cluster. Usage is against allocatable unless marked capacity."
       title={
         <>
           Clusters

@@ -1,7 +1,14 @@
-import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import { attentionItems } from "../lib/attention";
-import { fleetTiles, scopeHealth, workspaceCards } from "./widget-model";
+import { nodeTotals } from "../lib/metrics";
+import {
+  fleetTiles,
+  fleetUsage,
+  fleetUsageLabel,
+  scopeHealth,
+  workspaceCards,
+} from "./widget-model";
 
 const now = Date.parse("2026-10-22T12:00:00Z");
 const fresh = new Date(now - 10_000).toISOString();
@@ -37,7 +44,8 @@ function view(
     },
     metrics: [],
     profile: { name: "basic", revision: 1, nodeUids: [], namespaces: [] },
-    heartbeat: { nodes: [] },
+    // The contract always carries the observer's capabilities.
+    heartbeat: { nodes: [], capabilities: [] },
   } as unknown as ClusterView;
 }
 
@@ -143,6 +151,118 @@ describe("fleet tiles", () => {
       value: "1",
       severity: "critical",
       tone: "critical",
+    });
+  });
+});
+
+describe("fleet usage", () => {
+  const GiB = 1024 ** 3;
+  const sampled = new Date(now - 20_000).toISOString();
+  function sample(uid: string, field: "cpu" | "memory", value: number) {
+    return {
+      id: 1,
+      clusterId: "a",
+      entityUid: uid,
+      name: `k8s.node.${field}.usage`,
+      value: String(value),
+      sourceTime: sampled,
+      receivedAt: sampled,
+      timeUnixNano: String(BigInt(Date.parse(sampled)) * 1_000_000n),
+    } as Metric;
+  }
+  // Two measured servers and one without a sample; capacity also counts
+  // system reserves, so the shares are judged against allocatable.
+  function fleet(allocatableB: { cpu?: number; memory?: number }) {
+    const cluster = view("a", "w", [
+      entity("n1", "Node", {
+        status: "True",
+        capacityCpu: 4,
+        allocatableCpu: 3.5,
+        capacityMemory: 16 * GiB,
+        allocatableMemory: 14 * GiB,
+      }),
+      entity("n2", "Node", {
+        status: "True",
+        capacityCpu: 4,
+        allocatableCpu: allocatableB.cpu,
+        capacityMemory: 16 * GiB,
+        allocatableMemory: allocatableB.memory,
+      }),
+      entity("n3", "Node", { status: "True", capacityCpu: 4 }),
+    ]);
+    cluster.metrics = [
+      sample("n1", "cpu", 1.75),
+      sample("n1", "memory", 7 * GiB),
+      sample("n2", "cpu", 1.75),
+      sample("n2", "memory", 7 * GiB),
+    ];
+    return cluster;
+  }
+  const tiles = (cluster: ClusterView) =>
+    Object.fromEntries(
+      fleetTiles([cluster], attentionItems([cluster], now), now, false).map(
+        (tile) => [tile.id, tile]
+      )
+    );
+
+  it("judges measured usage against allocatable and says so", () => {
+    const cluster = fleet({ cpu: 3.5, memory: 14 * GiB });
+    const totals = nodeTotals([cluster], now);
+    expect(totals.cpuBasis).toEqual({ total: 7, capacityStandIns: 0 });
+    expect(fleetUsage(totals, "cpu")).toEqual({
+      basis: "allocatable",
+      used: 3.5,
+      total: 7,
+      percent: 50,
+    });
+    const byId = tiles(cluster);
+    // 3.5 of 8 cores of capacity would read 43.8%.
+    expect(byId.cpu).toMatchObject({
+      label: "CPU used",
+      value: "50.0%",
+      detail: "3.50 cores of 7.00 cores allocatable · 2 of 3 servers",
+    });
+    expect(byId.memory).toMatchObject({
+      value: "50.0%",
+      detail: "14.0 GiB of 28.0 GiB allocatable · 2 of 3 servers",
+    });
+    expect(fleetUsageLabel("CPU", fleetUsage(totals, "cpu"))).toBe("CPU");
+  });
+
+  it("names capacity wherever it stands in for unreported allocatable", () => {
+    const mixed = nodeTotals([fleet({ memory: 14 * GiB })], now);
+    expect(mixed.cpuBasis).toEqual({ total: 7.5, capacityStandIns: 1 });
+    const cpu = fleetUsage(mixed, "cpu");
+    expect(cpu).toMatchObject({ basis: "mixed", total: 7.5 });
+    expect(fleetUsageLabel("CPU", cpu)).toBe("CPU (part capacity)");
+    expect(tiles(fleet({ memory: 14 * GiB })).cpu.detail).toBe(
+      "3.50 cores of 7.50 cores allocatable or capacity · 2 of 3 servers"
+    );
+    // Allocatable reported as 0 is not a usable share either.
+    const cluster = fleet({ cpu: 0, memory: 14 * GiB });
+    cluster.inventory.entities[0] = {
+      ...cluster.inventory.entities[0],
+      allocatableCpu: null,
+    };
+    const capacity = fleetUsage(nodeTotals([cluster], now), "cpu");
+    expect(capacity).toMatchObject({ basis: "capacity", total: 8 });
+    expect(fleetUsageLabel("CPU", capacity)).toBe("CPU (capacity)");
+  });
+
+  it("keeps usage unknown, never 0%, without a fresh sample", () => {
+    const cluster = fleet({ cpu: 3.5, memory: 14 * GiB });
+    cluster.metrics = [];
+    const totals = nodeTotals([cluster], now);
+    expect(totals.cpuBasis).toBeUndefined();
+    expect(fleetUsage(totals, "memory")).toEqual({
+      basis: "allocatable",
+      used: undefined,
+      total: undefined,
+      percent: undefined,
+    });
+    expect(tiles(cluster).memory).toMatchObject({
+      value: "—",
+      detail: "No fresh measurements",
     });
   });
 });

@@ -18,13 +18,13 @@ import {
   Plus,
   TriangleAlert,
 } from "lucide-react";
-import { observationCoverage } from "../lib/attention";
-import { freshness, inventoryFreshness } from "../lib/metrics";
 import {
-  emptyTopology,
-  type InventoryCoverage,
-  type ServiceGraph,
-} from "../lib/service-graph";
+  type ClusterCoverage,
+  coverageNotes,
+  inventoryCoverage as coverageRule,
+  silentClusters as silentRule,
+} from "../lib/coverage";
+import { emptyTopology, type ServiceGraph } from "../lib/service-graph";
 import { EmptyState } from "./page";
 
 // Why the canvas is empty, in words that never turn missing or stale
@@ -34,59 +34,13 @@ function counted(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export interface CanvasCoverage extends InventoryCoverage {
-  // Of the aged clusters, those whose inventory is fresh but whose live
-  // observer heartbeat is not (stale, ahead of the hub clock or missing).
-  observerAged: number;
-}
-
-// What the inventory in scope can vouch for: clusters with none at all, and
-// clusters whose last inventory is no longer fresh. Live, a heartbeat that
-// is not fresh ages the inventory too: the observer may have stopped before
-// its last inventory went stale, so it cannot vouch for an all clear beside
-// the stale-observer problem. Those are counted apart so the copy names the
-// heartbeat, not the inventory, as the reason.
-export function inventoryCoverage(
-  views: ClusterView[],
-  now: number,
-  frozen = false
-): CanvasCoverage {
-  const coverage = observationCoverage(views, now);
-  let aged = 0;
-  let observerAged = 0;
-  for (const view of views) {
-    const inventory = inventoryFreshness(view.inventory.sourceTime, now);
-    if (inventory === "unknown") {
-      continue;
-    }
-    if (inventory !== "fresh") {
-      aged++;
-    } else if (
-      !frozen &&
-      freshness(view.cluster.heartbeatAt, now) !== "fresh"
-    ) {
-      aged++;
-      observerAged++;
-    }
-  }
-  return { ...coverage, aged, observerAged };
-}
-
-// Registered clusters that have sent nothing: no observer heartbeat and no
-// inventory. Saved observations keep no heartbeats, so only the live view
-// can name them.
-export function silentClusters(views: ClusterView[], frozen: boolean) {
-  return frozen
-    ? []
-    : views.filter(
-        (view) =>
-          freshness(view.cluster.heartbeatAt) === "unknown" &&
-          inventoryFreshness(view.inventory.sourceTime) === "unknown"
-      );
-}
+// The coverage rule lives in lib/coverage, shared with the Servers view so
+// both say the same thing about an all clear; the canvas reads it here.
+export const inventoryCoverage = coverageRule;
+export const silentClusters = silentRule;
 
 interface EmptyProps {
-  coverage: CanvasCoverage;
+  coverage: ClusterCoverage;
   frozen: boolean;
   graph: ServiceGraph;
   namespace: string;
@@ -104,31 +58,6 @@ interface EmptyCopy {
   description: string;
   icon: LucideIcon;
   title: string;
-}
-
-function coverageNotes({ coverage, frozen }: EmptyProps) {
-  const notes: string[] = [];
-  if (coverage.missing) {
-    notes.push(
-      `${coverage.missing} of ${counted(coverage.total, "cluster")} ${frozen ? "have no saved observation at this time" : "have not reported inventory"}, so their problems cannot be evaluated.`
-    );
-  }
-  const staleInventory = coverage.aged - coverage.observerAged;
-  if (staleInventory) {
-    notes.push(
-      coverage.total === 1
-        ? "The inventory is stale, so the current state is unknown."
-        : `${staleInventory} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
-    );
-  }
-  if (coverage.observerAged) {
-    notes.push(
-      coverage.total === 1
-        ? "The observer heartbeat is not current, so the current state is unknown."
-        : `${coverage.observerAged} of ${counted(coverage.total, "cluster")} have no current observer heartbeat, so their current state is unknown.`
-    );
-  }
-  return notes.join(" ");
 }
 
 function unobservedText(frozen: boolean) {
@@ -155,7 +84,7 @@ function hiddenCopy(props: EmptyProps): EmptyCopy {
       description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.${history}`,
     };
   }
-  const notes = coverageNotes(props);
+  const notes = coverageNotes(props.coverage, props.frozen);
   return {
     icon: TriangleAlert,
     title: "Problems are in system namespaces",
@@ -215,7 +144,7 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
         title: props.coverage.aged
           ? "No live problems in the last inventory"
           : "No live problems in the observed clusters",
-        description: `${coverageNotes(props)} ${problemList}${history}`,
+        description: `${coverageNotes(props.coverage, frozen)} ${problemList}${history}`,
       };
     case "healthy":
       return {

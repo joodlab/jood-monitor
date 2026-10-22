@@ -3,7 +3,7 @@ import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import { ChevronRight, CircleDashed } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { podProblem } from "../lib/attention";
+import { livePodProblem } from "../lib/attention";
 import { formatUsage } from "../lib/chart-scale";
 import { gapLabel, gapReason, podUsageGap } from "../lib/collection-state";
 import {
@@ -261,9 +261,11 @@ function PodRow({
       >
         <span className="min-w-0 flex-1 space-y-1">
           <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+            {/* Finished pods, failed ones included, are history in their own
+                group, never a warning beside the live problems. */}
             <StatusBadge
               entity={pod}
-              problem={podProblem(pod, now)}
+              problem={livePodProblem(pod, now)}
               stale={stale}
             />
             <span className="min-w-0 max-w-full truncate font-medium font-mono text-sm">

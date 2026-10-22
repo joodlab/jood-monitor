@@ -1,8 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem } from "./attention";
+import { liveNodeProblem, livePodProblem } from "./attention";
+import {
+  type ClusterCoverage,
+  fullyCovered,
+  inventoryCoverage,
+  silentClusters,
+} from "./coverage";
 import {
   findEntity,
-  hasProblem,
   isFinished,
   isSystem,
   matchesText,
@@ -16,7 +21,6 @@ import {
 import {
   allNamespacesPatch,
   includesSystem,
-  inventoryStale,
   otherNamespacesLabel,
   type ResourceFilter,
 } from "./resource-table";
@@ -103,7 +107,9 @@ function card(
             .map((pod) => pod.uid)
         )
       : undefined,
-    problem: hasProblem(node),
+    // The badge's node rule: not ready, a reported condition, or memory near
+    // full on a fresh sample.
+    problem: liveNodeProblem(view, node, now),
   };
 }
 
@@ -267,24 +273,56 @@ export function placementHint(
   }
 }
 
+// Why the clusters in scope cannot vouch for an all clear: the shared
+// coverage rule (inventory missing or stale, or live, an observer heartbeat
+// that is not current) and the registered clusters that never reported.
+export interface CoverageGap {
+  coverage: ClusterCoverage;
+  // A saved observation: missing clusters had nothing archived at its time.
+  frozen: boolean;
+  // Names of registered clusters with no heartbeat and no inventory.
+  silent: string[];
+}
+
 export type EmptyServers =
   // No Node in scope: neither placement nor problems can be evaluated.
   | { kind: "unobserved" }
-  // "Problems only" found problem pods, but only in hidden system namespaces.
-  | { hint: PlacementHint; kind: "hiddenProblems" }
-  // No problems, but in an inventory that is not current.
-  | { kind: "staleHealthy" }
+  // "Problems only" found problem pods, but only in hidden system namespaces;
+  // `gap` says why the rest of the scope cannot be vouched for, if it can't.
+  | { gap?: CoverageGap; hint: PlacementHint; kind: "hiddenProblems" }
+  // No problems in what was observed, but not every cluster is observed and
+  // current, so the attention model may still count a problem: never green.
+  | ({ kind: "staleHealthy" } & CoverageGap)
   | { kind: "healthy" }
   | { hint?: PlacementHint; kind: "noMatch" };
 
+function coverageGap(
+  views: ClusterView[],
+  now: number,
+  frozen: boolean
+): CoverageGap | undefined {
+  const coverage = inventoryCoverage(views, now, frozen);
+  if (fullyCovered(coverage)) {
+    return;
+  }
+  return {
+    coverage,
+    frozen,
+    silent: silentClusters(views, frozen).map((view) => view.cluster.name),
+  };
+}
+
 // What an empty Servers view can truthfully say. "Problems only" without any
 // other pod scope claims health only when servers are observed, every
-// inventory is current and no problem pod is hidden in a system namespace.
+// cluster has current inventory (and, live, a current observer heartbeat),
+// and no problem pod is hidden in a system namespace. Saved observations
+// keep no heartbeats, so a frozen view judges inventory alone.
 export function emptyServers(
   views: ClusterView[],
   filter: ServerFilter,
   hint: PlacementHint | undefined,
-  now: number
+  now: number,
+  frozen = false
 ): EmptyServers {
   const observed = views.some((view) =>
     view.inventory.entities.some((entity) => entity.kind === "Node")
@@ -295,12 +333,11 @@ export function emptyServers(
   if (!(filter.problems && !filter.q && filter.namespace === "all")) {
     return { kind: "noMatch", hint };
   }
+  const gap = coverageGap(views, now, frozen);
   if (hint?.patch.system) {
-    return { kind: "hiddenProblems", hint };
+    return { kind: "hiddenProblems", hint, gap };
   }
-  return views.some((view) => inventoryStale(view, now))
-    ? { kind: "staleHealthy" }
-    : { kind: "healthy" };
+  return gap ? { kind: "staleHealthy", ...gap } : { kind: "healthy" };
 }
 
 // A pod tile's accessible name carries everything its colour, mark and

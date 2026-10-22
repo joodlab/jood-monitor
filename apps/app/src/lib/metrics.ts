@@ -138,6 +138,29 @@ export function observedUsage(
     ? value(metric)
     : undefined;
 }
+// What measured usage is judged against: allocatable, the share pods may
+// use. Capacity also counts system reserves, so it stands in only where a
+// node does not report allocatable, and is counted so callers can say so.
+// Absent without a measured node, so it never reads as a total of 0.
+function usageBasis(measured: Entity[], field: "cpu" | "memory") {
+  if (!measured.length) {
+    return;
+  }
+  const basis = { total: 0, capacityStandIns: 0 };
+  for (const node of measured) {
+    const allocatable =
+      field === "cpu" ? node.allocatableCpu : node.allocatableMemory;
+    if (allocatable != null && allocatable > 0) {
+      basis.total += allocatable;
+    } else {
+      basis.total +=
+        (field === "cpu" ? node.capacityCpu : node.capacityMemory) ?? 0;
+      basis.capacityStandIns++;
+    }
+  }
+  return basis;
+}
+
 export function nodeTotals(views: ClusterView[], now = Date.now()) {
   let capacityCpu = 0,
     capacityMemory = 0,
@@ -147,6 +170,8 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
     coveredCpuCapacity = 0,
     coveredMemoryCapacity = 0;
   const nodes: Entity[] = [];
+  // Nodes with fresh CPU and memory samples from one round.
+  const measured: Entity[] = [];
   for (const view of views) {
     const anchor = Math.max(
       0,
@@ -185,6 +210,7 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         covered++;
         coveredCpuCapacity += node.capacityCpu;
         coveredMemoryCapacity += node.capacityMemory;
+        measured.push(node);
         usedCpu += Number(cpu.value);
         usedMemory += Number(mem.value);
       }
@@ -195,6 +221,9 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
     covered,
     coveredCpuCapacity: covered ? coveredCpuCapacity : undefined,
     coveredMemoryCapacity: covered ? coveredMemoryCapacity : undefined,
+    // Allocatable of the measured nodes, capacity standing in where needed.
+    cpuBasis: usageBasis(measured, "cpu"),
+    memoryBasis: usageBasis(measured, "memory"),
     capacityCpu:
       nodes.length && nodes.every((node) => node.capacityCpu != null)
         ? capacityCpu

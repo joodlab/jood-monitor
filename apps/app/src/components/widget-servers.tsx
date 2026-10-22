@@ -1,7 +1,8 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { useDisplay } from "../hooks/display";
+import { liveNodeProblem } from "../lib/attention";
 import { nodeUsageGap } from "../lib/collection-state";
-import { compactCpu, compactMemory, hasProblem } from "../lib/infrastructure";
+import { compactCpu, compactMemory } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
 import {
   type CapacityField,
@@ -27,6 +28,7 @@ const LEGEND =
 
 interface ServerRow {
   node: Entity;
+  // The badge's node rule, so memory near full sorts first and warns here.
   problem: boolean;
   stale: boolean;
   view: ClusterView;
@@ -38,7 +40,12 @@ function serverRows(views: ClusterView[], now: number): ServerRow[] {
       const stale = inventoryStale(view, now);
       return view.inventory.entities
         .filter((entity) => entity.kind === "Node")
-        .map((node) => ({ view, node, stale, problem: hasProblem(node) }));
+        .map((node) => ({
+          view,
+          node,
+          stale,
+          problem: liveNodeProblem(view, node, now),
+        }));
     })
     .sort(
       (a, b) =>
@@ -109,7 +116,11 @@ function Row({
             {node.name}
           </span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-            <StatusBadge entity={node} stale={row.stale} />
+            <StatusBadge
+              entity={node}
+              problem={row.problem}
+              stale={row.stale}
+            />
             {showCluster && (
               <span className="truncate">{view.cluster.name}</span>
             )}

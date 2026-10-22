@@ -1,14 +1,18 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
-import { attentionItems } from "./attention";
+import { attentionItems, attentionSummary, liveNodeProblem } from "./attention";
 import { compactCpu, compactMemory } from "./infrastructure";
 import {
+  emptyServers,
   nodeRequests,
+  placementHint,
   podFinished,
   requestReading,
+  serverPlacement,
   usageLabel,
   usageShare,
 } from "./resource-servers";
+import { resourceRows } from "./resource-table";
 
 const now = Date.parse("2026-10-22T12:00:00Z");
 const fresh = new Date(now - 10_000).toISOString();
@@ -361,5 +365,135 @@ describe("memory attention", () => {
   it("names capacity when allocatable is not reported", () => {
     const server = node({ capacityMemory: 10 * GiB, allocatableMemory: null });
     expect(alert(server, 9.5 * GiB)).toEqual(["Memory at 95.0% of capacity"]);
+  });
+});
+
+const problemsOnly = { q: "", namespace: "all", system: false, problems: true };
+
+describe("node problem rule", () => {
+  it("flags a Ready node with memory near full wherever nodes are flagged", () => {
+    // Ready, no reported condition, a fresh sample at 95% of allocatable.
+    const server = node({
+      allocatableMemory: 8 * GiB,
+      capacityMemory: 9 * GiB,
+    });
+    const cluster = view(
+      [server, pod("app")],
+      [memorySample(server.uid, 7.6 * GiB)]
+    );
+    // The badge counts it as a warning...
+    expect(attentionSummary(attentionItems([cluster], now)).actionable).toBe(1);
+    expect(liveNodeProblem(cluster, server, now)).toBe(true);
+    // ...Resources lists it under Problems only...
+    const rows = resourceRows([cluster], problemsOnly, now, ["Node"]);
+    expect(rows.map((row) => [row.entity.uid, row.problem])).toEqual([
+      ["node-a", true],
+    ]);
+    // ...and Servers shows it as a problem server instead of an all clear.
+    const placement = serverPlacement([cluster], problemsOnly, now);
+    expect(placement.basis).toBe("pods");
+    expect(
+      placement.servers.map((item) => [item.node.uid, item.problem])
+    ).toEqual([["node-a", true]]);
+  });
+
+  it("leaves a node with room, or without a fresh sample, out of Problems only", () => {
+    const roomy = node({ allocatableMemory: 8 * GiB });
+    const measured = view(
+      [roomy, pod("app")],
+      [memorySample(roomy.uid, 4 * GiB)]
+    );
+    expect(resourceRows([measured], problemsOnly, now, ["Node"])).toEqual([]);
+    expect(serverPlacement([measured], problemsOnly, now).basis).toBe("none");
+    // A missing sample is a gap, never a problem.
+    const unmeasured = node({ allocatableMemory: 8 * GiB });
+    expect(liveNodeProblem(view([unmeasured]), unmeasured, now)).toBe(false);
+  });
+});
+
+describe("an empty Servers view's all clear", () => {
+  const ago = (seconds: number) => new Date(now - seconds * 1000).toISOString();
+  // A Ready node and a ready pod, so Problems only finds nothing.
+  function quiet(
+    heartbeatAt: string | null,
+    sourceTime: string,
+    name = "synthetic-cluster"
+  ) {
+    const cluster = view([node(), pod("app")]);
+    cluster.cluster = { ...cluster.cluster, id: name, name, heartbeatAt };
+    cluster.inventory = { ...cluster.inventory, sourceTime };
+    return cluster;
+  }
+  const empty = (views: ClusterView[], frozen = false) =>
+    emptyServers(
+      views,
+      problemsOnly,
+      placementHint(views, problemsOnly, now),
+      now,
+      frozen
+    );
+
+  it("is green only with current inventory and a current observer heartbeat", () => {
+    expect(empty([quiet(ago(10), ago(30))]).kind).toBe("healthy");
+  });
+
+  it("names a stale observer heartbeat beside fresh inventory", () => {
+    // Inventory 150 s old is inside its 240 s budget; the heartbeat's is 90 s.
+    const views = [quiet(ago(150), ago(150))];
+    expect(attentionItems(views, now)[0]).toMatchObject({
+      severity: "critical",
+      title: "Observer heartbeat is stale",
+    });
+    expect(empty(views)).toMatchObject({
+      kind: "staleHealthy",
+      coverage: { aged: 1, observerAged: 1, missing: 0 },
+      silent: [],
+    });
+    // A saved observation keeps no heartbeats: its inventory alone decides.
+    expect(empty(views, true).kind).toBe("healthy");
+  });
+
+  it("names a registered cluster that has never reported", () => {
+    const silent = quiet(null, "", "synthetic-new");
+    silent.inventory.entities = [];
+    const views = [quiet(ago(10), ago(30)), silent];
+    expect(empty(views)).toMatchObject({
+      kind: "staleHealthy",
+      coverage: { missing: 1, aged: 0 },
+      silent: ["synthetic-new"],
+    });
+    // Saved, it had nothing archived at this time: still no all clear.
+    expect(empty(views, true)).toMatchObject({
+      kind: "staleHealthy",
+      coverage: { missing: 1 },
+      silent: [],
+    });
+  });
+
+  it("keeps the coverage caveat beside problems hidden in system namespaces", () => {
+    const cluster = quiet(ago(150), ago(150));
+    cluster.inventory.entities.push(
+      pod("dns", {
+        namespace: "kube-system",
+        status: "CrashLoopBackOff",
+        ready: 0,
+      })
+    );
+    expect(empty([cluster])).toMatchObject({
+      kind: "hiddenProblems",
+      gap: { coverage: { observerAged: 1 } },
+    });
+    const current = quiet(ago(10), ago(30));
+    current.inventory.entities.push(
+      pod("dns", {
+        namespace: "kube-system",
+        status: "CrashLoopBackOff",
+        ready: 0,
+      })
+    );
+    expect(empty([current])).toMatchObject({
+      kind: "hiddenProblems",
+      gap: undefined,
+    });
   });
 });

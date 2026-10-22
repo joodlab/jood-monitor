@@ -1,4 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import { metricsApiUnavailable } from "./collection-state";
 import {
   isFinished,
   nodeConditionProblems,
@@ -250,8 +251,14 @@ function metadata(
 }
 
 // Why every node lacks usage, said once for the cluster instead of once per
-// node. Info only: these explain missing samples, they are not problems.
-function collectionNotes(view: ClusterView, frozen: boolean): Attention[] {
+// node. Info only: these explain missing samples, they are not problems. The
+// Metrics API report counts only from a fresh heartbeat, as the usage gaps
+// read it, so an old report never explains today's missing samples.
+function collectionNotes(
+  view: ClusterView,
+  now: number,
+  frozen: boolean
+): Attention[] {
   const notes: { key: string; title: string }[] = [];
   if (view.profile.paused && metadata(view, frozen, "profile")) {
     notes.push({
@@ -259,10 +266,7 @@ function collectionNotes(view: ClusterView, frozen: boolean): Attention[] {
       title: "Collection is paused by an operator; history is preserved",
     });
   }
-  if (
-    (view.heartbeat.capabilities ?? []).includes("metrics_api_unavailable") &&
-    metadata(view, frozen, "heartbeat")
-  ) {
+  if (metricsApiUnavailable(view, now, frozen)) {
     notes.push({
       key: "metrics:unavailable",
       title:
@@ -357,6 +361,13 @@ export function nodeProblem(view: ClusterView, node: Entity, now: number) {
   return nodeItems(view, node, now, false).find(
     (item) => item.severity !== "info"
   );
+}
+
+// Whether a node needs attention now, by the badge's rule. Every surface
+// that flags nodes uses this rather than the Ready condition alone, which
+// misses memory near full.
+export function liveNodeProblem(view: ClusterView, node: Entity, now: number) {
+  return nodeProblem(view, node, now) !== undefined;
 }
 
 function podItem(view: ClusterView, pod: Entity, terminal: boolean): Attention {
@@ -472,7 +483,7 @@ export function attentionItems(
     const observerHealthy = !cluster.some(
       (item) => item.severity !== "info" || !view.cluster.heartbeatAt
     );
-    const notes = collectionNotes(view, frozen);
+    const notes = collectionNotes(view, now, frozen);
     items.push(...notes);
     // A cluster-wide reason for missing usage replaces per-node rows.
     const measurable = (frozen || observerHealthy) && !notes.length;

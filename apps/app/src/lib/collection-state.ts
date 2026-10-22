@@ -77,7 +77,7 @@ export function profileKnown(view: ClusterView, frozen = false) {
 
 // The observer reports a Metrics API failure on the heartbeat of a failed
 // sampling round; a stale heartbeat no longer says anything current.
-function metricsApiUnavailable(
+export function metricsApiUnavailable(
   view: ClusterView,
   now: number,
   frozen: boolean

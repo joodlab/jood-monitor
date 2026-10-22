@@ -16,8 +16,10 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useMemo } from "react";
+import { useDisplay } from "../hooks/display";
 import { livePodProblem } from "../lib/attention";
 import { nodeUsageGap, podUsageText } from "../lib/collection-state";
+import { coverageNotes, silentText } from "../lib/coverage";
 import {
   compactCpu,
   compactMemory,
@@ -26,6 +28,7 @@ import {
 } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
 import {
+  type CoverageGap,
   type EmptyServers,
   emptyServers,
   groupByOwner,
@@ -71,6 +74,9 @@ export function Servers({
   problems?: boolean;
   onRelax?: (patch: Partial<ServerFilter>) => void;
 }) {
+  // A saved observation keeps no heartbeats, so its all clear is judged on
+  // inventory alone, as on the canvas.
+  const { frozen } = useDisplay();
   const filter = useMemo<ServerFilter>(
     () => ({ q: search, namespace, system: showSystem, problems }),
     [search, namespace, showSystem, problems]
@@ -95,7 +101,7 @@ export function Servers({
         {notice}
         <NoServers
           onRelax={onRelax}
-          state={emptyServers(views, filter, hint, referenceTime)}
+          state={emptyServers(views, filter, hint, referenceTime, frozen)}
         />
       </div>
     );
@@ -281,7 +287,7 @@ function ServerTile({
         />
       </div>
       <div className="flex items-center justify-between gap-3 border-t pt-3">
-        <StatusLine entity={node} stale={stale} />
+        <StatusLine entity={node} problem={server.problem} stale={stale} />
         <span
           className="relative z-10 min-w-0 truncate font-mono text-muted-foreground text-xs"
           title={addresses || undefined}
@@ -528,6 +534,21 @@ interface EmptyCopy {
   title: string;
 }
 
+// Why the clusters in scope cannot vouch for an all clear, in the canvas's
+// words: missing or stale inventory, an observer heartbeat that is not
+// current, and the registered clusters that never reported, by name.
+function gapText(gap: CoverageGap) {
+  return [coverageNotes(gap.coverage, gap.frozen), silentText(gap.silent)]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function gapScope(gap: CoverageGap) {
+  return gap.coverage.aged
+    ? "in the last inventory"
+    : "in the observed clusters";
+}
+
 function emptyCopy(state: EmptyServers): EmptyCopy {
   switch (state.kind) {
     case "unobserved":
@@ -541,14 +562,17 @@ function emptyCopy(state: EmptyServers): EmptyCopy {
       return {
         icon: TriangleAlert,
         title: "Problems are in system namespaces",
-        description: `${plural(state.hint.count, "problem pod")} in system namespaces ${state.hint.count === 1 ? "is" : "are"} hidden by the current filters. No other pod or server needs attention.`,
+        description: `${plural(state.hint.count, "problem pod")} in system namespaces ${state.hint.count === 1 ? "is" : "are"} hidden by the current filters. ${
+          state.gap
+            ? `${gapText(state.gap)} No other pod or server needs attention ${gapScope(state.gap)}.`
+            : "No other pod or server needs attention."
+        }`,
       };
     case "staleHealthy":
       return {
         icon: Clock,
-        title: "No problems in the last inventory",
-        description:
-          "The inventory is stale, so the current state is unknown. No failing pods or unready servers in the last inventory.",
+        title: `No problems ${gapScope(state)}`,
+        description: `${gapText(state)} No failing pods or unready servers ${gapScope(state)}.`,
       };
     case "healthy":
       return {

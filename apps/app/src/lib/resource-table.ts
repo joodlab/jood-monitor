@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem } from "./attention";
+import { liveNodeProblem, livePodProblem } from "./attention";
 import {
   gapLabel,
   gapReason,
@@ -147,11 +147,19 @@ export function includesSystem(
   return filter.system || isSystemNamespace(filter.namespace);
 }
 
-function rowProblem(entity: Entity, summary: ResourceSummary, now: number) {
+function rowProblem(
+  { view, entity }: Candidate,
+  summary: ResourceSummary,
+  now: number
+) {
   if (entity.kind === "Pod") {
     // Retained failures are history: the status still reads Failed, but they
     // are neither a live problem nor in Problems only, as on the canvas.
     return livePodProblem(entity, now);
+  }
+  if (entity.kind === "Node") {
+    // The badge's node rule, so memory near full is a problem here too.
+    return liveNodeProblem(view, entity, now);
   }
   if (entity.kind === "Service") {
     // Endpoints exist but not all are ready. No endpoints at all is reported
@@ -197,7 +205,8 @@ function candidates(
 
 // Saved observations are recognised by the capture record they carry, so the
 // gap needs no frozen flag here; one without a record lists no inventory.
-function toRow({ view, entity }: Candidate, now: number): ResourceRow {
+function toRow(candidate: Candidate, now: number): ResourceRow {
+  const { view, entity } = candidate;
   const summary = summarize(view, entity, now);
   return {
     id: resourceId({ view, entity }),
@@ -205,7 +214,7 @@ function toRow({ view, entity }: Candidate, now: number): ResourceRow {
     entity,
     summary,
     gap: usageGap(view, entity, summary.pods, now),
-    problem: rowProblem(entity, summary, now),
+    problem: rowProblem(candidate, summary, now),
     stale: inventoryStale(view, now),
     node: entity.kind === "Pod" ? findEntity(view, entity.nodeUid) : undefined,
   };

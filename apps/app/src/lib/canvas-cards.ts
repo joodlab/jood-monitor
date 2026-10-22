@@ -160,6 +160,20 @@ function shortfall(entity: Entity) {
   );
 }
 
+// Retained failed member pods, worded as on namespace cards: history named
+// so the counts add up, never a live failure.
+function historyText(pods: Entity[]) {
+  const count = pods.filter(
+    (pod) => isFinished(pod) && podPhase(pod) === "Failed"
+  ).length;
+  return count ? ` · ${count} finished with failures` : "";
+}
+
+// Live failing pods out of the active ones: "CrashLoopBackOff · 1 of 3 pods".
+function failingText(failing: Entity[], active: number) {
+  return `${leadingStatus(failing)} · ${failing.length} of ${plural(active, "pod")}`;
+}
+
 function problemText(
   entity: Entity,
   summary: ResourceSummary,
@@ -172,14 +186,16 @@ function problemText(
   if (entity.kind === "Pod") {
     return resourceStatus(entity);
   }
-  const failing = summary.pods.filter((pod) => podProblem(pod, now));
+  // Only live failures lead; a retained failure never becomes the headline.
+  const failing = summary.pods.filter((pod) => livePodProblem(pod, now));
+  const history = historyText(summary.pods);
   if (failing.length) {
-    return `${leadingStatus(failing)} · ${failing.length} of ${plural(summary.pods.length, "pod")}`;
+    return `${failingText(failing, summary.active)}${history}`;
   }
   if (shortfall(entity)) {
-    return `Not ready · ${entity.ready}/${entity.desired} ready`;
+    return `Not ready · ${entity.ready}/${entity.desired} ready${history}`;
   }
-  return resourceStatus(entity);
+  return `${resourceStatus(entity)}${history}`;
 }
 
 // Without EndpointSlice access a Service's pods are matched by its selector:
@@ -201,7 +217,13 @@ function serviceText(summary: ResourceSummary, selectorOnly = false) {
   return `${summary.ready}/${plural(summary.active, noun)} ready`;
 }
 
-function workloadText(entity: Entity, pods: Entity[], failing: Entity[]) {
+// `failing` (see failingMembers) keeps the card from reading healthy; only
+// its live pods are named as failing, retained failures as history.
+function workloadText(
+  entity: Entity,
+  summary: ResourceSummary,
+  failing: Entity[]
+) {
   if (entity.ready == null || entity.desired == null) {
     return "Readiness not reported";
   }
@@ -209,10 +231,12 @@ function workloadText(entity: Entity, pods: Entity[], failing: Entity[]) {
     return "Scaled to zero";
   }
   const readiness = `${entity.ready}/${entity.desired} ready`;
-  if (failing.length) {
-    return `${readiness} · ${leadingStatus(failing)} · ${failing.length} of ${plural(pods.length, "pod")}`;
+  const live = failing.filter((pod) => !isFinished(pod));
+  const history = historyText(summary.pods);
+  if (live.length) {
+    return `${readiness} · ${failingText(live, summary.active)}${history}`;
   }
-  return `Healthy · ${readiness}`;
+  return failing.length ? `${readiness}${history}` : `Healthy · ${readiness}`;
 }
 
 function steadyText(
@@ -228,7 +252,7 @@ function steadyText(
     return serviceText(summary, context.selectorOnly);
   }
   if (workloadKinds.has(entity.kind)) {
-    return workloadText(entity, summary.pods, failing);
+    return workloadText(entity, summary, failing);
   }
   const status = resourceStatus(entity);
   return status === "Unknown" ? "Status unknown" : status;
