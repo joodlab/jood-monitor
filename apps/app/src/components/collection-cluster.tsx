@@ -536,7 +536,7 @@ function DiagnosticStarter({
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed p-3">
       <p className="min-w-0 flex-1 text-muted-foreground text-xs">
         {nodes.length
-          ? `Samples selected host sources every 5 s on one node for ${diagnosticMinutes} minutes, then returns to the current profile.`
+          ? `Samples selected host sources every 5 s on one node for ${diagnosticMinutes} minutes, then returns to the current profile. Host samples are stored and available through the history API but not yet charted in the dashboard.`
           : "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes."}
       </p>
       <Button
@@ -553,9 +553,9 @@ function DiagnosticStarter({
   );
 }
 
-// The inspector asked for a node other than the one running the diagnostic.
-// Moving it ends the current window and starts a new one, so it is an
-// explicit staged change, never the form's starting point.
+// The inspector asked for a node the diagnostic does not run on. Moving it
+// ends the current window and starts a new one, so it is an explicit staged
+// change, never the form's starting point.
 function MoveDiagnostic({
   view,
   draft,
@@ -576,7 +576,7 @@ function MoveDiagnostic({
     !(running && requested && known) ||
     draft.name !== "diagnostic" ||
     draft.node === requested ||
-    running.nodeUids[0] === requested
+    running.nodeUids.includes(requested)
   ) {
     return null;
   }

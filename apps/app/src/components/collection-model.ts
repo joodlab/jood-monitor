@@ -18,17 +18,17 @@ export const profileChoices: Record<
   basic: {
     label: "Basic",
     detail:
-      "Node resources every 60s. Inventory and pod status through API reconciliation.",
+      "Node resources every 60s. Inventory and pod status through API reconciliation. No pod or container CPU/memory is collected.",
   },
   standard: {
     label: "Standard",
     detail:
-      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s.",
+      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s, stored and available through the history API but not yet charted in the dashboard.",
   },
   diagnostic: {
     label: "Diagnostic",
     detail:
-      "Selected host sources every 5s on one node, bounded in time. Upstream pod Metrics API resolution stays unchanged.",
+      "Selected host sources every 5s on one node, bounded in time. Host samples are stored and available through the history API but not yet charted in the dashboard. Upstream pod Metrics API resolution stays unchanged.",
   },
 };
 
@@ -112,7 +112,8 @@ export function effectiveProfileName(profile: Profile, now: number) {
     : profile.name;
 }
 
-// Whether the draft keeps the diagnostic already running on the same node.
+// Whether the draft keeps the diagnostic already running. A diagnostic can
+// run on several nodes; a draft naming any of them continues it.
 export function continuesDiagnostic(
   draft: Pick<ProfileDraft, "name" | "node">,
   profile: Profile,
@@ -122,8 +123,24 @@ export function continuesDiagnostic(
   return (
     draft.name === "diagnostic" &&
     !!running &&
-    running.nodeUids[0] === draft.node
+    running.nodeUids.includes(draft.node)
   );
+}
+
+// The nodes a diagnostic draft covers: every node of the diagnostic it
+// continues, so applying other changes never drops one, else its own node.
+export function diagnosticNodes(
+  draft: Pick<ProfileDraft, "name" | "node">,
+  profile: Profile,
+  now: number
+) {
+  if (draft.name !== "diagnostic") {
+    return [];
+  }
+  if (continuesDiagnostic(draft, profile, now)) {
+    return [...profile.nodeUids];
+  }
+  return draft.node ? [draft.node] : [];
 }
 
 function profileChange(
@@ -138,7 +155,8 @@ function profileChange(
       ? undefined
       : `Switch from ${profileChoices[current].label} to ${profileChoices[draft.name].label}`;
   }
-  const node = draft.node ? nodeName(draft.node) : "a node";
+  const node =
+    diagnosticNodes(draft, profile, now).map(nodeName).join(", ") || "a node";
   const returnTo = profileChoices[returnProfile(profile)].label;
   if (!continuesDiagnostic(draft, profile, now)) {
     return `Run a ${diagnosticMinutes}-minute diagnostic on ${node}, then return to ${returnTo}`;
@@ -299,8 +317,8 @@ export function draftProblems(
 }
 
 // The profile sent to the hub. The hub assigns the next revision and the
-// profile a diagnostic returns to. A diagnostic already running on the same
-// node keeps its expiry unless the draft restarts it.
+// profile a diagnostic returns to. A diagnostic the draft continues keeps
+// every node it runs on, and its expiry unless the draft restarts it.
 export function profileRequest(
   draft: ProfileDraft,
   profile: Profile,
@@ -313,7 +331,7 @@ export function profileRequest(
     revision: profile.revision,
     appliedRevision: 0,
     paused: draft.paused,
-    nodeUids: diagnostic && draft.node ? [draft.node] : [],
+    nodeUids: diagnosticNodes(draft, profile, now),
     namespaces: draftNamespaces(draft),
     ...(diagnostic
       ? {
