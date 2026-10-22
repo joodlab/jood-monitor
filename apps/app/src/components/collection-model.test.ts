@@ -1,0 +1,228 @@
+import type { ClusterView } from "@jood-monitor/api-client";
+import { describe, expect, it } from "vitest";
+import { profileSchema } from "../schemas/clusters";
+import {
+  activeDiagnostic,
+  draftChanges,
+  draftFromProfile,
+  draftProblems,
+  formatBytes,
+  knownNamespaces,
+  namespaceLimit,
+  namespaceProblem,
+  nodeAcknowledgments,
+  profileRequest,
+  requestProgress,
+  returnProfile,
+} from "./collection-model";
+
+const now = Date.parse("2026-10-22T10:00:00.000Z");
+const at = new Date(now - 10_000).toISOString();
+
+function fixture(): ClusterView {
+  return {
+    cluster: {
+      id: "synthetic-a",
+      name: "Synthetic A",
+      environment: "staging",
+      workspaceId: "synthetic",
+      revoked: false,
+      heartbeatAt: at,
+      inventoryTime: at,
+      receivedAt: at,
+    },
+    inventory: {
+      entities: [
+        { uid: "n1", name: "node-b", kind: "Node", status: "Ready" },
+        { uid: "n2", name: "node-a", kind: "Node", status: "Ready" },
+        { uid: "ns1", name: "shop", kind: "Namespace", status: "Active" },
+        {
+          uid: "p1",
+          name: "api-1",
+          kind: "Pod",
+          namespace: "payments",
+          status: "Running",
+        },
+      ],
+      edges: [],
+      sourceTime: at,
+      capabilities: [],
+    },
+    metrics: [],
+    profile: {
+      name: "standard",
+      revision: 4,
+      appliedRevision: 4,
+      nodeUids: [],
+      namespaces: ["legacy"],
+      paused: false,
+    },
+    heartbeat: {
+      version: "0.1.1",
+      appliedRevision: 4,
+      queueBytes: 0,
+      dropped: 0,
+      rejectedPoints: 0,
+      outcome: "",
+      capabilities: [],
+      nodes: [
+        {
+          nodeUid: "n1",
+          seenAt: at,
+          appliedRevision: 4,
+          profile: "standard",
+          paused: false,
+          dropped: 0,
+        },
+        {
+          nodeUid: "n2",
+          seenAt: at,
+          appliedRevision: 3,
+          profile: "basic",
+          paused: false,
+          dropped: 2,
+        },
+      ],
+    },
+  } as ClusterView;
+}
+
+describe("profile drafts", () => {
+  it("starts unchanged and lists each requested change", () => {
+    const view = fixture();
+    const draft = draftFromProfile(view.profile);
+    expect(draft).toMatchObject({ name: "standard", scope: "selected" });
+    expect(draftChanges(draft, view.profile)).toEqual([]);
+    const changed = {
+      ...draft,
+      name: "diagnostic" as const,
+      node: "n2",
+      scope: "all" as const,
+      paused: true,
+    };
+    const changes = draftChanges(changed, view.profile, () => "node-a");
+    expect(changes).toHaveLength(3);
+    expect(changes[0]).toContain(
+      "diagnostic on node-a, then return to Standard"
+    );
+    expect(changes[1]).toContain("all namespaces");
+    expect(changes[2]).toBe("Pause new samples");
+  });
+
+  it("treats namespace order and duplicates as unchanged", () => {
+    const view = fixture();
+    view.profile.namespaces = ["a", "b"];
+    const draft = {
+      ...draftFromProfile(view.profile),
+      namespaces: ["b", "a", "a"],
+    };
+    expect(draftChanges(draft, view.profile)).toEqual([]);
+  });
+
+  it("blocks diagnostics without a node and over-limit namespaces", () => {
+    const view = fixture();
+    const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
+    const draft = {
+      ...draftFromProfile(view.profile),
+      name: "diagnostic" as const,
+    };
+    expect(draftProblems(draft, nodes)[0]).toContain("Choose the node");
+    expect(draftProblems(draft, [])[0]).toContain("need a node");
+    const many = Array.from(
+      { length: namespaceLimit + 1 },
+      (_, i) => `ns-${i}`
+    );
+    const tooMany = { ...draftFromProfile(view.profile), namespaces: many };
+    expect(draftProblems(tooMany, nodes)[0]).toContain("at most 32");
+    const empty = { ...draftFromProfile(view.profile), namespaces: [] };
+    expect(draftProblems(empty, nodes)[0]).toContain("at least one namespace");
+    expect(namespaceProblem("a b", [])).toContain("one namespace at a time");
+    expect(namespaceProblem("x", many.slice(0, 32))).toContain("At most 32");
+    expect(namespaceProblem("shop", [])).toBeUndefined();
+  });
+
+  it("builds requests the hub schema accepts", () => {
+    const view = fixture();
+    const draft = {
+      ...draftFromProfile(view.profile),
+      name: "diagnostic" as const,
+      node: "n1",
+    };
+    const request = profileRequest(draft, view.profile, now);
+    const parsed = profileSchema.parse(request);
+    expect(parsed.nodeUids).toEqual(["n1"]);
+    expect(Date.parse(parsed.expiresAt ?? "") - now).toBe(9 * 60_000);
+    expect(parsed.revision).toBe(4);
+    const basic = profileRequest(
+      { ...draft, name: "basic", scope: "all" },
+      view.profile,
+      now
+    );
+    expect(basic).not.toHaveProperty("expiresAt");
+    expect(basic.nodeUids).toEqual([]);
+    expect(basic.namespaces).toEqual([]);
+  });
+});
+
+describe("diagnostics", () => {
+  it("reports the running diagnostic and where it returns", () => {
+    const view = fixture();
+    expect(activeDiagnostic(view.profile, now)).toBeUndefined();
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      returnProfile: "standard",
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+    };
+    expect(activeDiagnostic(view.profile, now)).toMatchObject({
+      nodeUids: ["n1"],
+      returnTo: "standard",
+    });
+    expect(activeDiagnostic(view.profile, now + 6 * 60_000)).toBeUndefined();
+    expect(returnProfile({ ...view.profile, returnProfile: undefined })).toBe(
+      "basic"
+    );
+  });
+});
+
+describe("acknowledgments", () => {
+  it("lists namespaces from inventory and configuration", () => {
+    expect(knownNamespaces(fixture())).toEqual(["legacy", "payments", "shop"]);
+  });
+
+  it("maps node outcomes to statuses", () => {
+    const rows = nodeAcknowledgments(fixture(), now);
+    expect(rows.map((row) => [row.name, row.status])).toEqual([
+      ["node-a", "pending"],
+      ["node-b", "acknowledged"],
+    ]);
+    const stale = nodeAcknowledgments(fixture(), now + 10 * 60_000);
+    expect(stale.every((row) => row.status === "unavailable")).toBe(true);
+  });
+
+  it("tracks a requested revision through to completion", () => {
+    const view = fixture();
+    expect(requestProgress(view, 5, now).phase).toBe("syncing");
+    expect(requestProgress(view, 3, now).phase).toBe("superseded");
+    expect(requestProgress(view, 4, now)).toMatchObject({
+      phase: "partial",
+      acknowledged: 1,
+      pending: 1,
+      total: 2,
+      observerReceived: true,
+    });
+    const nodes = view.heartbeat.nodes ?? [];
+    nodes[1] = { ...nodes[1], appliedRevision: 4, profile: "standard" };
+    expect(requestProgress(view, 4, now).phase).toBe("complete");
+    expect(requestProgress(view, 4, now + 10 * 60_000).phase).toBe(
+      "observer-stale"
+    );
+  });
+
+  it("formats agent buffers in binary units", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(1536)).toBe("1.5 KiB");
+    expect(formatBytes(8 * 1024 ** 2)).toBe("8.0 MiB");
+  });
+});

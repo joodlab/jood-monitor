@@ -12,7 +12,7 @@ import { freshness, observedUsage } from "./metrics";
 // unowned pod. Missing measurements stay "missing", never healthy or zero.
 
 export type Severity = "critical" | "warning" | "info";
-export type AttentionScope = "cluster" | "node" | "workload" | "pod";
+type AttentionScope = "cluster" | "node" | "workload" | "pod";
 
 export interface Attention {
   // Subject entity; absent for cluster-scoped observer problems.

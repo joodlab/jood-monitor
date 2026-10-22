@@ -100,9 +100,15 @@
   }
 }
 .react-flow__controls-button {
+  width: 32px;
+  height: 32px;
   color: var(--foreground);
   background: var(--card);
   border-color: var(--border);
+}
+.react-flow__controls-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }
 .react-flow__controls-button:hover {
   background: var(--muted);
@@ -121,13 +127,17 @@
 .react-flow__edge-text {
   fill: var(--foreground);
 }
+/* Handles only anchor edges; nothing in the topology is connectable. */
 .react-flow__handle {
   width: 6px;
   height: 6px;
   background: var(--card);
   border-color: var(--border);
+  opacity: 0;
 }
-.react-flow__node-resource:focus-visible {
+/* Beats React Flow's own `.react-flow__node.selectable:focus-visible` reset. */
+.react-flow__node.react-flow__node-resource:focus-visible,
+.react-flow__node.react-flow__node-pod:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
   border-radius: 8px;
@@ -141,5 +151,5 @@
   border-radius: 8px;
 }
 .react-flow__edge-text {
-  font-size: 10px;
+  font-size: 11px;
 }

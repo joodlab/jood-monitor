@@ -8,28 +8,95 @@ import {
   CardHeader,
   CardTitle,
 } from "@jood-monitor/ui/card";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@jood-monitor/ui/tabs";
-import { BookOpen, CircleHelp, Radio } from "lucide-react";
-import { freshness } from "../lib/metrics";
+import { useQuery } from "@tanstack/react-query";
+import { BookOpen, Server } from "lucide-react";
+import { fetchWorkspaces } from "../hooks/api/clusters";
 import type { SearchState } from "../schemas/monitor";
-import { ProfileForm } from "./profile-form";
+import { ClusterCollection } from "./collection-cluster";
+import { EmptyState, Section } from "./page";
+
+const capabilityLabels: Record<string, string> = {
+  inventory: "Kubernetes inventory",
+  host_proc: "Host counters",
+  token_review: "Node identity (TokenReview)",
+  metrics_api: "Metrics API",
+  metrics_api_unavailable: "Metrics API unavailable",
+  inventory_unavailable: "Inventory unavailable",
+};
+
+function AvailableSources({ views }: { views: ClusterView[] }) {
+  return (
+    <Section
+      description="What each observer reports it can collect. Topology shows configured and discovered structure, not traffic."
+      title="Available sources"
+    >
+      <Card size="sm">
+        <CardContent className="space-y-3 text-sm">
+          <p>
+            Kubernetes inventory, owner references, EndpointSlices, ingress
+            routes and supported resource metrics.
+          </p>
+          <p className="text-muted-foreground text-xs">
+            Service connections and HTTP request metrics require another
+            measured source. Beyla and tracing are deferred.
+          </p>
+          <ul className="space-y-2">
+            {views.map((view) => {
+              const capabilities = view.heartbeat.capabilities ?? [];
+              return (
+                <li
+                  className="flex flex-wrap items-center gap-1.5 text-xs"
+                  key={view.cluster.id}
+                >
+                  <span className="mr-1 font-medium">{view.cluster.name}</span>
+                  {capabilities.length ? (
+                    capabilities.map((capability) => (
+                      <Badge
+                        key={capability}
+                        variant={
+                          capability.endsWith("_unavailable")
+                            ? "warning"
+                            : "outline"
+                        }
+                      >
+                        {capabilityLabels[capability] ?? capability}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-muted-foreground">
+                      Not reported yet
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <a
+            className="inline-flex items-center gap-1.5 text-primary text-xs underline underline-offset-2"
+            href="/docs/metrics"
+          >
+            <BookOpen aria-hidden className="size-3.5" />
+            Metrics and collection documentation
+          </a>
+        </CardContent>
+      </Card>
+    </Section>
+  );
+}
 
 export function CollectionSettings({
   search,
   views,
-  referenceTime,
   onResumeLive,
 }: {
   search: SearchState;
   views: ClusterView[];
-  referenceTime: number;
   onResumeLive: () => void;
 }) {
+  const workspaces = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: fetchWorkspaces,
+  });
   if (search.at) {
     return (
       <Card>
@@ -46,112 +113,43 @@ export function CollectionSettings({
       </Card>
     );
   }
+  if (!views.length) {
+    return (
+      <EmptyState
+        description={
+          search.cluster
+            ? "This cluster is not in the selected workspace. Clear the cluster filter or switch workspace."
+            : "Use Connect cluster to register a cluster and install its observer. Collection settings appear here once it is registered."
+        }
+        icon={Server}
+        title={
+          search.cluster ? "Cluster not found" : "No clusters connected yet"
+        }
+      />
+    );
+  }
+  const names = Object.fromEntries(
+    (workspaces.data ?? []).map((item) => [item.id, item.name])
+  );
   return (
-    <Tabs defaultValue="collection">
-      <TabsList>
-        <TabsTrigger value="collection">Collection</TabsTrigger>
-        <TabsTrigger value="appearance">Capabilities</TabsTrigger>
-      </TabsList>
-      <TabsContent className="mt-4 space-y-4" value="collection">
-        <div className="grid gap-3 sm:grid-cols-3">
-          {[
-            {
-              label: "Basic",
-              detail:
-                "Node resources every 60s. Inventory and pod status through API reconciliation.",
-            },
-            {
-              label: "Standard",
-              detail:
-                "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s.",
-            },
-            {
-              label: "Diagnostic",
-              detail:
-                "Selected host sources every 5s, bounded in time. Upstream pod Metrics API resolution stays unchanged.",
-            },
-          ].map((profile) => (
-            <Card className="gap-2 py-4" key={profile.label}>
-              <CardHeader className="px-4">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Radio className="size-4 text-primary" />
-                  {profile.label}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 text-muted-foreground text-xs">
-                {profile.detail}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-        {views.map((view) => (
-          <Card key={view.cluster.id}>
-            <CardHeader>
-              <CardTitle className="text-base">{view.cluster.name}</CardTitle>
-              <CardDescription>
-                Observer {view.heartbeat.version || "unknown"} ·{" "}
-                {freshness(view.cluster.heartbeatAt, referenceTime)}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">
-                  Buffer {view.heartbeat.queueBytes} B
-                </Badge>
-                <Badge variant="outline">
-                  Dropped {view.heartbeat.dropped}
-                </Badge>
-                <Badge variant="outline">
-                  Rejected {view.heartbeat.rejectedPoints}
-                </Badge>
-              </div>
-              <ProfileForm
-                frozen={!!search.at}
-                initialNodeUid={search.diagnosticNode}
-                key={`${view.cluster.id}:${view.profile.revision}:${search.diagnosticNode ?? ""}`}
-                view={view}
-              />
-            </CardContent>
-          </Card>
-        ))}
-      </TabsContent>
-      <TabsContent className="mt-4 space-y-4" value="appearance">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <CircleHelp className="size-4" />
-              Available sources
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <p>
-              Kubernetes inventory, owner references, EndpointSlices, ingress
-              routes and supported resource metrics.
-            </p>
-            <p className="text-muted-foreground">
-              Service connections and HTTP request metrics require another
-              measured source. Beyla and tracing are deferred.
-            </p>
-            {views.map((view) => (
-              <p
-                className="text-muted-foreground text-xs"
-                key={view.cluster.id}
-              >
-                {view.cluster.name}:{" "}
-                {view.heartbeat.capabilities?.join(" · ") ||
-                  "Capabilities unknown"}
-              </p>
-            ))}
-            <a
-              className="inline-flex items-center gap-2 text-primary underline"
-              href="/docs/metrics"
-            >
-              <BookOpen className="size-4" />
-              Metrics and collection documentation
-            </a>
-          </CardContent>
-        </Card>
-      </TabsContent>
-    </Tabs>
+    <div className="space-y-6">
+      {views.map((view) => (
+        <ClusterCollection
+          focused={search.cluster === view.cluster.id}
+          initialNodeUid={
+            search.cluster === view.cluster.id
+              ? search.diagnosticNode
+              : undefined
+          }
+          key={view.cluster.id}
+          view={view}
+          workspace={search.workspace}
+          workspaceName={
+            names[view.cluster.workspaceId] ?? view.cluster.workspaceId
+          }
+        />
+      ))}
+      <AvailableSources views={views} />
+    </div>
   );
 }

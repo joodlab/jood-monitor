@@ -1,9 +1,5 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 
-export function observationTime(at?: string, now = Date.now()) {
-  return at ? Date.parse(at) : now;
-}
-
 const latestValues = new WeakMap<Metric[], Map<string, Metric>>();
 const receiptFraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/;
 function receiptNano(at: string) {

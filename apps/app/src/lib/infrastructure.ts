@@ -17,9 +17,20 @@ export interface ResourceItem {
   entity: Entity;
   view: ClusterView;
 }
+// Fresh usage coverage over a cohort's active (unfinished) pods. `observed`
+// sums only the measured pods: a lower bound while `measured < active`, never
+// a total. It is absent when nothing was measured, so it cannot read as zero.
+interface UsageCoverage {
+  measured: number;
+  observed?: number;
+}
 export interface ResourceSummary {
+  // Member pods that have not finished (Succeeded, Completed or Failed).
+  active: number;
+  // Complete total: every active pod has a fresh sample (Nodes: own sample).
   cpu?: number;
   desired?: number;
+  // Active pods with both fresh CPU and memory samples.
   measured: number;
   memory?: number;
   nodes: Entity[];
@@ -27,14 +38,25 @@ export interface ResourceSummary {
   ready?: number;
   restarts?: number;
   services: Entity[];
+  usage: Record<"cpu" | "memory", UsageCoverage>;
 }
 
 export function resourceId(item: ResourceItem) {
   return `${item.view.cluster.id}:${item.entity.uid}`;
 }
 
-function isSystem(entity: Entity) {
-  return systemNamespaces.has(entity.namespace ?? "");
+export function isSystemNamespace(namespace?: string) {
+  return systemNamespaces.has(namespace ?? "");
+}
+
+export function isSystem(entity: Entity) {
+  return isSystemNamespace(entity.namespace);
+}
+
+const finishedStatuses = new Set(["Succeeded", "Completed", "Failed"]);
+// Finished pods no longer run, so they are history rather than live usage.
+export function isFinished(pod: Entity) {
+  return finishedStatuses.has(pod.status);
 }
 
 export function podReady(pod: Entity): boolean | undefined {
@@ -53,6 +75,10 @@ export function owningWorkload(view: ClusterView, pod: Entity) {
     }
     uid = owners.get(uid);
   }
+}
+
+export function findEntity(view: ClusterView, uid?: string) {
+  return uid ? viewIndex(view).entities.get(uid) : undefined;
 }
 
 export function relatedPods(view: ClusterView, entity: Entity) {
@@ -133,6 +159,18 @@ function completeSum(values: (number | undefined)[]) {
     : undefined;
 }
 
+function coverage(values: (number | undefined)[]): UsageCoverage {
+  const known = values.filter((value): value is number => value != null);
+  return {
+    measured: known.length,
+    observed: known.length
+      ? known.reduce((sum, value) => sum + value, 0)
+      : undefined,
+  };
+}
+
+const cohortKinds = new Set(["Service", "Namespace", "Node"]);
+
 export function summarize(
   view: ClusterView,
   entity: Entity,
@@ -150,16 +188,18 @@ export function summarize(
         pods.some((member) => member.uid === pod.uid)
       )
   );
-  const cpuValues = pods.map((pod) => observedUsage(view, pod, "cpu", now));
-  const memoryValues = pods.map((pod) =>
-    observedUsage(view, pod, "memory", now)
+  // Usage coverage counts active pods only: finished pods stop reporting and
+  // must not make a fully measured cohort look incomplete.
+  const activePods = pods.filter((pod) => !isFinished(pod));
+  const cpuValues = activePods.map((pod) =>
+    observedUsage(view, pod, "cpu", now)
   );
-  const activePods = pods.filter(
-    (pod) => !["Succeeded", "Completed", "Failed"].includes(pod.status)
+  const memoryValues = activePods.map((pod) =>
+    observedUsage(view, pod, "memory", now)
   );
   const readiness = activePods.map(podReady);
   let ready = entity.ready ?? undefined;
-  if (["Service", "Namespace", "Node"].includes(entity.kind)) {
+  if (cohortKinds.has(entity.kind)) {
     ready = readiness.every((value) => value != null)
       ? readiness.filter(Boolean).length
       : undefined;
@@ -169,7 +209,8 @@ export function summarize(
     nodes,
     services,
     ready,
-    desired: ["Service", "Namespace", "Node"].includes(entity.kind)
+    active: activePods.length,
+    desired: cohortKinds.has(entity.kind)
       ? activePods.length
       : (entity.desired ?? undefined),
     cpu:
@@ -183,6 +224,7 @@ export function summarize(
     measured: cpuValues.filter(
       (value, index) => value != null && memoryValues[index] != null
     ).length,
+    usage: { cpu: coverage(cpuValues), memory: coverage(memoryValues) },
     // The inventory's int32 restart field omits zero on the wire. A known Pod
     // therefore defaults to zero; an absent Pod cohort has no restart total.
     restarts: pods.length
@@ -268,6 +310,16 @@ export function readinessLabel(pod: Entity) {
   return ready ? "Ready" : "Not ready";
 }
 
+// Case-insensitive match on the identifying text an operator would type.
+export function matchesText(entity: Entity, search: string, extra = "") {
+  if (!search) {
+    return true;
+  }
+  return `${entity.name} ${entity.namespace ?? ""} ${entity.kind} ${resourceStatus(entity)} ${extra}`
+    .toLowerCase()
+    .includes(search.toLowerCase());
+}
+
 export function filterResources(
   views: ClusterView[],
   search: string,
@@ -282,8 +334,6 @@ export function filterResources(
       ({ entity }) =>
         (namespace === "all" || entity.namespace === namespace) &&
         (showSystem || !isSystem(entity)) &&
-        `${entity.name} ${entity.namespace} ${entity.kind} ${resourceStatus(entity)}`
-          .toLowerCase()
-          .includes(search.toLowerCase())
+        matchesText(entity, search)
     );
 }

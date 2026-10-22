@@ -1,5 +1,6 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import { validateMonitorSearch } from "../schemas/monitor";
 import { attentionItems } from "./attention";
 import {
   owningWorkload,
@@ -8,6 +9,21 @@ import {
   summarize,
 } from "./infrastructure";
 import { nodeTotals, observedUsage } from "./metrics";
+import {
+  groupByOwner,
+  placementHint,
+  serverPlacement,
+} from "./resource-servers";
+import {
+  clampPage,
+  hiddenMatches,
+  kindAllowed,
+  kindSummary,
+  pageRange,
+  presetFor,
+  resourceRows,
+  usageDisplay,
+} from "./resource-table";
 import { serviceGraph, stablePositions, validPosition } from "./service-graph";
 
 const now = Date.parse("2026-10-07T20:00:00Z");
@@ -393,5 +409,239 @@ describe("source-backed infrastructure", () => {
     expect(positions["cluster:entry"]).not.toEqual({ x: 0, y: 0 });
     expect(validPosition({ x: Number.NaN, y: 0 })).toBe(false);
     expect(validPosition({ x: "0", y: 0 })).toBe(false);
+  });
+});
+
+// Two scheduled pods, a finished pod, a system pod and an unscheduled pod.
+function placed() {
+  const view = fixture();
+  view.inventory.entities.push(
+    entity("node-a", "Node", { namespace: undefined, status: "True" }),
+    entity("node-b", "Node", { namespace: undefined, status: "True" }),
+    entity("done", "Pod", { status: "Succeeded", ready: 0, desired: 1 }),
+    entity("dns", "Pod", {
+      namespace: "kube-system",
+      status: "Running",
+      ready: 1,
+      desired: 1,
+      nodeUid: "node-b",
+    }),
+    entity("pending", "Pod", {
+      namespace: "checkout",
+      status: "Pending",
+      ready: 0,
+      desired: 1,
+    })
+  );
+  view.inventory.entities[5].nodeUid = "node-a";
+  view.inventory.entities[6].nodeUid = "node-b";
+  view.inventory.edges.push({
+    source: "done",
+    target: "rs",
+    relation: "owned_by",
+    evidence: "Owner",
+  });
+  return view;
+}
+function find(view: ClusterView, uid: string) {
+  const found = view.inventory.entities.find((item) => item.uid === uid);
+  if (!found) {
+    throw new Error(`fixture has no ${uid}`);
+  }
+  return found;
+}
+const listFilter = {
+  q: "",
+  namespace: "all",
+  system: false,
+  problems: false,
+};
+
+describe("resource usage coverage", () => {
+  it("measures active pods only and keeps partial totals as lower bounds", () => {
+    const view = placed();
+    const workload = find(view, "workload");
+    view.metrics = [
+      metric("pod1", "cpu", "0.1"),
+      metric("pod1", "memory", "100"),
+      metric("pod2", "cpu", "0.2"),
+      metric("pod2", "memory", "200"),
+    ];
+    // The finished pod has no sample yet does not hide the complete total.
+    const complete = summarize(view, workload, now);
+    expect(complete.pods).toHaveLength(3);
+    expect(complete.active).toBe(2);
+    expect(complete.measured).toBe(2);
+    expect(complete.cpu).toBeCloseTo(0.3);
+    expect(usageDisplay(workload, complete, "cpu")).toMatchObject({
+      partial: false,
+      missing: false,
+      text: "300m",
+    });
+
+    view.metrics = [metric("pod1", "cpu", "0.1")];
+    const partial = summarize(view, workload, now);
+    expect(partial.cpu).toBeUndefined();
+    expect(partial.measured).toBe(0);
+    expect(partial.usage.cpu).toEqual({ measured: 1, observed: 0.1 });
+    expect(partial.usage.memory).toEqual({
+      measured: 0,
+      observed: undefined,
+    });
+    expect(usageDisplay(workload, partial, "cpu")).toMatchObject({
+      partial: true,
+      text: "≥ 100m",
+      coverage: "1/2 measured",
+    });
+    // Nothing measured is a gap, never a zero.
+    expect(usageDisplay(workload, partial, "memory")).toMatchObject({
+      partial: false,
+      missing: true,
+      text: "No sample",
+    });
+  });
+  it("does not invent usage for finished pods or empty cohorts", () => {
+    const view = placed();
+    const done = find(view, "done");
+    const summary = summarize(view, done, now);
+    expect(summary.active).toBe(0);
+    expect(summary.cpu).toBeUndefined();
+    const display = usageDisplay(done, summary, "cpu");
+    expect(display.missing).toBe(true);
+    expect(display).toMatchObject({
+      text: "—",
+      title: "Finished pod: no live usage.",
+    });
+  });
+});
+
+describe("resource tables", () => {
+  it("infers presets and hides noisy kinds by default", () => {
+    expect(presetFor(["Pod"])).toBe("pods");
+    expect(presetFor(["Node"])).toBe("nodes");
+    expect(presetFor(["Deployment", "StatefulSet"])).toBe("workloads");
+    expect(presetFor()).toBe("list");
+    expect(kindAllowed("ReplicaSet")).toBe(false);
+    expect(kindAllowed("ReplicaSet", "all")).toBe(true);
+    expect(kindAllowed("Pod", "ReplicaSet")).toBe(false);
+    expect(kindSummary([placed()], listFilter).hidden).toEqual([
+      { kind: "ReplicaSet", count: 1 },
+    ]);
+  });
+  it("orders problems first, then by name, and filters to problems", () => {
+    const view = placed();
+    // A freshly created pending pod is starting, not yet a problem.
+    find(view, "pending").createdAt = new Date(now - 10_000).toISOString();
+    const rows = resourceRows([view], listFilter, now, ["Pod"]);
+    expect(rows.map((row) => row.entity.uid)).toEqual([
+      "pod2",
+      "done",
+      "pending",
+      "pod1",
+    ]);
+    expect(
+      resourceRows([view], { ...listFilter, problems: true }, now, ["Pod"]).map(
+        (row) => row.entity.uid
+      )
+    ).toEqual(["pod2"]);
+    expect(rows.find((row) => row.entity.uid === "pod1")?.node?.uid).toBe(
+      "node-a"
+    );
+  });
+  it("includes a chosen system namespace and explains hidden matches", () => {
+    const view = placed();
+    expect(
+      resourceRows([view], { ...listFilter, namespace: "kube-system" }, now)
+    ).toHaveLength(1);
+    const filter = { ...listFilter, q: "pod1", namespace: "checkout" };
+    expect(resourceRows([view], filter, now)).toHaveLength(0);
+    expect(hiddenMatches([view], filter, now)).toMatchObject({
+      count: 1,
+      patch: { namespace: "all" },
+    });
+    expect(
+      hiddenMatches([view], { ...listFilter, q: "dns" }, now)?.patch
+    ).toEqual({ system: true });
+    expect(
+      hiddenMatches([view], { ...listFilter, q: "rs" }, now)?.patch
+    ).toEqual({ kind: "all" });
+    expect(
+      hiddenMatches([view], { ...listFilter, q: "absent" }, now)
+    ).toBeUndefined();
+  });
+  it("keeps page ranges inside the data", () => {
+    expect(pageRange(1, 25, 96)).toEqual({ from: 26, to: 50 });
+    expect(pageRange(3, 25, 96)).toEqual({ from: 76, to: 96 });
+    expect(pageRange(9, 25, 30)).toEqual({ from: 26, to: 30 });
+    expect(pageRange(0, 25, 0)).toEqual({ from: 0, to: 0 });
+    expect(clampPage(4, 50, 60)).toBe(1);
+  });
+});
+
+describe("server placement", () => {
+  it("shows every server without a pod filter and hides system pods", () => {
+    const placement = serverPlacement([placed()], listFilter, now);
+    expect(placement.basis).toBe("all");
+    expect(placement.servers.map((server) => server.node.uid)).toEqual([
+      "node-a",
+      "node-b",
+    ]);
+    expect(placement.servers[1].hiddenSystem).toBe(1);
+    expect(placement.servers[1].matched).toBeUndefined();
+  });
+  it("filters servers by matching pods and counts unscheduled matches", () => {
+    const view = placed();
+    const byName = serverPlacement([view], { ...listFilter, q: "pod2" }, now);
+    expect(byName.basis).toBe("pods");
+    expect(byName.servers.map((server) => server.node.uid)).toEqual(["node-b"]);
+    expect([...(byName.servers[0].matched ?? [])]).toEqual(["pod2"]);
+    const checkout = serverPlacement(
+      [view],
+      { ...listFilter, namespace: "checkout" },
+      now
+    );
+    expect(checkout).toMatchObject({
+      basis: "pods",
+      matchedPods: 1,
+      unscheduled: 1,
+      label: "checkout",
+    });
+    expect(checkout.servers).toHaveLength(0);
+  });
+  it("falls back to server names only when no pod matches", () => {
+    const view = placed();
+    const named = serverPlacement([view], { ...listFilter, q: "node-a" }, now);
+    expect(named.basis).toBe("names");
+    expect(named.servers.map((server) => server.node.uid)).toEqual(["node-a"]);
+    expect(named.servers[0].matched).toBeUndefined();
+    const filter = { ...listFilter, q: "dns" };
+    expect(serverPlacement([view], filter, now).basis).toBe("none");
+    expect(placementHint([view], filter, now)?.patch).toEqual({
+      system: true,
+    });
+  });
+  it("groups pods on a server by owning workload", () => {
+    const view = placed();
+    const pods = relatedPods(view, find(view, "node-b"));
+    expect(
+      groupByOwner(view, pods).map((group) => group.owner?.uid ?? "none")
+    ).toEqual(["workload", "none"]);
+  });
+});
+
+describe("resource URL state", () => {
+  it("validates kind and page size and keeps legacy views", () => {
+    expect(validateMonitorSearch({ kind: "Pod", pageSize: 50 })).toMatchObject({
+      kind: "Pod",
+      pageSize: 50,
+    });
+    expect(
+      validateMonitorSearch({ kind: "<script>", pageSize: 7 })
+    ).toMatchObject({ kind: undefined, pageSize: undefined });
+    expect(validateMonitorSearch({ pageSize: "25" }).pageSize).toBeUndefined();
+    expect(validateMonitorSearch({ view: "resources" })).toMatchObject({
+      view: "infrastructure",
+      mode: "list",
+    });
   });
 });

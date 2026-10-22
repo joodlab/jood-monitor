@@ -253,7 +253,6 @@ function PageBody({
       return (
         <CollectionSettings
           onResumeLive={() => update({ at: undefined })}
-          referenceTime={referenceTime}
           search={search}
           views={data.views}
         />
@@ -434,7 +433,7 @@ function DashboardContent() {
         views={allViews}
       />
       <Dialog onOpenChange={setEnroll} open={enroll}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Connect a cluster</DialogTitle>
             <DialogDescription>

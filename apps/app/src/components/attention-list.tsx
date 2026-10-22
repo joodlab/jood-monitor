@@ -53,7 +53,7 @@ function contextParts(item: Attention) {
   return parts;
 }
 
-export function AttentionRow({
+function AttentionRow({
   item,
   actions,
   compact = false,

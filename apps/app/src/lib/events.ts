@@ -7,7 +7,7 @@ import { compactCpu, compactMemory } from "./infrastructure";
 
 export type EventCategory = "node" | "scaling" | "resources" | "automation";
 
-export interface EventChange {
+interface EventChange {
   after: string;
   before: string;
   label: string;
@@ -107,7 +107,7 @@ function qualified(subject?: EventSummary["subject"]) {
     : `${subject.kind} ${subject.name}`;
 }
 
-export function attributionLabel(attribution: string) {
+function attributionLabel(attribution: string) {
   if (attribution === "reported") {
     return "Reported by automation · not independently verified";
   }
