@@ -1,3 +1,5 @@
+import { observationMs } from "../../lib/time";
+
 const topologyLayouts = ["graph", "list"] as const;
 type TopologyLayout = (typeof topologyLayouts)[number];
 
@@ -136,14 +138,14 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
-const zonedTimestamp =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+// Digits finer than milliseconds, which a Date cannot hold.
+const subMillisecond = /\.\d{4,9}(?:Z|[+-])/;
 
-// The saved-observation time. A valid RFC3339 time becomes canonical UTC,
-// except that digits finer than milliseconds stay as written so the hub
-// keeps them. Anything else (no zone, 30 February) is kept as written, so
-// the page explains that the link's time could not be read instead of
-// silently showing live data.
+// The saved-observation time. A readable time becomes canonical UTC, except
+// that digits finer than milliseconds stay as written so the hub keeps them.
+// An unreadable one (no zone, 30 February) is kept as written, so the page
+// explains that the link's time could not be read instead of silently
+// showing live data.
 function observationTime(value: unknown) {
   if (typeof value === "number") {
     return observationTime(String(value));
@@ -151,22 +153,11 @@ function observationTime(value: unknown) {
   if (typeof value !== "string" || !value) {
     return;
   }
-  const match = zonedTimestamp.exec(value);
-  const time = Date.parse(value);
-  if (!(match && Number.isFinite(time))) {
+  const time = observationMs(value);
+  if (time == null || subMillisecond.test(value)) {
     return value;
   }
-  const sign = match[3] === "-" ? -1 : 1;
-  const offset = match[3]
-    ? sign * (Number(match[4]) * 60 + Number(match[5])) * 60_000
-    : 0;
-  // Date.parse rolls 30 February over to March; the written fields must
-  // survive the round trip.
-  const wall = new Date(time + offset).toISOString().slice(0, 19);
-  if (wall !== match[1]) {
-    return value;
-  }
-  return (match[2]?.length ?? 0) > 3 ? value : new Date(time).toISOString();
+  return new Date(time).toISOString();
 }
 
 export function validateMonitorSearch(

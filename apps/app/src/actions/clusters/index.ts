@@ -22,6 +22,12 @@ import {
 import { getDb } from "../../db";
 import type { ClusterReply } from "../../durable-objects/cluster-state";
 import { clusterState, type Env } from "../../env";
+import {
+  DAY_MS,
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+  rawRetentionMessage,
+} from "../../lib/retention";
 import { hash, token } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
 import { compareMetrics } from "../../lib/server/telemetry";
@@ -176,7 +182,10 @@ export async function getSnapshot(
   const views: ClusterView[] = [];
   const revisions: [string, number][] = [];
   const at = input.at ? validRangeTime(input.at) : Date.now();
-  if (at > Date.now() + 60_000 || at < Date.now() - 180 * 86_400_000) {
+  if (
+    at > Date.now() + 60_000 ||
+    at < Date.now() - INVENTORY_RETENTION_DAYS * DAY_MS
+  ) {
     throw new HttpError(400, "snapshot outside retention");
   }
   for (const cluster of clusters) {
@@ -332,11 +341,11 @@ export async function getHistory(
   const fromMs = validRangeTime(input.from),
     toMs = input.to ? validRangeTime(input.to) : Date.now();
   if (
-    fromMs < Date.now() - 7 * 86_400_000 ||
+    fromMs < Date.now() - RAW_RETENTION_DAYS * DAY_MS ||
     toMs < fromMs ||
     toMs > Date.now() + 60_000
   ) {
-    throw new HttpError(400, "history range must be within 7 days");
+    throw new HttpError(400, rawRetentionMessage);
   }
   const from = normalizeTime(input.from),
     to = normalizeTime(input.to ?? new Date().toISOString());

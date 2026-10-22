@@ -7,7 +7,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@jood-monitor/ui/dialog";
-import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
@@ -21,15 +20,25 @@ import {
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
 import { snapshotError } from "../lib/install-errors";
-import { type SearchState, scopeReset } from "../schemas/monitor";
+import type { SearchState } from "../schemas/monitor";
 import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
 import { CommandPalette } from "./command-palette";
+import {
+  eventsEnabled,
+  eventsKey,
+  linkedSettingsView,
+  rangeOnlyChange,
+  scopeReset,
+  settingsLink,
+  settingsSection,
+} from "./dashboard-navigation";
 import { EnrollForm } from "./enroll-form";
 import { EventsPage } from "./events-page";
 import { NewWorkspace } from "./new-workspace";
 import { Observability } from "./observability";
 import { PageHeader } from "./page";
+import { PageState } from "./page-state";
 import { ProjectBar, projectTabs } from "./project-bar";
 import { RangeSelect } from "./range-select";
 import { ResourceBrowser } from "./resource-browser";
@@ -54,68 +63,6 @@ const pageDescriptions: Record<string, string> = {
     "Observer health, collection profiles, diagnostics and cluster enrollment.",
   workspaces: "Workspaces group clusters and scope what you see.",
 };
-
-// Only these views show changes, so only they ask the hub for them.
-const eventViews = new Set(["architecture", "activity", "observability"]);
-
-// Another range of the same scope, time and cluster may stand in while the
-// new range loads; anything else would show another scope's changes.
-function rangeOnlyChange(
-  previous: readonly unknown[],
-  next: readonly unknown[]
-) {
-  return (
-    previous.length === next.length &&
-    previous.at(-1) !== next.at(-1) &&
-    previous.slice(0, -1).every((part, index) => part === next[index])
-  );
-}
-
-// A Settings link names the cluster to open and leaves the cluster filter
-// alone; it switches workspace only when the cluster is outside the current
-// one.
-function settingsLink(
-  scope: string,
-  view: ClusterView,
-  node?: Entity
-): Partial<SearchState> {
-  const inScope = scope === "global" || scope === view.cluster.workspaceId;
-  return {
-    ...(inScope
-      ? {}
-      : {
-          ...scopeReset,
-          workspace: view.cluster.workspaceId,
-          cluster: undefined,
-        }),
-    settingsCluster: view.cluster.id,
-    diagnosticNode: node?.uid,
-  };
-}
-
-// Components that open Settings with `cluster` (the Observability cluster
-// cards) mean the section to open, not a new cluster filter.
-function settingsSection(view: string, extra: Partial<SearchState>) {
-  if (view !== "settings" || !extra.cluster) {
-    return extra;
-  }
-  const { cluster, ...rest } = extra;
-  return { ...rest, settingsCluster: cluster };
-}
-
-// Settings lists the filtered clusters plus a linked cluster the filter
-// would otherwise hide.
-function settingsViews(
-  views: ClusterView[],
-  allViews: ClusterView[],
-  linked?: string
-) {
-  if (!linked || views.some((view) => view.cluster.id === linked)) {
-    return views;
-  }
-  const view = allViews.find((item) => item.cluster.id === linked);
-  return view ? [...views, view] : views;
-}
 
 // Components written for the previous navigation still ask for its views;
 // translate them to the project tabs.
@@ -165,25 +112,14 @@ function useMonitorData(search: SearchState) {
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
   });
-  // The range is last so a range change alone can keep the previous changes
-  // on screen while the new ones load.
-  const eventsKey = [
-    "events",
-    scope,
-    search.at ?? "live",
-    search.cluster,
-    search.range,
-  ];
+  const key = eventsKey(search);
   const events = useQuery({
-    queryKey: eventsKey,
+    queryKey: key,
     queryFn: () => fetchEvents(search),
-    // An unreadable link time is explained by the page, not sent.
-    enabled:
-      eventViews.has(search.view) &&
-      !(search.at && Number.isNaN(Date.parse(search.at))),
+    enabled: eventsEnabled(search),
     staleTime: 25_000,
     placeholderData: (previous, previousQuery) =>
-      previousQuery && rangeOnlyChange(previousQuery.queryKey, eventsKey)
+      previousQuery && rangeOnlyChange(previousQuery.queryKey, key)
         ? previous
         : undefined,
     refetchInterval: search.at ? false : refreshInterval,
@@ -391,13 +327,14 @@ function PageBody({
     case "settings":
       return (
         <CollectionSettings
-          onResumeLive={() => update({ at: undefined })}
-          search={search}
-          views={settingsViews(
+          linked={linkedSettingsView(
             data.views,
             data.allViews,
             search.settingsCluster
           )}
+          onResumeLive={() => update({ at: undefined })}
+          search={search}
+          views={data.views}
         />
       );
     case "workspaces":
@@ -672,56 +609,6 @@ function DashboardContent() {
         </Dialog>
       )}
     </div>
-  );
-}
-
-function PageState({
-  snapshot,
-  loading,
-  onRetry,
-}: {
-  snapshot: { isError: boolean; error: unknown; data?: unknown };
-  loading: boolean;
-  onRetry: () => void;
-}) {
-  // Retry only where repeating the request can succeed; a time outside
-  // retention or an unreadable link points to Return to live instead.
-  const problem = snapshot.isError ? snapshotError(snapshot.error) : undefined;
-  return (
-    <>
-      {problem && (
-        <div
-          className="m-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm"
-          role="alert"
-        >
-          <span className="min-w-0 flex-1">
-            <span className="font-medium">{problem.title}.</span>
-            {problem.detail && ` ${problem.detail}`}
-            {/* Earlier observations stay on screen only when one loaded. */}
-            {snapshot.data != null && " Observations below may be out of date."}
-          </span>
-          {problem.retryable && (
-            <Button onClick={onRetry} size="sm" variant="outline">
-              Retry
-            </Button>
-          )}
-        </div>
-      )}
-      {loading && !snapshot.isError && (
-        <div aria-busy="true" className="space-y-4 p-4">
-          <span className="sr-only" role="status">
-            Loading observations…
-          </span>
-          <Skeleton className="h-28" />
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {[1, 2, 3, 4].map((item) => (
-              <Skeleton className="h-24" key={item} />
-            ))}
-          </div>
-          <Skeleton className="h-40" />
-        </div>
-      )}
-    </>
   );
 }
 

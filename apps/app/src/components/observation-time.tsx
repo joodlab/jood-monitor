@@ -14,10 +14,12 @@ import { useState } from "react";
 import { useDisplay } from "../hooks/display";
 import {
   DAY_MS,
-  fromZonedInput,
   INVENTORY_RETENTION_DAYS,
-  knownTime,
   RAW_RETENTION_DAYS,
+} from "../lib/retention";
+import {
+  fromZonedInput,
+  observationMs,
   timeZoneLabel,
   toZonedInput,
 } from "../lib/time";
@@ -99,9 +101,12 @@ function ObservationForm({
 }) {
   const zone = timeZoneLabel(timeZone);
   // The dialog opens fresh each time, so its bounds start from that moment.
+  // The picker works in whole minutes; the earliest is rounded up so the
+  // earliest minute it offers also passes validation.
   const [opened] = useState(Date.now);
-  const earliest = opened - INVENTORY_RETENTION_DAYS * DAY_MS;
-  const saved = knownTime(at);
+  const earliest =
+    Math.ceil((opened - INVENTORY_RETENTION_DAYS * DAY_MS) / 60_000) * 60_000;
+  const saved = observationMs(at);
   const form = useForm({
     defaultValues: {
       // A link time that is unreadable or outside retention starts the
@@ -126,7 +131,7 @@ function ObservationForm({
     if (time > Date.now()) {
       return "Choose a time in the past.";
     }
-    if (time < Date.now() - INVENTORY_RETENTION_DAYS * DAY_MS) {
+    if (time < earliest) {
       return `Saved observations are kept for ${INVENTORY_RETENTION_DAYS} days; choose a later time.`;
     }
   };

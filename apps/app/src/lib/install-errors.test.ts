@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  historyError,
-  rawRetentionMessage,
-  snapshotError,
-} from "./install-errors";
+import { historyError, snapshotError } from "./install-errors";
+import { rawRetentionMessage } from "./retention";
 
 describe("snapshot errors", () => {
   it("explains a time outside retention without offering Retry", () => {
@@ -19,11 +16,26 @@ describe("snapshot errors", () => {
     expect(error.retryable).toBe(false);
   });
 
-  it("asks for a narrower scope when the hub refuses a broad read", () => {
+  it("names the per-cluster series cap without advice no filter can follow", () => {
     const error = snapshotError(new Error("snapshot too broad"));
     expect(error.title).toBe(
-      "This scope is too large to load; narrow it to a cluster"
+      "A cluster reports more series than one view can load"
     );
+    // The snapshot is read per workspace; a cluster filter cannot shrink it.
+    expect(error.detail).not.toContain("narrow");
+    // The count is live state, so a later read can succeed.
+    expect(error.retryable).toBe(true);
+  });
+
+  it("points a saved observation's broad sample read to another time", () => {
+    const error = snapshotError(
+      new Error("query too broad; select an entity and metric")
+    );
+    expect(error.title).toBe(
+      "The saved samples at this time are too many to load"
+    );
+    expect(error.detail).toContain("Return to live");
+    expect(error.detail).not.toContain("entity");
     expect(error.retryable).toBe(false);
   });
 
@@ -80,12 +92,12 @@ describe("snapshot errors", () => {
 });
 
 describe("history errors", () => {
-  it("reads the hub's 7-day refusal like the dashboard's own", () => {
+  it("reads the hub's 7-day refusal like the dashboard's own when frozen", () => {
     for (const error of [
       new Error("history range must be within 7 days"),
       new Error(rawRetentionMessage),
     ]) {
-      expect(historyError(error)).toEqual({
+      expect(historyError(error, true)).toEqual({
         title:
           "Raw samples are kept for 7 days; this saved observation is older",
         detail: "",
@@ -94,16 +106,31 @@ describe("history errors", () => {
     }
   });
 
+  it("never calls a live window a saved observation", () => {
+    // Live, the refusal means the browser and hub clocks disagreed.
+    const error = historyError(new Error(rawRetentionMessage), false);
+    expect(error.title).toBe("History unavailable");
+    expect(error.title).not.toContain("saved observation");
+    expect(error.retryable).toBe(true);
+  });
+
   it("asks for a shorter range when a history read is too broad", () => {
-    const error = historyError(
-      new Error("query too broad; select an entity and metric")
-    );
-    expect(error.detail).toBe("Choose a shorter range.");
-    expect(error.retryable).toBe(false);
+    for (const frozen of [true, false]) {
+      const error = historyError(
+        new Error("query too broad; select an entity and metric"),
+        frozen
+      );
+      expect(error.detail).toBe("Choose a shorter range.");
+      expect(error.retryable).toBe(false);
+    }
   });
 
   it("falls back to the snapshot reading for other errors", () => {
-    expect(historyError(new TypeError("Failed to fetch")).retryable).toBe(true);
-    expect(historyError(new Error("boom")).title).toBe("History unavailable");
+    expect(
+      historyError(new TypeError("Failed to fetch"), false).retryable
+    ).toBe(true);
+    expect(historyError(new Error("boom"), true).title).toBe(
+      "History unavailable"
+    );
   });
 });

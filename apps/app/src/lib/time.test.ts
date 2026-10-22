@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { DAY_MS } from "./retention";
 import {
   age,
-  DAY_MS,
   formatClock,
   formatDateTime,
   hubNow,
   knownTime,
+  observationMs,
   rangeLabel,
   rangeSpan,
   rangeText,
@@ -86,6 +87,36 @@ describe("range text", () => {
     expect(rangeText("1", "not a time", "UTC")).toBe(
       "the hour before the selected time"
     );
+    // Without a zone the browser would guess one; the hub refuses it.
+    expect(rangeText("1", "2026-10-22T12:00", "Asia/Riyadh")).toBe(
+      "the hour before the selected time"
+    );
+  });
+});
+
+describe("saved-observation time", () => {
+  it("reads RFC3339 times with a zone as the hub does", () => {
+    const noon = Date.parse("2026-10-22T12:00:00Z");
+    expect(observationMs("2026-10-22T12:00:00Z")).toBe(noon);
+    expect(observationMs("2026-10-22T15:00:00+03:00")).toBe(noon);
+    expect(observationMs("2026-10-22T12:00:00.123456789Z")).toBe(noon + 123);
+  });
+  it("refuses times the hub would refuse", () => {
+    for (const value of [
+      undefined,
+      "",
+      "garbage",
+      "1",
+      // No zone: SSR and each browser would read a different moment.
+      "2026-10-22T12:00",
+      "2026-10-22T12:00:00",
+      // Rolled over by Date.parse to 2 March.
+      "2026-02-30T00:00:00Z",
+      "2026-10-22T12:00:00+24:00",
+      "2026-10-22T12:00:00+03:60",
+    ]) {
+      expect(observationMs(value)).toBeUndefined();
+    }
   });
 });
 

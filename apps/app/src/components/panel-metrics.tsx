@@ -14,14 +14,14 @@ import {
   type UsageField,
 } from "../lib/chart-scale";
 import type { ResourceSummary } from "../lib/infrastructure";
-import { historyError, rawRetentionMessage } from "../lib/install-errors";
+import { historyError } from "../lib/install-errors";
 import { usageName } from "../lib/metrics";
+import { RAW_RETENTION_DAYS, rawRetentionMessage } from "../lib/retention";
 import {
   formatDateTime,
   type HubClock,
   hubNow,
-  knownTime,
-  RAW_RETENTION_DAYS,
+  observationMs,
   rangeLabel,
   rawWindow,
   timeZoneLabel,
@@ -96,13 +96,18 @@ export function useHistory(
       ["Node", "Pod"].includes(inspected.entity.kind) &&
       referenceTime > 0,
     refetchInterval: historyRefetchInterval(at, connection),
-    retry: (failures, error) => failures < 1 && historyError(error).retryable,
+    retry: (failures, error) =>
+      failures < 1 && historyError(error, !!at).retryable,
     queryFn: async () => {
-      const to = at ? knownTime(at) : Date.now();
+      const hubTime = hubNow(hubClock, Date.now());
+      // Live, the hub ends the window at its own now, so the start is
+      // measured from the hub's clock too: a browser clock running ahead
+      // would otherwise ask for a window that has not begun.
+      const to = at ? observationMs(at) : (hubTime ?? Date.now());
       if (to == null) {
         throw new Error("invalid timestamp");
       }
-      const bounds = rawWindow(to, Number(range), hubNow(hubClock, Date.now()));
+      const bounds = rawWindow(to, Number(range), hubTime);
       // A request the hub would refuse is not sent; it fails the same way.
       if (bounds.outside) {
         throw new Error(rawRetentionMessage);
@@ -359,6 +364,7 @@ function HistoryPlot({
   title: string;
   query: HistoryQuery;
 }) {
+  const { frozen } = useDisplay();
   const { refs, percentBase } = useMemo(
     () => chartReferences(entity, field),
     [entity, field]
@@ -367,7 +373,7 @@ function HistoryPlot({
     return <ChartSkeleton title={title} />;
   }
   if (query.isError) {
-    const problem = historyError(query.error);
+    const problem = historyError(query.error, frozen);
     return (
       <div className="space-y-2">
         <h3 className="font-medium text-sm">{title}</h3>

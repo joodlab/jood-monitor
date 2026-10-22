@@ -1168,7 +1168,8 @@ export function StagedChangesBar({
             search: (old) => ({
               ...old,
               view: "settings",
-              cluster: cluster ?? old.cluster,
+              // Names the section to open; the cluster filter stays.
+              settingsCluster: cluster,
               resource: undefined,
               resourceCluster: undefined,
               diagnosticNode: undefined,

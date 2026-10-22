@@ -1,14 +1,11 @@
 // Display helpers for source and receipt times. Values stay ISO strings until
 // presentation; the display zone is an operator preference, never data.
 
+import { DAY_MS, RAW_RETENTION_DAYS } from "./retention";
+
 export const timeZoneOptions = ["local", "UTC", "Asia/Riyadh"] as const;
 export type TimeZonePreference = (typeof timeZoneOptions)[number];
 
-// What the hub keeps, measured on its own clock: saved inventory and events,
-// and raw CPU/memory samples.
-export const INVENTORY_RETENTION_DAYS = 180;
-export const RAW_RETENTION_DAYS = 7;
-export const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 
 export function resolveTimeZone(preference: TimeZonePreference) {
@@ -60,6 +57,33 @@ export function knownTime(value: string | number | null | undefined) {
   return Number.isFinite(time) && time >= 0 ? time : undefined;
 }
 const valid = knownTime;
+
+const zonedTimestamp =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+// A saved-observation time in epoch milliseconds, read as the hub reads it:
+// RFC3339 with a zone, and fields that survive the round trip (Date.parse
+// rolls 30 February over to March). Anything else is unreadable, never a
+// guess in the browser's zone, so every view and the hub agree on it.
+export function observationMs(value: string | undefined) {
+  const match = zonedTimestamp.exec(value ?? "");
+  if (!match) {
+    return;
+  }
+  const [written, fields, sign, hours, minutes] = match;
+  if (sign && (Number(hours) > 23 || Number(minutes) > 59)) {
+    return;
+  }
+  const time = Date.parse(written);
+  if (!Number.isFinite(time)) {
+    return;
+  }
+  const offset = sign
+    ? (sign === "-" ? -1 : 1) * (Number(hours) * 60 + Number(minutes)) * 60_000
+    : 0;
+  const wall = new Date(time + offset).toISOString().slice(0, 19);
+  return wall === fields ? time : undefined;
+}
 
 export function formatClock(
   value: string | number | null | undefined,
@@ -205,7 +229,7 @@ export function rangeSpan(
   if (!at) {
     return `last ${span}`;
   }
-  const time = knownTime(at);
+  const time = observationMs(at);
   if (time == null) {
     return `${span} before the selected time`;
   }

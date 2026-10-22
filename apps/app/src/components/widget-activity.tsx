@@ -51,7 +51,9 @@ function Body({
       steps: rolloutSteps(entries),
     };
   }, [events.data]);
-  if (events.isPending) {
+  // The previous range stands in while a new range loads; an empty stand-in
+  // says nothing about the new range, so it reads as loading.
+  if (events.isPending || (events.isPlaceholderData && !recent.length)) {
     return (
       <div aria-busy="true" className="space-y-3 px-4 py-4 sm:px-5">
         <span className="sr-only" role="status">

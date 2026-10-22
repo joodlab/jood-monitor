@@ -1,7 +1,11 @@
 // Turns hub errors from operator requests into text that says what happened
 // and what to do next. Unknown errors keep the hub's own message.
 
-import { INVENTORY_RETENTION_DAYS, RAW_RETENTION_DAYS } from "./time";
+import {
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+  rawRetentionMessage,
+} from "./retention";
 
 type RequestErrorKind =
   | "duplicate-cluster"
@@ -189,11 +193,24 @@ const readErrors: [string, ReadError][] = [
       retryable: false,
     },
   ],
+  // The hub caps the current series it loads per cluster, live or frozen,
+  // and the snapshot is read per workspace, so no filter here narrows it.
+  // The count is live state: a later read can succeed.
   [
-    "too broad",
+    "snapshot too broad",
     {
-      title: "This scope is too large to load; narrow it to a cluster",
-      detail: "The hub limits how much one request can load.",
+      title: "A cluster reports more series than one view can load",
+      detail:
+        "The hub caps the current series it loads per cluster, so this scope cannot be shown until the cluster reports fewer.",
+      retryable: true,
+    },
+  ],
+  // Only a saved observation reads raw samples with the snapshot.
+  [
+    "query too broad",
+    {
+      title: "The saved samples at this time are too many to load",
+      detail: "Choose another time, or use Return to live above.",
       retryable: false,
     },
   ],
@@ -254,13 +271,13 @@ const rawRetention: ReadError = {
   retryable: false,
 };
 
-// The hub's refusal text for raw history outside its window; the dashboard
-// raises the same error before asking, so both read alike.
-export const rawRetentionMessage = `history range must be within ${RAW_RETENTION_DAYS} days`;
-
-export function historyError(error: unknown): ReadError {
+// Why a history chart could not load. Frozen, the hub's 7-day refusal (or
+// the dashboard's own, raised before asking) means the saved time is past
+// the raw window. Live it can only mean the clocks disagreed, which a retry
+// may outlast.
+export function historyError(error: unknown, frozen: boolean): ReadError {
   const message = errorText(error);
-  if (message.includes(rawRetentionMessage)) {
+  if (frozen && message.includes(rawRetentionMessage)) {
     return rawRetention;
   }
   // History is already one entity and metric; only a shorter window helps.

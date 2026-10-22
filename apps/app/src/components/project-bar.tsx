@@ -36,6 +36,7 @@ import {
 } from "../lib/staged-changes";
 import {
   formatDateTime,
+  observationMs,
   type TimeZonePreference,
   timeZoneLabel,
   timeZoneOptions,
@@ -480,13 +481,8 @@ export function ProjectBar({
           role="status"
         >
           <span>
-            Viewing the saved observation at{" "}
-            <strong className="font-medium">
-              {formatDateTime(at, timeZone)}{" "}
-              {timeZoneLabel(timeZone, Date.parse(at))}
-            </strong>
-            . Live updates are paused; collection status is not retained
-            historically.
+            <FrozenSubject at={at} timeZone={timeZone} />. Live updates are
+            paused; collection status is not retained historically.
           </span>
           <Button
             className="h-9 text-xs sm:h-8"
@@ -499,5 +495,22 @@ export function ProjectBar({
         </div>
       )}
     </header>
+  );
+}
+
+// The frozen banner's subject. An unreadable link time is said to be one,
+// never shown as a time guessed in some zone.
+function FrozenSubject({ at, timeZone }: { at: string; timeZone: string }) {
+  const time = observationMs(at);
+  if (time == null) {
+    return <>This link's time could not be read</>;
+  }
+  return (
+    <>
+      Viewing the saved observation at{" "}
+      <strong className="font-medium">
+        {formatDateTime(time, timeZone)} {timeZoneLabel(timeZone, time)}
+      </strong>
+    </>
   );
 }
