@@ -21,6 +21,7 @@ import {
   resetStaged,
   revertField,
   settleRequests,
+  shownClusterIds,
   stageDraft,
   stagedBadge,
   stagedClusters,
@@ -32,6 +33,7 @@ import {
   stagedRows,
   stagedScope,
   stagedSnapshot,
+  stagedWaiting,
   subscribeStaged,
 } from "./staged-changes";
 
@@ -611,20 +613,38 @@ describe("cluster filter", () => {
     return [a, b];
   }
 
+  // What the Apply card covers for this URL state, by default on the canvas.
+  function cardScope(
+    views: ClusterView[],
+    search: { cluster?: string; settingsCluster?: string; view?: string },
+    time = now
+  ) {
+    return stagedScope(
+      stagedSnapshot(),
+      views,
+      shownClusterIds(views, { view: "architecture", ...search }),
+      time
+    );
+  }
+
   it("covers every cluster without a filter", () => {
     const views = stageBoth();
-    const scope = stagedScope(stagedSnapshot(), views, undefined, now);
+    const scope = cardScope(views, {});
     expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual([
       "a",
       "b",
     ]);
     expect(scope.discard).toEqual(["a", "b"]);
     expect(scope.elsewhere).toEqual({ staged: 0, unconfirmed: 0 });
+    // A Settings link without a filter adds nothing and repeats nothing.
+    expect(
+      cardScope(views, { view: "settings", settingsCluster: "b" }).discard
+    ).toEqual(["a", "b"]);
   });
 
   it("applies the filtered cluster and leaves hidden drafts staged", async () => {
     const views = stageBoth();
-    const scope = stagedScope(stagedSnapshot(), views, "a", now);
+    const scope = cardScope(views, { cluster: "a" });
     // Apply sends the card's clusters: the filtered one only.
     expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual(["a"]);
     expect(scope.elsewhere).toEqual({ staged: 2, unconfirmed: 0 });
@@ -642,13 +662,13 @@ describe("cluster filter", () => {
 
   it("discards the filtered cluster and leaves hidden drafts staged", () => {
     const views = stageBoth();
-    const scope = stagedScope(stagedSnapshot(), views, "a", now);
+    const scope = cardScope(views, { cluster: "a" });
     // Discard all removes the clusters the card covers: the filtered one.
     expect(scope.discard).toEqual(["a"]);
     discardStaged(scope.discard);
     expect(Object.keys(stagedSnapshot().entries)).toEqual(["b"]);
     // Nothing left to show here, but the hidden drafts are still counted.
-    expect(stagedScope(stagedSnapshot(), views, "a", now)).toMatchObject({
+    expect(cardScope(views, { cluster: "a" })).toMatchObject({
       clusters: [],
       elsewhere: { staged: 2, unconfirmed: 0 },
     });
@@ -656,7 +676,7 @@ describe("cluster filter", () => {
 
   it("counts every draft as hidden for a cluster outside the scope", () => {
     const views = stageBoth();
-    expect(stagedScope(stagedSnapshot(), views, "gone", now)).toEqual({
+    expect(cardScope(views, { cluster: "gone" })).toEqual({
       clusters: [],
       discard: [],
       elsewhere: { staged: 3, unconfirmed: 0 },
@@ -674,14 +694,102 @@ describe("cluster filter", () => {
       // One of two nodes acknowledges, past the patience window.
       acknowledge(view, 5, now + 181_000, 1);
     }
-    const scope = stagedScope(stagedSnapshot(), [a, b], "a", now + 181_000);
+    const scope = cardScope([a, b], { cluster: "a" }, now + 181_000);
     expect(scope.recent.map((item) => item.view.cluster.id)).toEqual(["a"]);
     // The unconfirmed request for b is out of sight, never silently dropped.
     expect(scope.elsewhere).toEqual({ staged: 0, unconfirmed: 1 });
     dismissRequests(["b"]);
     expect(
-      stagedScope(stagedSnapshot(), [a, b], "a", now + 181_000).elsewhere
+      cardScope([a, b], { cluster: "a" }, now + 181_000).elsewhere
     ).toEqual({ staged: 0, unconfirmed: 0 });
+  });
+});
+
+describe("cluster opened from a Settings link", () => {
+  // The top bar filter shows a; Settings was opened for b through a link
+  // while the filter hides it. Each cluster has one staged change; b's is a
+  // Diagnostic.
+  function stageThree() {
+    const views = ["a", "b", "c"].map((id) => fixture(id));
+    const [a, b, c] = views as [ClusterView, ClusterView, ClusterView];
+    stageDraft(a, { ...draftFromProfile(a.profile), paused: true }, now);
+    stageDraft(
+      b,
+      { ...draftFromProfile(b.profile), name: "diagnostic", node: "n1" },
+      now
+    );
+    stageDraft(c, { ...draftFromProfile(c.profile), paused: true }, now);
+    return views;
+  }
+
+  const linked = { view: "settings", cluster: "a", settingsCluster: "b" };
+
+  function linkedScope(views: ClusterView[], view = "settings", time = now) {
+    return stagedScope(
+      stagedSnapshot(),
+      views,
+      shownClusterIds(views, { ...linked, view }),
+      time
+    );
+  }
+
+  it("lists, applies and follows the linked cluster beside the filtered one", async () => {
+    const views = stageThree();
+    expect(shownClusterIds(views, linked)).toEqual(["a", "b"]);
+    const scope = linkedScope(views);
+    // The card agrees with b's section pill instead of calling it elsewhere.
+    expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(scope.elsewhere).toEqual({ staged: 1, unconfirmed: 0 });
+    const send = vi.fn().mockResolvedValue({ revision: 5 });
+    await applyStagedClusters(scope.clusters, send, undefined, () => now);
+    expect(send.mock.calls.map(([id]) => id).sort()).toEqual(["a", "b"]);
+    // The hidden cluster's draft is never sent.
+    expect(Object.keys(stagedSnapshot().entries)).toEqual(["c"]);
+    // Both requests are followed on the card, not counted as elsewhere.
+    const after = linkedScope(views);
+    expect(after.recent.map((item) => item.view.cluster.id)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(after.elsewhere).toEqual({ staged: 1, unconfirmed: 0 });
+  });
+
+  it("discards the linked cluster with the filtered one, never the hidden", () => {
+    const views = stageThree();
+    const scope = linkedScope(views);
+    expect(scope.discard).toEqual(["a", "b"]);
+    discardStaged(scope.discard);
+    expect(Object.keys(stagedSnapshot().entries)).toEqual(["c"]);
+    expect(linkedScope(views)).toMatchObject({
+      clusters: [],
+      elsewhere: { staged: 1, unconfirmed: 0 },
+    });
+  });
+
+  it("counts the linked cluster as elsewhere off Settings", () => {
+    const views = stageThree();
+    for (const view of ["architecture", "observability"]) {
+      expect(shownClusterIds(views, { ...linked, view })).toEqual(["a"]);
+      const scope = linkedScope(views, view);
+      expect(scope.clusters.map((item) => item.view.cluster.id)).toEqual(["a"]);
+      expect(scope.discard).toEqual(["a"]);
+      expect(scope.elsewhere).toEqual({ staged: 2, unconfirmed: 0 });
+    }
+  });
+
+  it("only adds a linked cluster that is in the workspace scope", () => {
+    const views = stageThree();
+    expect(
+      shownClusterIds(views, { ...linked, settingsCluster: "gone" })
+    ).toEqual(["a"]);
+    // A filter outside the scope leaves the linked cluster alone on the card,
+    // as Settings lists it alone.
+    expect(shownClusterIds(views, { ...linked, cluster: "gone" })).toEqual([
+      "b",
+    ]);
   });
 });
 
@@ -704,17 +812,79 @@ describe("settings tab badge", () => {
     expect(
       stagedBadge(stagedSnapshot(), "synthetic", [a, b], 0, true)
     ).toBeUndefined();
+    // Nor before the live snapshot loads.
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", undefined, now, true)
+    ).toBeUndefined();
     // A frozen snapshot's past profile cannot be compared with the draft.
-    expect(stagedBadge(stagedSnapshot(), "synthetic", [], now, false)).toBe(
+    // With no live snapshot cached, the workspace recorded at staging decides.
+    expect(
+      stagedBadge(stagedSnapshot(), "synthetic", undefined, now, false)
+    ).toBe("waiting");
+    expect(
+      stagedBadge(stagedSnapshot(), "other", undefined, now, false)
+    ).toBeUndefined();
+    // A cached live snapshot the draft still applies to: still no count.
+    expect(stagedBadge(stagedSnapshot(), "synthetic", [a, b], now, false)).toBe(
       "waiting"
     );
-    expect(
-      stagedBadge(stagedSnapshot(), "other", [], now, false)
-    ).toBeUndefined();
     discardStaged(["a"]);
     expect(
-      stagedBadge(stagedSnapshot(), "synthetic", [], now, false)
+      stagedBadge(stagedSnapshot(), "synthetic", undefined, now, false)
     ).toBeUndefined();
+  });
+});
+
+describe("frozen staged rule", () => {
+  // A frozen view asks twice whether drafts wait, for the Settings tab badge
+  // and for the Apply card; both must give the same answer.
+  function frozenAnswer(cached: ClusterView[] | undefined, time = now) {
+    const current = stagedSnapshot();
+    const waiting = stagedWaiting(current, "synthetic", cached, time);
+    const badge = stagedBadge(current, "synthetic", cached, time, false);
+    expect(badge === "waiting").toBe(waiting);
+    return waiting;
+  }
+
+  it("waits for drafts that still apply to the cached live profile", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    expect(frozenAnswer([view])).toBe(true);
+    expect(frozenAnswer(undefined)).toBe(true);
+  });
+
+  it("drops a draft whose base the cached live profile has moved past", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    // Another operator applied revision 5 before the view froze. The entry is
+    // still recorded for the workspace, but it can no longer apply.
+    view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
+    expect(stagedInScope(stagedSnapshot(), "synthetic")).toBe(true);
+    expect(frozenAnswer([view])).toBe(false);
+  });
+
+  it("drops a draft staged while a diagnostic ran that has since ended", () => {
+    const view = runningDiagnostic(fixture(), 1);
+    stageDraft(
+      view,
+      { ...draftFromProfile(view.profile, undefined, now), paused: true },
+      now
+    );
+    expect(frozenAnswer([view])).toBe(true);
+    // Same revision, but the effective profile is no longer the diagnostic.
+    expect(frozenAnswer([view], now + 120_000)).toBe(false);
+  });
+
+  it("falls back to the recorded workspace only when nothing can be judged", () => {
+    const view = fixture();
+    stageDraft(view, { ...draftFromProfile(view.profile), paused: true }, now);
+    view.profile = { ...view.profile, revision: 5, appliedRevision: 5 };
+    expect(frozenAnswer(undefined)).toBe(true);
+    // Before the display clock starts the cache cannot be judged either.
+    expect(frozenAnswer([view], 0)).toBe(true);
+    expect(stagedWaiting(stagedSnapshot(), "other", undefined, now)).toBe(
+      false
+    );
   });
 });
 

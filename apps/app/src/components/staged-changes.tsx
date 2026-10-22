@@ -66,13 +66,12 @@ import {
   type StagedCluster,
   type StagedRow,
   type StagedScope,
-  type StagedState,
   settleRequests,
+  shownClusterIds,
   stageDraft,
-  stagedClusters,
   stagedCount,
-  stagedInScope,
   stagedScope,
+  stagedWaiting,
   useStagedState,
 } from "../lib/staged-changes";
 import { scopeReset } from "../schemas/monitor";
@@ -120,13 +119,15 @@ const noScope: StagedScope = {
 };
 
 // The live snapshot the dashboard already keeps fresh. This reader adds no
-// schedule of its own; it fetches only when nothing is cached yet. While
-// frozen the query is disabled but keeps what it cached.
-function useLiveSnapshot(scope: string, frozen: boolean) {
+// schedule of its own; with `load` it fetches only when nothing is cached
+// yet. Without it (frozen views, or a reader mounted beside the dashboard's
+// own query, whose retry policy must decide the first fetch) it only reads,
+// keeping what was cached.
+export function useLiveSnapshot(scope: string, load: boolean) {
   const snapshot = useQuery({
     queryKey: ["snapshot", scope, "live"],
     queryFn: () => fetchSnapshot(scope),
-    enabled: !frozen,
+    enabled: load,
     refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
@@ -632,11 +633,11 @@ function StagedCard({
   onShowAll: () => void;
 }) {
   const count = stagedCount(clusters);
-  // Discarding never reaches the hidden clusters, so the menu names the one
-  // it does.
+  // Discarding never reaches the hidden clusters, so the menu names the ones
+  // it does: the filtered cluster, and on Settings one a link opened.
   const shownOnly =
-    elsewhere.staged > 0 && clusters.length === 1
-      ? clusters[0]?.view.cluster.name
+    elsewhere.staged > 0
+      ? clusters.map((cluster) => cluster.view.cluster.name).join(" and ")
       : undefined;
   return (
     <section
@@ -892,20 +893,6 @@ function FrozenCard({
 
 type BarKind = "frozen" | "staged" | "progress" | "elsewhere" | "none";
 
-// Whether frozen views have staged drafts waiting in this scope. A cached
-// live snapshot also drops drafts whose profile changed since; without one
-// the workspace recorded at staging decides.
-function frozenWaiting(
-  staged: StagedState,
-  scope: string,
-  cached: ClusterView[] | undefined,
-  now: number
-) {
-  return cached && now
-    ? stagedClusters(staged, cached, now).length > 0
-    : stagedInScope(staged, scope);
-}
-
 function barKind(
   frozen: boolean,
   waiting: boolean,
@@ -1109,7 +1096,7 @@ function useBarState() {
   const { frozen, now } = useDisplay();
   const staged = useStagedState();
   const live = !frozen;
-  const cached = useLiveSnapshot(search.workspace, frozen);
+  const cached = useLiveSnapshot(search.workspace, live);
   const views = live ? (cached ?? noViews) : noViews;
   // Polling, pruning and settling keep every cluster in the workspace scope
   // current; only what the card shows and acts on follows the cluster filter.
@@ -1120,12 +1107,19 @@ function useBarState() {
       settleRequests(views, now);
     }
   }, [live, now, views]);
+  // The filtered cluster, plus on Settings one a link opened that the filter
+  // hides (Settings edits it there too).
+  const { cluster, settingsCluster, view } = search;
+  const shown = useMemo(
+    () => shownClusterIds(views, { cluster, settingsCluster, view }),
+    [views, cluster, settingsCluster, view]
+  );
   const scope = useMemo(
-    () => (now ? stagedScope(staged, views, search.cluster, now) : noScope),
-    [staged, views, search.cluster, now]
+    () => (now ? stagedScope(staged, views, shown, now) : noScope),
+    [staged, views, shown, now]
   );
   const waiting =
-    frozen && frozenWaiting(staged, search.workspace, cached, now);
+    frozen && stagedWaiting(staged, search.workspace, cached, now);
   return {
     ...scope,
     kind: barKind(
@@ -1140,9 +1134,10 @@ function useBarState() {
 
 // The floating "Apply N changes" card. Shows staged changes for the clusters
 // in the current workspace scope (only the filtered cluster when the top bar
-// picks one), then acknowledgment progress once applied. `focusFallback`
-// names a visible element to focus when the card goes away with focus inside
-// it; otherwise a visually hidden note in the bar's place takes it.
+// picks one, plus on Settings a cluster a link opened), then acknowledgment
+// progress once applied. `focusFallback` names a visible element to focus
+// when the card goes away with focus inside it; otherwise a visually hidden
+// note in the bar's place takes it.
 export function StagedChangesBar({
   className,
   focusFallback,

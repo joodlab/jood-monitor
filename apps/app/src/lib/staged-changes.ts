@@ -25,6 +25,7 @@ import {
   validationText,
 } from "../components/collection-model";
 import { profileSchema } from "../schemas/clusters";
+import type { SearchState } from "../schemas/monitor";
 import { minutesLeft } from "./install-enrollment";
 import { requestError } from "./install-errors";
 
@@ -461,6 +462,22 @@ export function stagedInScope(current: StagedState, scope: string) {
   );
 }
 
+// Whether a frozen view, which shows a past profile, has drafts waiting in a
+// workspace scope. The live snapshot cached before freezing still drops
+// drafts whose profile changed since, as the Apply card would; only with
+// none cached does the workspace recorded at staging decide. The Settings
+// tab badge and the frozen Apply card share this rule so they never disagree.
+export function stagedWaiting(
+  current: StagedState,
+  scope: string,
+  cached: ClusterView[] | undefined,
+  now: number
+) {
+  return cached && now
+    ? stagedClusters(current, cached, now).length > 0
+    : stagedInScope(current, scope);
+}
+
 // What the settings form shows: the staged draft, else the profile. A node
 // requested by a deep link (the inspector) becomes the target of a draft that
 // is not a diagnostic yet, so staging one uses it. It never moves a running
@@ -721,49 +738,67 @@ export interface StagedScope {
   recent: RecentRequest[];
 }
 
-// What the Apply card covers. With a cluster filter it lists, applies,
-// discards and follows that cluster only; the others' drafts and unconfirmed
-// requests are counted, never applied, discarded or dropped out of sight.
+// The clusters the Apply card covers, by id: every cluster in scope, or with
+// a cluster filter only the filtered one. On Settings it also covers a
+// cluster a link opened while the filter hides it: Settings lists and edits
+// that cluster beside the filtered one, so its drafts must be applyable
+// there. Any other view counts the linked cluster's drafts as hidden.
+export function shownClusterIds(
+  views: ClusterView[],
+  search: Pick<SearchState, "cluster" | "settingsCluster" | "view">
+) {
+  const filter = search.cluster;
+  const linked =
+    search.view === "settings" ? search.settingsCluster : undefined;
+  return views
+    .map((view) => view.cluster.id)
+    .filter((id) => !filter || id === filter || id === linked);
+}
+
+// What the Apply card covers. It lists, applies, discards and follows the
+// `shown` clusters only (see shownClusterIds); the others' drafts and
+// unconfirmed requests are counted, never applied, discarded or dropped out
+// of sight.
 export function stagedScope(
   current: StagedState,
   views: ClusterView[],
-  cluster: string | undefined,
+  shown: readonly string[],
   now: number
 ): StagedScope {
-  const shown = cluster
-    ? views.filter((view) => view.cluster.id === cluster)
-    : views;
-  const hidden = cluster
-    ? views.filter((view) => view.cluster.id !== cluster)
-    : [];
+  const covered = new Set(shown);
+  const listed = views.filter((view) => covered.has(view.cluster.id));
+  const hidden = views.filter((view) => !covered.has(view.cluster.id));
   return {
-    clusters: stagedClusters(current, shown, now),
-    discard: shown.map((view) => view.cluster.id),
+    clusters: stagedClusters(current, listed, now),
+    discard: listed.map((view) => view.cluster.id),
     elsewhere: {
       staged: stagedCount(stagedClusters(current, hidden, now)),
       unconfirmed: recentRequests(current, hidden, now).filter(
         (item) => item.timedOut
       ).length,
     },
-    recent: recentRequests(current, shown, now),
+    recent: recentRequests(current, listed, now),
   };
 }
 
 // The Settings tab badge for a workspace scope ("global" is every
 // workspace): the number of staged changes, counted as the Apply card counts
-// them. A frozen dashboard shows a past profile that drafts cannot be
-// compared with, so it only says drafts are waiting, never a guessed count.
+// them. `views` are the live snapshot's clusters; while frozen, the ones
+// cached before freezing, if any. A frozen dashboard shows a past profile
+// that drafts cannot be compared with, so it only says drafts are waiting,
+// never a guessed count, by the frozen Apply card's rule (stagedWaiting).
 export function stagedBadge(
   current: StagedState,
   scope: string,
-  views: ClusterView[],
+  views: ClusterView[] | undefined,
   now: number,
   live: boolean
 ): number | "waiting" | undefined {
   if (!live) {
-    return stagedInScope(current, scope) ? "waiting" : undefined;
+    return stagedWaiting(current, scope, views, now) ? "waiting" : undefined;
   }
-  const count = now ? stagedCount(stagedClusters(current, views, now)) : 0;
+  const count =
+    views && now ? stagedCount(stagedClusters(current, views, now)) : 0;
   return count > 0 ? count : undefined;
 }
 

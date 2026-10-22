@@ -43,6 +43,7 @@ import {
 } from "../lib/time";
 import { ObservationTime } from "./observation-time";
 import { StagedPill } from "./settings-rail";
+import { useLiveSnapshot } from "./staged-changes";
 
 // Railway-style project bar: logo / workspace / cluster on the left, project
 // tabs on the right. Workspaces play Railway's "project" role and clusters
@@ -278,8 +279,18 @@ export function ProjectBar({
 }) {
   const { now, frozen, at, timeZone } = useDisplay();
   const stagedState = useStagedState();
+  // Only reads the cache: the dashboard's own query loads and refreshes it.
+  const cached = useLiveSnapshot(workspace, false);
   // Every cluster in the workspace scope, whatever the cluster filter hides.
-  const staged = stagedBadge(stagedState, workspace, clusters, now, !frozen);
+  // Frozen, `clusters` hold a past profile, so the live snapshot cached
+  // before freezing judges drafts, by the frozen Apply card's rule.
+  const staged = stagedBadge(
+    stagedState,
+    workspace,
+    frozen ? cached : clusters,
+    now,
+    !frozen
+  );
   // Drafts whose profile changed are dropped (with the reason Settings shows)
   // from every tab, not only where the Apply card runs, so neither this badge
   // nor the unload prompt counts a draft that can no longer apply.
