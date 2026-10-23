@@ -20,6 +20,7 @@ import {
   changeTimeLabel,
   emptyChangesText,
   ownChanges,
+  ownEmptyText,
   type RelatedChange,
   relatedChanges,
 } from "../lib/resource-changes";
@@ -524,17 +525,21 @@ function Empty({
   entity,
   own,
   related,
+  capped,
   onAll,
 }: {
   entity: Entity;
   own: boolean;
   related: number;
+  // The search stopped at the hub's limit, so older changes went unseen.
+  capped: boolean;
   onAll: () => void;
 }) {
+  const { frozen } = useDisplay();
   if (own && related > 0) {
     return (
       <div className="space-y-2 rounded-xl border border-dashed px-4 py-6 text-sm">
-        <p>No recorded changes for this {entity.kind} itself.</p>
+        <p>{ownEmptyText(entity.kind, capped)}</p>
         <Button
           className="h-9 sm:h-8"
           onClick={onAll}
@@ -546,7 +551,7 @@ function Empty({
       </div>
     );
   }
-  const [title, ...rest] = emptyChangesText(entity);
+  const [title, ...rest] = emptyChangesText(entity, { capped, frozen });
   return (
     <div className="space-y-2 rounded-xl border border-dashed px-4 py-6 text-sm">
       <p className="font-medium">{title}</p>
@@ -648,6 +653,7 @@ export function ChangesTab({
       {query.isPending && !query.isError && <Loading />}
       {loaded && !shown.length && (
         <Empty
+          capped={changes.capped}
           entity={entity}
           onAll={() => setOwn(false)}
           own={own}

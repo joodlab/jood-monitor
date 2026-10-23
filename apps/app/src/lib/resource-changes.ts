@@ -339,17 +339,39 @@ export function changeNotices({
 const recorded =
   "The hub records replica count changes, CPU/memory request, limit and capacity changes of resources it already saw, node joins and absences, and automation receipts. New or removed workloads, ReplicaSets and pods, restarts, readiness, images and other configuration are not recorded.";
 
-// What an empty tab says: nothing recorded, what the hub records at all,
-// and for a Pod the one current fact about restarts it has.
-export function emptyChangesText(entity: Entity) {
+// How much of the history an empty result covers: all of the retained
+// history, or only the cluster's latest changes when the hub's limit cut the
+// search short.
+function searched(capped: boolean) {
+  return capped
+    ? `in this cluster's latest ${CLUSTER_CHANGE_LIMIT} recorded changes`
+    : "in the retained history";
+}
+
+// What an empty tab says: nothing recorded in what was searched, what the
+// hub records at all, and for a Pod the one restart fact it has. In a saved
+// observation that count is the saved one, not the current one.
+export function emptyChangesText(
+  entity: Entity,
+  { capped, frozen }: { capped: boolean; frozen: boolean }
+) {
   const lines = [
-    `No recorded changes for this ${entity.kind} in the retained history.`,
+    `No recorded changes for this ${entity.kind} ${searched(capped)}.`,
     recorded,
   ];
   if (entity.kind === "Pod" && entity.restarts != null) {
     lines.push(
-      `Restart count now: ${entity.restarts} (current count; when restarts happened is not recorded).`
+      frozen
+        ? `Restart count at this saved observation: ${entity.restarts} (when restarts happened is not recorded).`
+        : `Restart count now: ${entity.restarts} (current count; when restarts happened is not recorded).`
     );
   }
   return lines;
+}
+
+// What the "This <kind> only" filter says when only related rows were found.
+export function ownEmptyText(kind: string, capped: boolean) {
+  return capped
+    ? `No recorded changes for this ${kind} itself ${searched(true)}.`
+    : `No recorded changes for this ${kind} itself.`;
 }

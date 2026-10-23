@@ -10,6 +10,7 @@ import {
   changeTimeLabel,
   emptyChangesText,
   ownChanges,
+  ownEmptyText,
   relatedChanges,
 } from "./resource-changes";
 
@@ -19,6 +20,8 @@ import {
 
 const T = Date.parse("2026-10-22T12:00:00Z");
 const ago = (minutes: number) => new Date(T - minutes * 60_000).toISOString();
+
+const CURRENT_WORDS = /\b(now|current)\b/i;
 
 function entity(fields: Partial<Entity> & { uid: string; kind: string }) {
   return { name: fields.uid, status: "Observed", ...fields } as Entity;
@@ -404,16 +407,41 @@ describe("change notices", () => {
       "omitted",
     ]);
   });
+  const live = { capped: false, frozen: false };
   it("explains an empty tab, with a Pod's current restart count", () => {
-    expect(emptyChangesText(deployment)[0]).toBe(
+    expect(emptyChangesText(deployment, live)[0]).toBe(
       "No recorded changes for this Deployment in the retained history."
     );
-    expect(emptyChangesText(deployment)).toHaveLength(2);
-    expect(emptyChangesText(deployment)[1]).toContain("are not recorded");
-    expect(emptyChangesText(pod).at(-1)).toBe(
+    expect(emptyChangesText(deployment, live)).toHaveLength(2);
+    expect(emptyChangesText(deployment, live)[1]).toContain("are not recorded");
+    expect(emptyChangesText(pod, live).at(-1)).toBe(
       "Restart count now: 2 (current count; when restarts happened is not recorded)."
     );
-    expect(emptyChangesText({ ...pod, restarts: undefined })).toHaveLength(2);
+    expect(
+      emptyChangesText({ ...pod, restarts: undefined }, live)
+    ).toHaveLength(2);
+  });
+  it("claims no more than a capped search covered", () => {
+    const capped = { ...live, capped: true };
+    expect(emptyChangesText(deployment, capped)[0]).toBe(
+      "No recorded changes for this Deployment in this cluster's latest 300 recorded changes."
+    );
+    expect(emptyChangesText(deployment, capped).join(" ")).not.toContain(
+      "retained history"
+    );
+    expect(ownEmptyText("Deployment", false)).toBe(
+      "No recorded changes for this Deployment itself."
+    );
+    expect(ownEmptyText("Deployment", true)).toBe(
+      "No recorded changes for this Deployment itself in this cluster's latest 300 recorded changes."
+    );
+  });
+  it("gives a saved observation's restart count as saved, not current", () => {
+    const text = emptyChangesText(pod, { ...live, frozen: true });
+    expect(text.at(-1)).toBe(
+      "Restart count at this saved observation: 2 (when restarts happened is not recorded)."
+    );
+    expect(text.join(" ")).not.toMatch(CURRENT_WORDS);
   });
 });
 
