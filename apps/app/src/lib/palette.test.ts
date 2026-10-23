@@ -249,8 +249,47 @@ describe("palette groups", () => {
     const count = (group: string) =>
       results.filter((item) => item.group === group).length;
     expect(count("Resources")).toBe(30);
-    expect(count("Namespaces")).toBe(10);
+    // Ten namespaces, each with its drill and its Inspect row.
+    const drills = results.filter(
+      (item) => item.group === "Namespaces" && !item.secondary
+    );
+    expect(drills).toHaveLength(10);
+    expect(count("Namespaces")).toBe(20);
     expect(results[0]?.id).toBe("cluster:synthetic-busy");
+  });
+
+  it("caps namespaces by name, so many clusters do not crowd drills out", () => {
+    const fleet = Array.from({ length: 5 }, (_, index) =>
+      cluster(
+        `synthetic-fleet-${index}`,
+        `Synthetic fleet ${index}`,
+        "synthetic fixture",
+        namespaces(`synthetic-fleet-${index}`, [
+          "kube-system",
+          "kube-public",
+          "kube-node-lease",
+          ...Array.from({ length: 12 }, (_, item) => `kube-app-${item}`),
+        ])
+      )
+    );
+    const results = paletteResults("kube", sources({}, { views: fleet }));
+    const drills = results.filter(
+      (item) => item.group === "Namespaces" && !item.secondary
+    );
+    expect(drills).toHaveLength(10);
+    for (const drill of drills) {
+      expect(drill.detail).toBe(
+        "Namespace · in 5 clusters · open on the canvas"
+      );
+      expect(
+        results.filter(
+          (item) => item.label === `Inspect namespace ${drill.label}`
+        )
+      ).toHaveLength(5);
+    }
+    // An exact name is never dropped for a longer one.
+    const exact = paletteResults("kube-system", sources({}, { views: fleet }));
+    expect(exact[0]?.id).toBe("namespace:kube-system");
   });
 
   it("keeps the cluster's primary result on Resources › Servers", () => {

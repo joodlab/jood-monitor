@@ -404,11 +404,22 @@ function namespaceItems(
   ];
 }
 
+// Appends in place: copying a list per entry is quadratic over a large
+// inventory.
+function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
+  const list = map.get(key);
+  if (list) {
+    list.push(value);
+  } else {
+    map.set(key, [value]);
+  }
+}
+
 function namespaceCandidates(query: string, sources: PaletteSources) {
   const byName = new Map<string, ClusterView[]>();
   for (const view of sources.views) {
     for (const name of namespaceNames(view)) {
-      byName.set(name, [...(byName.get(name) ?? []), view]);
+      append(byName, name, view);
     }
   }
   return [...byName].flatMap(([namespace, clusters]) =>
@@ -498,11 +509,29 @@ const tieOrder: PaletteGroup[] = [
 ];
 
 // The other groups stay whole, so an exact cluster survives many resource
-// matches.
-const groupCaps: Partial<Record<PaletteGroup, number>> = {
-  Namespaces: 10,
-  Resources: 30,
-};
+// matches. Resources are capped by row. Namespaces are capped by name, so a
+// namespace keeps its drills and per-cluster Inspect rows, and many clusters
+// do not crowd other namespaces out.
+const rowCaps: Partial<Record<PaletteGroup, number>> = { Resources: 30 };
+const subjectCaps: Partial<Record<PaletteGroup, number>> = { Namespaces: 10 };
+
+function capped(group: PaletteGroup, sorted: Scored[]) {
+  const rows = rowCaps[group];
+  if (rows != null) {
+    return sorted.slice(0, rows);
+  }
+  const subjects = subjectCaps[group];
+  if (subjects == null) {
+    return sorted;
+  }
+  const kept = new Set<string>();
+  return sorted.filter((candidate) => {
+    if (!kept.has(candidate.key) && kept.size < subjects) {
+      kept.add(candidate.key);
+    }
+    return kept.has(candidate.key);
+  });
+}
 
 function compareScored(a: Scored, b: Scored) {
   return (
@@ -519,8 +548,7 @@ function rankedGroups(candidates: Scored[]) {
     if (candidate.score < 0) {
       continue;
     }
-    const group = candidate.item.group;
-    groups.set(group, [...(groups.get(group) ?? []), candidate]);
+    append(groups, candidate.item.group, candidate);
   }
   return [...groups]
     .map(([group, items]) => {
@@ -528,7 +556,7 @@ function rankedGroups(candidates: Scored[]) {
       return {
         group,
         best: sorted[0]?.score ?? 0,
-        items: sorted.slice(0, groupCaps[group] ?? sorted.length),
+        items: capped(group, sorted),
       };
     })
     .sort(
