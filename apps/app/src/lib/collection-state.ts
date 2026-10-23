@@ -318,7 +318,8 @@ export type CrumbTone = "success" | "warning" | "info" | "muted";
 // The cluster crumb's second line and dot, the state always in words. Live
 // it states the heartbeat; frozen it states the saved inventory, judged
 // against the selected time by the saved-inventory budget. A saved heartbeat
-// is never judged against the wall clock.
+// is never judged against the wall clock. A stale saved inventory says so
+// first, before the free-text environment, so the words lead the line.
 export function clusterCrumb(
   view: ClusterView,
   now: number,
@@ -335,7 +336,7 @@ export function clusterCrumb(
     const stale =
       inventoryFreshness(view.inventory.sourceTime, now) === "stale";
     return {
-      text: `${environment} · saved inventory ${saved}${stale ? " · stale at this time" : ""}`,
+      text: `${stale ? "Stale at this time · " : ""}${environment} · saved inventory ${saved}`,
       tone: stale ? "warning" : "info",
     };
   }

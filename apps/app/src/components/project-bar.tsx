@@ -115,6 +115,35 @@ const crumbDots: Record<CrumbTone, string> = {
   muted: "bg-muted-foreground",
 };
 
+// A cluster's row in the Cluster crumb. The name truncates; the state line
+// wraps within the menu instead, so its words (a stale saved inventory, the
+// saved time) stay in sight beside the dot.
+export function ClusterCrumbRow({
+  name,
+  crumb,
+}: {
+  name: string;
+  crumb: { text: string; tone: CrumbTone };
+}) {
+  return (
+    <>
+      <span
+        aria-hidden
+        className={cn(
+          "mt-1.5 size-2 shrink-0 self-start rounded-full",
+          crumbDots[crumb.tone]
+        )}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{name}</span>
+        <span className="block break-words text-muted-foreground text-xs">
+          {crumb.text}
+        </span>
+      </span>
+    </>
+  );
+}
+
 // The Settings tab names its staged changes, so they stay in sight from any
 // tab; frozen views only know that some are waiting.
 function settingsLabel(staged: number | "waiting") {
@@ -418,21 +447,7 @@ export function ProjectBar({
                       key={item.cluster.id}
                       value={item.cluster.id}
                     >
-                      <span
-                        aria-hidden
-                        className={cn(
-                          "size-2 shrink-0 rounded-full",
-                          crumbDots[crumb.tone]
-                        )}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">
-                          {item.cluster.name}
-                        </span>
-                        <span className="block truncate text-muted-foreground text-xs">
-                          {crumb.text}
-                        </span>
-                      </span>
+                      <ClusterCrumbRow crumb={crumb} name={item.cluster.name} />
                     </DropdownMenuRadioItem>
                   );
                 })}
