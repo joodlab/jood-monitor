@@ -4,7 +4,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { recordDeliveryWatch } from "../hooks/delivery";
 import { DisplayProvider } from "../hooks/display";
-import type { Attention, Severity } from "../lib/attention";
+import {
+  type Attention,
+  attentionItems,
+  attentionSummary,
+  type Severity,
+} from "../lib/attention";
 import { AttentionWidget, attentionRows } from "./widget-attention";
 
 // Server-rendered markup of the Needs attention widget. Synthetic clusters
@@ -176,5 +181,28 @@ describe("Needs attention widget", () => {
     expect(render([], [view])).toContain(
       "Observer on synthetic-restart-name discarded 2 more batches since this page opened (first new drops seen in the heartbeat received 14:00:15 UTC)."
     );
+  });
+
+  it("never moves the project bar's badge for a rise this page saw", () => {
+    // The dashboard's badge: the actionable count and worst severity of the
+    // attention items. A live cluster with nothing wrong has neither, before
+    // and after this page sees its observer discard batches.
+    const quiet = reporting("synthetic-badge", 40, 0);
+    const now = start + 20_000;
+    const before = attentionSummary(attentionItems([quiet], now));
+    expect(before).toMatchObject({ actionable: 0, worst: undefined });
+    recordDeliveryWatch([quiet], start + 5000);
+    const view = reporting("synthetic-badge", 46, 15);
+    recordDeliveryWatch([view], now);
+    expect(render([], [view])).toContain("discarded 6 more batches");
+    expect(attentionSummary(attentionItems([view], now))).toEqual(before);
+    // Beside one warning row the badge counts that row alone.
+    const warned = [...attentionItems([view], now), ...rows(["warning"])];
+    expect(attentionSummary(warned)).toMatchObject({
+      actionable: 1,
+      warning: 1,
+      info: 0,
+      worst: "warning",
+    });
   });
 });
