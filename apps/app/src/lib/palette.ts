@@ -7,7 +7,11 @@ import {
 } from "../schemas/monitor";
 import { resourceStatus } from "./infrastructure";
 import { resourceTabs } from "./resource-table";
-import { INVENTORY_RETENTION_DAYS, RAW_RETENTION_DAYS } from "./retention";
+import {
+  DIAGNOSTIC_RETENTION_DAYS,
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+} from "./retention";
 
 // The finder's results (⌘K / Ctrl+K), kept apart from its dialog so they
 // can be checked without a router. They come from the loaded snapshot, the
@@ -604,6 +608,10 @@ const problemsDetail: Record<string, string> = {
   resources: "Show only resources with live problems",
 };
 
+function days(count: number) {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
+
 function action(
   id: ActionId,
   label: string,
@@ -638,7 +646,7 @@ export function paletteActions(state: ActionState): PaletteItem[] {
     action(
       "saved",
       "View a saved observation…",
-      `Inventory and events: ${INVENTORY_RETENTION_DAYS} days; raw CPU/memory: up to ${RAW_RETENTION_DAYS} days`,
+      `Inventory and events: ${days(INVENTORY_RETENTION_DAYS)}; raw CPU/memory: up to ${days(RAW_RETENTION_DAYS)}; Diagnostic samples: ${days(DIAGNOSTIC_RETENTION_DAYS)}`,
       ["saved", "history", "past", "time", "travel"]
     ),
   ];

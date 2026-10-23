@@ -10,7 +10,11 @@ import {
   paletteResults,
   targetPatch,
 } from "./palette";
-import { INVENTORY_RETENTION_DAYS, RAW_RETENTION_DAYS } from "./retention";
+import {
+  DIAGNOSTIC_RETENTION_DAYS,
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+} from "./retention";
 
 // Synthetic fixtures shaped like the demo seed: a production cluster with a
 // shop namespace and Ingress hosts, and an edge cluster. Both run
@@ -436,10 +440,10 @@ describe("palette actions", () => {
     );
     expect(saved?.label).toBe("View a saved observation…");
     expect(saved?.detail).toBe(
-      `Inventory and events: ${INVENTORY_RETENTION_DAYS} days; raw CPU/memory: up to ${RAW_RETENTION_DAYS} days`
+      `Inventory and events: ${INVENTORY_RETENTION_DAYS} days; raw CPU/memory: up to ${RAW_RETENTION_DAYS} days; Diagnostic samples: ${DIAGNOSTIC_RETENTION_DAYS} day`
     );
     expect(saved?.detail).toBe(
-      "Inventory and events: 180 days; raw CPU/memory: up to 7 days"
+      "Inventory and events: 180 days; raw CPU/memory: up to 7 days; Diagnostic samples: 1 day"
     );
   });
 
