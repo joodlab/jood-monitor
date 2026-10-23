@@ -1,4 +1,4 @@
-import type { ClusterView } from "@jood-monitor/api-client";
+import type { ClusterView, Snapshot } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import {
   DropdownMenu,
@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@jood-monitor/ui/dropdown-menu";
 import { cn } from "@jood-monitor/ui/utils";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   BookOpen,
@@ -38,6 +39,8 @@ import {
 } from "../lib/staged-changes";
 import {
   formatDateTime,
+  type HubClock,
+  hubNow,
   knownTime,
   observationMs,
   type TimeZonePreference,
@@ -176,6 +179,27 @@ function PreferencesMenu({ onTimeTravel }: { onTimeTravel: () => void }) {
   );
 }
 
+// The hub's clock as this page last heard it: from the snapshot of the
+// selected time, else from the live snapshot cached before freezing. A time
+// the hub refused has no snapshot, so the live one is then the only witness.
+// Read on each render; the dashboard re-renders the bar whenever either
+// query settles.
+function useHubClock(
+  workspace: string,
+  at: string | undefined
+): HubClock | undefined {
+  const client = useQueryClient();
+  for (const key of [at ?? "live", "live"]) {
+    const state = client.getQueryState<Snapshot>(["snapshot", workspace, key]);
+    if (state?.data) {
+      return {
+        serverTime: state.data.serverTime,
+        receivedAt: state.dataUpdatedAt,
+      };
+    }
+  }
+}
+
 function LiveControl({
   connection,
   onFreeze,
@@ -271,6 +295,7 @@ export function ProjectBar({
   onSearch: () => void;
 }) {
   const { now, frozen, at, referenceTime, timeZone } = useDisplay();
+  const clock = selectedTimeClock(now, useHubClock(workspace, at));
   // The bar is on every tab, so it keeps this page's delivery watch current
   // for Settings and Observability; frozen views are never recorded.
   useDeliveryWatch(clusters);
@@ -499,7 +524,8 @@ export function ProjectBar({
             <FrozenSubject
               at={at}
               clusters={clusters}
-              now={now}
+              hubJudged={clock.hub}
+              now={clock.now}
               timeZone={timeZone}
             />
           </span>
@@ -517,16 +543,25 @@ export function ProjectBar({
   );
 }
 
-// How far ahead of the display clock a selected time may be: the hub allows
-// a minute for clock differences.
+// The clock a selected time is judged on: the hub's, as the hub judges it,
+// where this page has heard it; else this browser's, and the banner says
+// so. Zero until hydration, like the display clock.
+export function selectedTimeClock(now: number, hubClock: HubClock | undefined) {
+  const hub = now ? hubNow(hubClock, now) : undefined;
+  return { now: hub ?? now, hub: hub != null };
+}
+
+// How far ahead of the clock a selected time may be: the hub allows a
+// minute for clock differences.
 const AHEAD_MS = 60_000;
 
 type FrozenState = "frozen" | "retention" | "ahead" | "empty";
 
 // What the selected time can show. Outside retention or ahead of the clock
 // the hub keeps nothing to show; with every cluster loaded and none saved,
-// nothing was archived at or before it. The clock is zero until hydration.
-function frozenState(
+// nothing was archived at or before it. The clock is the hub's where this
+// page has heard it, else this browser's, and zero until hydration.
+export function frozenState(
   time: number,
   clusters: ClusterView[],
   now: number
@@ -545,15 +580,18 @@ function frozenState(
 
 // The frozen banner's text. An unreadable link time is said to be one,
 // never shown as a time guessed in some zone; a time always shows its year
-// and zone, so a saved observation is never read as this year's.
-function FrozenSubject({
+// and zone, so a saved observation is never read as this year's. A verdict
+// judged on this browser's clock says so, never claiming the hub's.
+export function FrozenSubject({
   at,
   clusters,
+  hubJudged,
   now,
   timeZone,
 }: {
   at: string;
   clusters: ClusterView[];
+  hubJudged: boolean;
   now: number;
   timeZone: string;
 }) {
@@ -574,11 +612,17 @@ function FrozenSubject({
       return (
         <>
           {selected} is outside the {INVENTORY_RETENTION_DAYS}-day
-          saved-observation retention.
+          saved-observation retention
+          {hubJudged ? "" : " by this browser's clock"}.
         </>
       );
     case "ahead":
-      return <>{selected} is after the hub's current time.</>;
+      return (
+        <>
+          {selected} is after {hubJudged ? "the hub's" : "this browser's"}{" "}
+          current time.
+        </>
+      );
     case "empty":
       return <>No saved observation at {selected}.</>;
     default:
