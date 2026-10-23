@@ -37,7 +37,7 @@ import {
   valueDomainTop,
   withGaps,
 } from "../lib/chart-scale";
-import { blankRows } from "../lib/history-series";
+import { blankRows, type LatestTail, latestTail } from "../lib/history-series";
 import { formatDateTime, timeZoneLabel } from "../lib/time";
 import { TimeText } from "./time";
 
@@ -320,6 +320,7 @@ export function MetricChart({
           countLabel={countLabel}
           frozen={frozen}
           percentBase={percentBase}
+          spans={spans}
           stats={stats}
           to={to}
           unit={unit}
@@ -454,6 +455,26 @@ function BreakCounts({
   );
 }
 
+// What follows the latest sample: nothing while it is recent; that none
+// came since, when the source sent nothing for longer than GAP_MS; and,
+// when periods the read left out reach `to`, that they were not loaded,
+// rather than that the source went quiet.
+function tailText(tail: LatestTail | undefined) {
+  if (!tail || tail.state === "fresh") {
+    return;
+  }
+  const periods =
+    tail.periods === 1
+      ? "a Diagnostic period"
+      : `${tail.periods} Diagnostic periods`;
+  if (tail.state === "blank") {
+    return `${periods} after it not loaded`;
+  }
+  return tail.periods
+    ? `none since, apart from ${periods} not loaded`
+    : "none since";
+}
+
 function ChartSummary({
   stats,
   unit,
@@ -463,6 +484,7 @@ function ChartSummary({
   breaks,
   countLabel,
   zoomed,
+  spans,
 }: {
   stats: SampleStats;
   unit: DisplayUnit;
@@ -472,10 +494,20 @@ function ChartSummary({
   breaks?: ChartBreaks;
   countLabel: CountNoun;
   zoomed: boolean;
+  spans: readonly ChartSpan[];
 }) {
   const latest = stats.latest;
   const share = percentOf(latest?.value, percentBase?.value);
-  const silent = latest ? to - latest.time > GAP_MS : false;
+  // Blank periods hold no rows, so they cannot show the source went quiet.
+  const tail =
+    latest &&
+    latestTail(
+      latest.time,
+      to,
+      spans.filter((item) => item.blank)
+    );
+  const silent = tail?.state === "quiet";
+  const after = tailText(tail);
   return (
     <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted-foreground text-xs">
       <span>
@@ -510,7 +542,7 @@ function ChartSummary({
           label="Last sample source time"
           value={latest ? new Date(latest.time).toISOString() : undefined}
         />
-        {silent && " · none since"}
+        {after && ` · ${after}`}
       </span>
       <BreakCounts breaks={breaks} stats={stats} />
       {zoomed && (

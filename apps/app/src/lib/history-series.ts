@@ -421,6 +421,45 @@ export function blankRows<T extends IntervalRow>(
   return { added, rows: kept };
 }
 
+// What follows a chart's latest kept row up to `to`.
+export interface LatestTail {
+  // Periods left out after the row, which a quiet tail may also hold.
+  periods: number;
+  // "fresh" within GAP_MS of `to`. "blank" when the periods left out cover
+  // all of it but stretches of at most GAP_MS, so the read's omission, not
+  // the source, is why no later sample is drawn. "quiet" when the source
+  // sent nothing for longer than GAP_MS outside them.
+  state: "blank" | "fresh" | "quiet";
+}
+
+export function latestTail(
+  latest: number,
+  to: number,
+  periods: readonly Span[]
+): LatestTail {
+  const sorted = [...periods].sort((a, b) => a.start - b.start);
+  let covered = latest;
+  let count = 0;
+  let quiet = false;
+  for (const period of sorted) {
+    if (period.end <= covered || period.start > to) {
+      continue;
+    }
+    count++;
+    if (period.start - covered > GAP_MS) {
+      quiet = true;
+    }
+    covered = period.end;
+  }
+  if (to - covered > GAP_MS) {
+    quiet = true;
+  }
+  if (to - latest <= GAP_MS) {
+    return { periods: count, state: "fresh" };
+  }
+  return { periods: count, state: quiet ? "quiet" : "blank" };
+}
+
 // Where a period is read on its own: a minute either side, ending no later
 // than `end` (the hub's now, or the saved observation) and starting no
 // earlier than the raw retention, as rawWindow decides.

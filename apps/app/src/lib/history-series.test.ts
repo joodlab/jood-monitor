@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SeriesHistorySeries } from "../contracts/types";
+import { rowStats } from "./chart-scale";
 import {
   blankRows,
   chartSpans,
@@ -8,6 +9,7 @@ import {
   counterRates,
   diagnosticSpans,
   gaugeRows,
+  latestTail,
   mergePeriods,
   omittedPeriods,
   periodWindow,
@@ -413,6 +415,70 @@ describe("omitted Diagnostic periods", () => {
     expect(used.filter((row) => inPeriod(row))).toEqual([
       { time: period.start, value: null },
     ]);
+  });
+
+  it("say a period reaching the window's end was not loaded, not that the source went quiet", () => {
+    // A saved observation at 12:12, during the period: an entity the
+    // Diagnostic did not cover reported every 30 s up to it.
+    const to = t0 + 12 * minute;
+    const rows = gaugeRows([
+      series(
+        Array.from({ length: 25 }, (_, index) => [
+          index * 30_000,
+          String(index),
+        ]),
+        { kind: "gauge", temporality: 0, monotonic: false }
+      ),
+    ]);
+    const latest = rowStats(blankRows(rows, [period]).rows).latest;
+    expect(latest?.time).toBe(t0 + 4.5 * minute);
+    expect(to - (latest?.time ?? to)).toBeGreaterThan(90_000);
+    expect(latestTail(latest?.time ?? to, to, [period])).toEqual({
+      periods: 1,
+      state: "blank",
+    });
+    // Two adjoining periods reach it together.
+    const [next] = omittedPeriods([
+      {
+        ...omission,
+        from: "2026-10-22T12:20:00.000000000Z",
+        to: "2026-10-22T12:24:59.999999999Z",
+      },
+    ]);
+    expect(
+      latestTail(t0 + 4.5 * minute, t0 + 23 * minute, [next, period])
+    ).toEqual({ periods: 2, state: "blank" });
+  });
+
+  it("still warn when the source sent nothing outside a period", () => {
+    // Quiet for three minutes before the period starts.
+    expect(latestTail(t0 + 2 * minute, t0 + 12 * minute, [period])).toEqual({
+      periods: 1,
+      state: "quiet",
+    });
+    // Nothing in the ten minutes after it ends.
+    expect(latestTail(t0 + 4.5 * minute, t0 + 30 * minute, [period])).toEqual({
+      periods: 1,
+      state: "quiet",
+    });
+    // No period, or one before the latest sample, explains nothing.
+    expect(latestTail(t0, t0 + 2 * minute, [])).toEqual({
+      periods: 0,
+      state: "quiet",
+    });
+    expect(latestTail(t0 + 21 * minute, t0 + 23 * minute, [period])).toEqual({
+      periods: 0,
+      state: "quiet",
+    });
+    // A latest sample within GAP_MS of the end is fresh.
+    expect(latestTail(t0 + 4.5 * minute, t0 + 5.5 * minute, [period])).toEqual({
+      periods: 1,
+      state: "fresh",
+    });
+    expect(latestTail(t0, t0 + 90_000, [])).toEqual({
+      periods: 0,
+      state: "fresh",
+    });
   });
 
   it("read a period on its own with a minute either side, within the window", () => {

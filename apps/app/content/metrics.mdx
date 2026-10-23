@@ -119,12 +119,15 @@ Diagnostic did not cover. When the raw archives alone fit, the hour still
 loads without that Diagnostic's samples, and the response names the omitted
 period with its exact source-time bounds. The chart leaves the period blank,
 with no line or counter rate across it, and says **Samples taken during a
-Diagnostic between … and … were not loaded with this hour**. **Load the
-Diagnostic period** reads that period on its own, with a minute either side,
-and **Back to the hour** (or the selected range) returns. If even that
-shorter read holds too many samples, the chart says so instead of drawing
-part of it. Diagnostic samples are kept one day after their source time, so
-a period older than that has nothing left to load and is not offered.
+Diagnostic between … and … were not loaded with this hour**. When the period
+reaches the end of the window, the chart's summary says the Diagnostic period
+after its last sample was not loaded, not that the source stopped reporting.
+**Load the Diagnostic period** reads that period on its own, with a minute
+either side, and **Back to the hour** (or the selected range) returns. If
+even that shorter read holds too many samples, the chart says so instead of
+drawing part of it. Diagnostic samples are kept one day after their source
+time, so a period older than that has nothing left to load and is not
+offered.
 
 ## Limits
 
