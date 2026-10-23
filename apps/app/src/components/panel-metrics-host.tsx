@@ -5,6 +5,7 @@ import { EyeOff, Info, Timer, ZoomIn, ZoomOut } from "lucide-react";
 import {
   lazy,
   type ReactNode,
+  type RefObject,
   Suspense,
   useEffect,
   useId,
@@ -435,10 +436,17 @@ function focusedText(
   return `Showing the Diagnostic period on its own: ${shown}.${unread} ${periodRetention(period, now, timeZone)}`;
 }
 
+// The range control in `returnTo`: the range select, or the range a saved
+// observation shows (marked data-range).
+const rangeControl = "button, [data-range]";
+
 // Diagnostic periods a read left out to stay within what the hub parses in
 // one request, each with a way to read it on its own; while one is read on
 // its own, what that read loaded and the way back. Focus moves to the
-// button that replaces the one pressed.
+// button that replaces the one pressed. The way back may leave no button
+// for the period (the range now loads it, it expired, or its read is still
+// pending, so the notice may be gone); focus then moves to another period's
+// button, else to the range control in `returnTo`, never to the page.
 export function OmissionNotice({
   reads,
   focused,
@@ -446,6 +454,7 @@ export function OmissionNotice({
   onLoad,
   onBack,
   hubClock,
+  returnTo,
 }: {
   reads: readonly SectionRead[];
   focused?: OmittedPeriod;
@@ -453,6 +462,7 @@ export function OmissionNotice({
   onLoad: (period: OmittedPeriod) => void;
   onBack: () => void;
   hubClock?: SeriesWindow["hubClock"];
+  returnTo?: RefObject<HTMLElement | null>;
 }) {
   const { now: clock, timeZone } = useDisplay();
   const box = useRef<HTMLDivElement>(null);
@@ -466,12 +476,15 @@ export function OmissionNotice({
     const buttons = [
       ...(box.current?.querySelectorAll<HTMLButtonElement>("button") ?? []),
     ];
+    const loads = buttons.filter((button) => button.dataset.load != null);
     const target = focused
       ? buttons.find((button) => button.dataset.back != null)
-      : buttons.find((button) => button.dataset.load === from);
+      : (loads.find((button) => button.dataset.load === from) ??
+        loads[0] ??
+        returnTo?.current?.querySelector<HTMLElement>(rangeControl));
     target?.focus();
     pressed.current = undefined;
-  }, [focused]);
+  }, [focused, returnTo]);
   const periods = mergePeriods(...reads.map((read) => read.periods));
   // The display clock is zero until hydration; times wait for it.
   if (!(clock && (focused || periods.length))) {

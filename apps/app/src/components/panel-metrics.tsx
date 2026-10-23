@@ -8,6 +8,7 @@ import {
   Suspense,
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { SeriesHistorySeries } from "../contracts/types";
@@ -273,6 +274,9 @@ function UsageHistory({
     domain: [number, number];
   }>();
   const domain = zoom?.key === zoomKey ? zoom.domain : undefined;
+  // The range control, where focus goes when the way back from a period
+  // leaves no button for it.
+  const rangeRow = useRef<HTMLDivElement>(null);
   const clamped = clampedFrom(shownCpu, shownMemory);
   const hostShown =
     node && !!host.data && hasHostSamples(host.data.response.series);
@@ -306,7 +310,10 @@ function UsageHistory({
   ));
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div
+        className="flex flex-wrap items-center justify-between gap-2"
+        ref={rangeRow}
+      >
         <p className="max-w-prose text-muted-foreground text-xs">
           Raw samples at their source time. Gaps longer than {GAP_MS / 1000} s
           stay blank; nothing is interpolated or drawn as zero.
@@ -314,7 +321,11 @@ function UsageHistory({
         {onRange ? (
           <RangeSelect onRange={onRange} range={range} />
         ) : (
-          <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+          <span
+            className="flex items-center gap-1.5 rounded-sm text-muted-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-range
+            tabIndex={-1}
+          >
             <History aria-hidden className="size-3.5" />
             {rangeLabel(range, at, timeZone)}
           </span>
@@ -340,6 +351,7 @@ function UsageHistory({
         }}
         range={range}
         reads={reads}
+        returnTo={rangeRow}
       />
       {node ? (
         <NodeSections
