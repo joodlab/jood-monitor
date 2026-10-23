@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { validateMonitorSearch } from "../schemas/monitor";
 import {
   linkedOffer,
+  menuMoment,
   pinnedInstant,
+  pinOnOpen,
   shareHints,
   shareSearch,
 } from "./share-link";
@@ -62,7 +64,7 @@ describe("pinned instant", () => {
     expect(pinnedInstant({ now: Date.parse(serverTime) })).toBe(serverTime);
   });
 
-  it("keeps the moment when an inventory arrives after the snapshot", () => {
+  it("opens the inventory on screen, not one received after the snapshot", () => {
     // An inventory the hub received after the snapshot, with a source time
     // before the snapshot's hub time. A link at the hub time would open it;
     // the pinned moment still opens the inventory that was on screen.
@@ -74,6 +76,42 @@ describe("pinned instant", () => {
     expect(Date.parse(later)).toBeLessThan(Date.parse(serverTime));
     // Saved inventory is resolved by sourceTime ≤ at.
     expect(Date.parse(later) <= Date.parse(link.at ?? "")).toBe(false);
+  });
+});
+
+describe("link menu moment", () => {
+  const later = "2026-10-22T11:59:50.000Z";
+
+  it("keeps the moment when an inventory arrives while the menu is open", () => {
+    const pinned = pinOnOpen(undefined, true, { sourceTime, hubClock, now });
+    expect(pinned).toBe(sourceTime);
+    // The next inventory re-renders the open menu with its source time.
+    expect(menuMoment(pinned, { sourceTime: later, hubClock })).toBe(
+      sourceTime
+    );
+    const link = shareSearch(open, {
+      mode: "moment",
+      at: menuMoment(pinned, { sourceTime: later, hubClock }),
+    });
+    expect(link.at).toBe(sourceTime);
+    // Closing keeps it, so the label does not change as the menu leaves.
+    expect(
+      pinOnOpen(pinned, false, { sourceTime: later, hubClock, now: now + 500 })
+    ).toBe(sourceTime);
+  });
+
+  it("pins the inventory on screen again when the menu reopens", () => {
+    const pinned = pinOnOpen(undefined, true, { sourceTime, hubClock, now });
+    expect(
+      pinOnOpen(pinned, true, { sourceTime: later, hubClock, now: now + 500 })
+    ).toBe(later);
+  });
+
+  it("follows the same rule before the menu first opens", () => {
+    expect(menuMoment(undefined, { sourceTime, hubClock })).toBe(sourceTime);
+    expect(menuMoment(undefined, { at: frozenAt, sourceTime, hubClock })).toBe(
+      frozenAt
+    );
   });
 });
 

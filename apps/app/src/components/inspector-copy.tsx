@@ -19,7 +19,8 @@ import {
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import {
-  pinnedInstant,
+  menuMoment,
+  pinOnOpen,
   type ShareMode,
   shareHints,
   shareSearch,
@@ -168,8 +169,7 @@ export function CopyLinkMenu({
   const { state, copy } = useCopy();
   const [pinned, setPinned] = useState<string>();
   const frozen = !!search.at;
-  const moment =
-    pinned ?? pinnedInstant({ at: search.at, sourceTime, hubClock, now: 0 });
+  const moment = menuMoment(pinned, { at: search.at, sourceTime, hubClock });
   const momentMs = observationMs(moment);
   const zone = timeZoneLabel(timeZone, momentMs);
   const href = (next: SearchState) =>
@@ -187,18 +187,16 @@ export function CopyLinkMenu({
   return (
     <>
       <DropdownMenu
-        onOpenChange={(open) => {
-          if (open) {
-            setPinned(
-              pinnedInstant({
-                at: search.at,
-                sourceTime,
-                hubClock,
-                now: Date.now(),
-              })
-            );
-          }
-        }}
+        onOpenChange={(open) =>
+          setPinned((current) =>
+            pinOnOpen(current, open, {
+              at: search.at,
+              sourceTime,
+              hubClock,
+              now: Date.now(),
+            })
+          )
+        }
       >
         <DropdownMenuTrigger
           render={

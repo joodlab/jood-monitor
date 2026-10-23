@@ -58,6 +58,29 @@ export function pinnedInstant({
   return new Date(hub ?? now).toISOString();
 }
 
+interface MomentInputs {
+  at?: string;
+  hubClock?: HubClock;
+  sourceTime?: string;
+}
+
+// The link menu's pinned moment as it opens or closes: computed afresh from
+// what is on screen when it opens, and kept while it is open and closing.
+export function pinOnOpen(
+  pinned: string | undefined,
+  open: boolean,
+  inputs: MomentInputs & { now: number }
+) {
+  return open ? pinnedInstant(inputs) : pinned;
+}
+
+// The moment the menu labels and copies: the one pinned when it opened, so
+// an inventory that arrives while it is open changes neither. Before the
+// first open, the same rule without the browser clock, for a stable render.
+export function menuMoment(pinned: string | undefined, inputs: MomentInputs) {
+  return pinned ?? pinnedInstant({ ...inputs, now: 0 });
+}
+
 // The search a link carries: the whole current view, workspace, Settings
 // section and diagnostic node included, with only the time keys changed.
 export function shareSearch(
