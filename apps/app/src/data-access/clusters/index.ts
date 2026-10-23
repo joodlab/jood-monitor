@@ -147,6 +147,9 @@ export async function listArchives(
     from: string;
     to: string;
     entityUid?: string;
+    // Several entities' own archives; cluster-wide packed windows ("") are
+    // included unless includePacked is false.
+    entityUids?: string[];
     includePacked?: boolean;
     limit?: number;
   }
@@ -157,7 +160,13 @@ export async function listArchives(
   })
     .where((a) => a.sourceEnd.gte(input.from))
     .where((a) => a.sourceStart.lte(input.to));
-  if (input.entityUid !== undefined) {
+  if (input.entityUids !== undefined) {
+    const entities =
+      input.includePacked === false
+        ? [...input.entityUids]
+        : [...input.entityUids, ""];
+    query = query.where((a) => a.entityUid.in(entities));
+  } else if (input.entityUid !== undefined) {
     const entities =
       input.includePacked === false ? [input.entityUid] : [input.entityUid, ""];
     query = query.where((a) => a.entityUid.in(entities));

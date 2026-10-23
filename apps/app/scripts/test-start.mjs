@@ -225,10 +225,18 @@ try {
   assert.equal(registered.status, 200);
   assert.equal((await deserialize(registered)).error, undefined);
   // Middleware order and the response header are only observable here.
-  for (const name of ["getSnapshotFn", "getEventsFn"]) {
-    const timed = await rpc(hub, origin, name, {
-      workspace: cluster.workspace,
-    });
+  const seriesInput = {
+    ...cluster,
+    from: new Date(Date.now() - 3_600_000).toISOString(),
+    entities: ["synthetic-start-node"],
+    names: ["k8s.node.cpu.usage", "k8s.node.memory.usage"],
+  };
+  for (const [name, data] of [
+    ["getSnapshotFn", { workspace: cluster.workspace }],
+    ["getEventsFn", { workspace: cluster.workspace }],
+    ["getSeriesHistoryFn", seriesInput],
+  ]) {
+    const timed = await rpc(hub, origin, name, data);
     assert.equal(timed.status, 200);
     const stages = timed.headers.get("Server-Timing") ?? "";
     for (const stage of ["d1", "do", "total"]) {
@@ -239,6 +247,26 @@ try {
       );
     }
   }
+  const series = await deserialize(
+    await rpc(hub, origin, "getSeriesHistoryFn", seriesInput)
+  );
+  assert.equal(series.error, undefined);
+  assert.deepEqual(series.result.requested, {
+    entities: seriesInput.entities,
+    names: seriesInput.names,
+  });
+  assert.deepEqual(series.result.series, []);
+  assert.ok(
+    (
+      await deserialize(
+        await rpc(hub, origin, "getSeriesHistoryFn", {
+          ...seriesInput,
+          names: ["system.network.errors"],
+        })
+      )
+    ).error,
+    "a series the agent never sends is rejected"
+  );
   assert.equal(
     (await rpc(hub, origin, "getClusterStatusFn", cluster, "GET", {})).status,
     401

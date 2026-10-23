@@ -3,7 +3,7 @@ import type { StoredMetric } from "../contracts/types";
 import { HttpError } from "../lib/server/http";
 import { compareMetrics } from "../lib/server/telemetry";
 import { bucketStart, timestampNano } from "../lib/server/time";
-import type { DirtyPartition } from "./cluster-storage";
+import type { DirtyPartition, HistoryFilter } from "./cluster-storage";
 
 type Receipt = [id: string, rejected: number, received: number];
 interface Chunk {
@@ -31,6 +31,16 @@ export function compress(json: string) {
 
 export function decompress<T>(value: ArrayBuffer): T {
   return JSON.parse(gunzipSync(new Uint8Array(value)).toString()) as T;
+}
+
+function historyMatch(from: string, to: string, filter: HistoryFilter) {
+  const entities = filter.entities && new Set(filter.entities);
+  const names = filter.names && new Set(filter.names);
+  return (row: StoredMetric) =>
+    row.sourceTime >= from &&
+    row.sourceTime <= to &&
+    (!entities || entities.has(row.entityUid)) &&
+    (!names || names.has(row.name));
 }
 
 // Rows are grouped by source window, not entity or sample. An acknowledged batch
@@ -200,25 +210,25 @@ export class PackedMetrics {
       .flatMap((chunk) => this.rows(chunk));
   }
 
-  history(from: string, to: string, entity?: string, name?: string) {
+  // Rows in the window for the requested entities and names, stopping at the
+  // limit so the caller can recognise a result that does not fit.
+  history(from: string, to: string, filter: HistoryFilter = {}) {
+    const wanted = historyMatch(from, to, filter);
+    const first = bucketStart(String(timestampNano(from)));
+    const limit = filter.limit ?? 10_001;
     const rows: StoredMetric[] = [];
     for (const chunk of this.chunks.values()) {
       if (
         !chunk.partitions.length ||
         chunk.bucket > to ||
-        chunk.bucket < bucketStart(String(timestampNano(from)))
+        chunk.bucket < first
       ) {
         continue;
       }
       for (const row of this.rows(chunk)) {
-        if (
-          row.sourceTime >= from &&
-          row.sourceTime <= to &&
-          (!entity || row.entityUid === entity) &&
-          (!name || row.name === name)
-        ) {
+        if (wanted(row)) {
           rows.push(row);
-          if (rows.length > 10_000) {
+          if (rows.length >= limit) {
             return rows.sort(compareMetrics);
           }
         }

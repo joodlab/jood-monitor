@@ -964,6 +964,352 @@ try {
     behindView,
     "an older instant resolves to the same observation after archival catches up"
   );
+  // Bounded series reads over a synthetic cluster: one read of each archive
+  // serves several entities and names, and every refusal is whole.
+  await ok("/api/v1/workspaces", {
+    method: "POST",
+    body: JSON.stringify({ id: "series", name: "Series fixture" }),
+    expected: 201,
+  });
+  const seriesRegistration = await (
+    await ok("/api/v1/clusters", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "series",
+        workspaceId: "series",
+        name: "Series fixture",
+        environment: "fixture",
+      }),
+      expected: 201,
+    })
+  ).json();
+  const seriesMachine = {
+    Authorization: `Bearer ${
+      (
+        await (
+          await ok("/machine/v1/enroll", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${seriesRegistration.enrollmentToken}`,
+            },
+            body: JSON.stringify({ clusterId: "series" }),
+          })
+        ).json()
+      ).credential
+    }`,
+  };
+  const seriesNodes = ["series-node-a", "series-node-b", "series-node-c"];
+  const seriesSource = new Date(Date.now() - 7 * 60_000).toISOString();
+  await ok("/machine/v1/inventory", {
+    method: "PUT",
+    headers: seriesMachine,
+    body: JSON.stringify({
+      sourceTime: seriesSource,
+      capabilities: ["nodes"],
+      entities: seriesNodes.map((uid) => ({
+        uid,
+        name: uid,
+        kind: "Node",
+        status: "Ready",
+      })),
+      edges: [],
+    }),
+  });
+  // The first heartbeat arrives after the first inventory, so that capture
+  // has no heartbeat time of its own.
+  await ok("/machine/v1/heartbeat", {
+    method: "POST",
+    headers: seriesMachine,
+    body: JSON.stringify({
+      version: "series-fixture",
+      appliedRevision: 1,
+      queueBytes: 0,
+      dropped: 0,
+      rejectedPoints: 0,
+      capabilities: [],
+      outcome: "connected",
+      nodes: [],
+    }),
+  });
+  const seriesFrozen = (
+    await (
+      await ok(
+        `/api/v1/snapshot?workspace=series&at=${encodeURIComponent(seriesSource)}`
+      )
+    ).json()
+  ).clusters[0];
+  assert.equal(
+    seriesFrozen.cluster.heartbeatAt,
+    null,
+    "a time the capture did not record must not show the live value"
+  );
+  assert.equal(seriesFrozen.observationMetadataAvailable.heartbeat, true);
+  const seriesMetric = (name, unit, nanoValue, value) =>
+    Buffer.concat([
+      text(1, name),
+      text(3, unit),
+      message(
+        5,
+        message(1, Buffer.concat([fixed(3, nanoValue), fixed(6, value)]))
+      ),
+    ]);
+  const seriesBatch = (nanoValue) =>
+    Buffer.concat(
+      seriesNodes.map((uid) =>
+        message(
+          1,
+          Buffer.concat([
+            message(
+              1,
+              message(
+                1,
+                Buffer.concat([
+                  text(1, "k8s.node.uid"),
+                  message(2, text(1, uid)),
+                ])
+              )
+            ),
+            message(
+              2,
+              message(
+                2,
+                seriesMetric("k8s.node.cpu.usage", "{cpu}", nanoValue, 2n)
+              )
+            ),
+            message(
+              2,
+              message(
+                2,
+                seriesMetric(
+                  "k8s.node.memory.usage",
+                  "By",
+                  nanoValue,
+                  9_007_199_254_740_993n
+                )
+              )
+            ),
+          ])
+        )
+      )
+    );
+  const seriesDeliver = (body) =>
+    ok("/v1/metrics", {
+      method: "POST",
+      headers: { ...seriesMachine, "Content-Type": "application/x-protobuf" },
+      body,
+    });
+  const archivedNano =
+    BigInt(Date.parse(seriesSource)) * 1_000_000n + 123_456_789n;
+  await seriesDeliver(seriesBatch(archivedNano));
+  const seriesDb = await mf.getD1Database("DB");
+  await ok("/__test/flush?cluster=series");
+  const packed = await seriesDb
+    .prepare(
+      'SELECT entityUid,points FROM "Archive" WHERE clusterId=? AND kind=?'
+    )
+    .bind("series", "raw")
+    .all();
+  assert.deepEqual(
+    packed.results,
+    [{ entityUid: "", points: 6 }],
+    "three entities share one packed raw archive"
+  );
+  const pendingNano = BigInt(Date.now() - 5000) * 1_000_000n + 987n;
+  await seriesDeliver(seriesBatch(pendingNano));
+  const seriesFrom = new Date(Date.now() - 3_600_000).toISOString();
+  const seriesRead = async (input, legacy) =>
+    await (
+      await ok("/__test/series-history", {
+        method: "POST",
+        body: JSON.stringify({
+          input: {
+            workspace: "series",
+            cluster: "series",
+            from: seriesFrom,
+            ...input,
+          },
+          legacy,
+        }),
+      })
+    ).json();
+  const scoped = await seriesRead({
+    entities: ["series-node-a", "series-node-c"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.equal(scoped.status, 200, JSON.stringify(scoped));
+  assert.equal(scoped.gets, 1, "one packed archive is read once");
+  assert.deepEqual(
+    scoped.value.series.map((item) => [item.entityUid, item.name]),
+    [
+      ["series-node-a", "k8s.node.cpu.usage"],
+      ["series-node-c", "k8s.node.cpu.usage"],
+    ],
+    "a packed archive returns only the requested entities and names"
+  );
+  assert.deepEqual(
+    scoped.value.series[0].points.map(([nanoValue]) => nanoValue),
+    [String(archivedNano), String(pendingNano)],
+    "archived and outbox samples merge with exact nanoseconds"
+  );
+  assert.deepEqual(scoped.value.found, ["series-node-a", "series-node-c"]);
+  const memoryRead = await seriesRead({
+    entities: ["series-node-b"],
+    names: ["k8s.node.memory.usage"],
+  });
+  assert.deepEqual(
+    memoryRead.value.series[0].points.map(([, value]) => value),
+    ["9007199254740993", "9007199254740993"]
+  );
+  assert.equal(memoryRead.value.series[0].integer, true);
+  const exactTime = (nanoValue) =>
+    `${new Date(Number(nanoValue / 1_000_000n)).toISOString().slice(0, 19)}.${(
+      nanoValue % 1_000_000_000n
+    )
+      .toString()
+      .padStart(9, "0")}Z`;
+  const oldNano = BigInt(Date.now() - 86_400_000 - 600_000) * 1_000_000n;
+  const oldRow = (diagnostic) => ({
+    id: 1,
+    key: `series-old-${diagnostic}`,
+    series: `series-old-${diagnostic}`,
+    clusterId: "series",
+    entityUid: "series-node-a",
+    name: "k8s.node.cpu.usage",
+    unit: "{cpu}",
+    kind: "gauge",
+    temporality: 0,
+    monotonic: false,
+    integer: true,
+    value: diagnostic ? "5" : "1",
+    timeUnixNano: String(oldNano + (diagnostic ? 1n : 0n)),
+    startTimeUnixNano: "0",
+    sourceTime: exactTime(oldNano + (diagnostic ? 1n : 0n)),
+    receivedAt: new Date().toISOString(),
+    diagnostic,
+    resource: "{}",
+    scope: "{}",
+    attributes: "{}",
+  });
+  for (const diagnostic of [true, false]) {
+    await ok("/__test/series-archive", {
+      method: "POST",
+      body: JSON.stringify({
+        cluster: "series",
+        kind: diagnostic ? "diagnostic" : "raw",
+        rows: [oldRow(diagnostic)],
+      }),
+    });
+  }
+  const dayOld = await seriesRead({
+    from: new Date(Date.now() - 86_400_000 - 1_800_000).toISOString(),
+    to: new Date(Date.now() - 84_600_000).toISOString(),
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.equal(dayOld.status, 200, JSON.stringify(dayOld));
+  assert.equal(dayOld.gets, 2);
+  assert.deepEqual(
+    dayOld.value.series.flatMap((item) =>
+      item.points.map(([, value]) => value)
+    ),
+    ["1"],
+    "a Diagnostic sample older than a day is excluded; a standard one is kept"
+  );
+  const fakeArchives = async (count, points) => {
+    const sourceStart = exactTime(
+      (BigInt(Date.now() - 1_800_000) / 300_000n) * 300_000n * 1_000_000n
+    );
+    // Index rows only: no object exists, so any R2 read would fail.
+    await seriesDb
+      .prepare(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO \"Archive\"(id,clusterId,kind,entityUid,sourceStart,sourceEnd,objectKey,contentHash,receivedAt,expiresAt,points) SELECT 'series-fake-'||i,'series','raw','',?,?,'series-fake-'||i,'synthetic',?,'2100-01-01T00:00:00Z',? FROM n"
+      )
+      .bind(count, sourceStart, sourceStart, new Date().toISOString(), points)
+      .run();
+  };
+  const dropFakeArchives = () =>
+    seriesDb
+      .prepare("DELETE FROM \"Archive\" WHERE id LIKE 'series-fake-%'")
+      .run();
+  await fakeArchives(2001, 1);
+  const crowded = await seriesRead({
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.deepEqual(
+    [crowded.status, crowded.error, crowded.gets],
+    [413, "query too broad; choose a shorter range", 0],
+    "more than 2000 archives per kind is refused before any read"
+  );
+  await dropFakeArchives();
+  await fakeArchives(1, scoped.budget + 1);
+  const heavy = await seriesRead({
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.deepEqual(
+    [heavy.status, heavy.gets],
+    [413, 0],
+    "a parse-budget breach is refused with zero R2 reads"
+  );
+  await dropFakeArchives();
+  assert.equal(
+    (
+      await seriesRead({
+        workspace: "fixture",
+        entities: ["series-node-a"],
+        names: ["k8s.node.cpu.usage"],
+      })
+    ).status,
+    403
+  );
+  const legacyRow = (entityUid, index) => ({
+    ...oldRow(false),
+    key: `legacy-${entityUid}-${index}`,
+    series: `legacy-${entityUid}`,
+    entityUid,
+    timeUnixNano: String(pendingNano - BigInt(index) * 1_000_000_000n),
+    sourceTime: exactTime(pendingNano - BigInt(index) * 1_000_000_000n),
+  });
+  const legacyCut = await seriesRead(
+    { entities: ["series-node-a"], names: ["k8s.node.cpu.usage"] },
+    Array.from({ length: 10_001 }, (_, index) =>
+      legacyRow("series-node-b", index)
+    )
+  );
+  assert.deepEqual(
+    [legacyCut.status, legacyCut.gets],
+    [413, 0],
+    "an earlier object's cut, unfiltered reply is refused, never shown partly"
+  );
+  const legacyShort = await seriesRead(
+    { entities: ["series-node-a"], names: ["k8s.node.cpu.usage"] },
+    [legacyRow("series-node-b", 0), legacyRow("series-node-a", 1)]
+  );
+  assert.deepEqual(
+    legacyShort.value.series.map((item) => item.series),
+    ["legacy-series-node-a", scoped.value.series[0].series].sort(),
+    "an earlier object's reply is filtered again by both sets"
+  );
+  const setSql = await (await ok("/__test/series-sql")).json();
+  assert.deepEqual(setSql, {
+    keys: [
+      "sql-sql-node-a-k8s.node.cpu.usage",
+      "sql-sql-node-c-k8s.node.cpu.usage",
+    ],
+    selected: 2,
+    bindings: 7,
+    jsonSets: true,
+  });
+  const parseStarted = performance.now();
+  const parseCost = await (await ok("/__test/series-parse-cost")).json();
+  console.log(
+    "Native series archive parse cost:",
+    JSON.stringify({
+      ...parseCost,
+      roundTripMs: Math.round(performance.now() - parseStarted),
+    })
+  );
   const sourceRegistry = {
     workspaces: [{ id: "migrated", name: "Private migration fixture" }],
     clusters: [

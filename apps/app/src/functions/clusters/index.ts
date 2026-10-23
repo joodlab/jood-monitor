@@ -11,6 +11,7 @@ import {
   updateProfile,
   workspaces,
 } from "../../actions/clusters";
+import { getSeriesHistory } from "../../actions/clusters/series";
 import { operatorMiddleware } from "../../middlewares/operator";
 import { serverTimingMiddleware } from "../../middlewares/server-timing";
 import {
@@ -20,6 +21,7 @@ import {
   historySchema,
   idSchema,
   profileSchema,
+  seriesHistorySchema,
   snapshotSchema,
   workspaceSchema,
 } from "../../schemas/clusters";
@@ -34,6 +36,13 @@ export const getHistoryFn = createServerFn({ method: "GET" })
   .middleware([operatorMiddleware])
   .validator(historySchema)
   .handler(({ context, data }) => getHistory(context.env, data));
+// Several series for a few Nodes or Pods in one bounded raw read.
+export const getSeriesHistoryFn = createServerFn({ method: "GET" })
+  .middleware([operatorMiddleware, serverTimingMiddleware])
+  .validator(seriesHistorySchema)
+  .handler(({ context, data }) =>
+    getSeriesHistory(context.env, data, context.timing)
+  );
 export const getEventsFn = createServerFn({ method: "GET" })
   .middleware([operatorMiddleware, serverTimingMiddleware])
   .validator(eventsSchema)

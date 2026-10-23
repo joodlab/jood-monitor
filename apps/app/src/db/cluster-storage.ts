@@ -22,6 +22,12 @@ const controlNames = new Set([
   "revision",
   "metricSequence",
 ]);
+// Sets narrow a raw read to several entities and metric names.
+export interface HistoryFilter {
+  entities?: readonly string[];
+  limit?: number;
+  names?: readonly string[];
+}
 export interface DirtyPartition extends Record<string, SqlStorageValue> {
   bucket: string;
   diagnostic: number;
@@ -459,27 +465,47 @@ export class ClusterStorage {
     this.checkpointLatest();
   }
 
-  history(from: string, to: string, entity?: string, name?: string) {
-    // SQL handles source and entity; the metric name is inside the bounded payload.
+  // One entity and metric, as REST history asks, or sets of each. The limit is
+  // one row past what a caller accepts, so a cut result is recognisable.
+  history(
+    from: string,
+    to: string,
+    entity?: string | HistoryFilter,
+    name?: string
+  ) {
+    const filter: HistoryFilter =
+      typeof entity === "object"
+        ? entity
+        : {
+            entities: entity ? [entity] : undefined,
+            names: name ? [name] : undefined,
+          };
+    const limit = filter.limit ?? 10_001;
+    const entities = filter.entities ? JSON.stringify(filter.entities) : null;
+    const names = filter.names ? JSON.stringify(filter.names) : null;
+    // SQL handles source and entity; the metric name is inside the bounded
+    // payload. Each set binds as one JSON value: Durable Object SQLite allows
+    // at most 100 bound parameters per statement.
     const rows = this.storage.sql.exec<PayloadRow>(
-      "SELECT payload FROM raw WHERE source>=? AND source<=? AND (? IS NULL OR entity=?) AND (? IS NULL OR json_extract(payload,'$.name')=?) ORDER BY source LIMIT 10001",
+      "SELECT payload FROM raw WHERE source>=? AND source<=? AND (? IS NULL OR entity IN (SELECT value FROM json_each(?))) AND (? IS NULL OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?))) ORDER BY source LIMIT ?",
       from,
       to,
-      entity ?? null,
-      entity ?? null,
-      name ?? null,
-      name ?? null
+      entities,
+      entities,
+      names,
+      names,
+      limit
     );
     return [
       ...new Map(
         [
           ...rows.toArray().map((r) => JSON.parse(r.payload) as StoredMetric),
-          ...this.packed.history(from, to, entity, name),
+          ...this.packed.history(from, to, { ...filter, limit }),
         ].map((row) => [row.key, row])
       ).values(),
     ]
       .sort(compareMetrics)
-      .slice(0, 10_001);
+      .slice(0, limit);
   }
 
   dirty(now: number, limit = 12) {
