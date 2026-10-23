@@ -7,6 +7,7 @@ import { namespaceSummary } from "./canvas-cards";
 import {
   hasProblem,
   isFinished,
+  matchesText,
   nodeConditionProblems,
   oomObserved,
   owningWorkload,
@@ -875,6 +876,24 @@ describe("pod totals", () => {
       0
     );
     expect(placedActive).toBe(fleet.total - 1);
+  });
+
+  it("matches an Ingress by its configured hosts", () => {
+    const ingress = entity("entry", "Ingress", {
+      hosts: ["shop.synthetic.test", "api.synthetic.test"],
+    });
+    expect(matchesText(ingress, "API.synthetic")).toBe(true);
+    expect(matchesText(ingress, "other.synthetic.test")).toBe(false);
+    expect(matchesText(entity("service", "Service"), "synthetic.test")).toBe(
+      false
+    );
+    const view = placed();
+    Object.assign(find(view, "entry"), { hosts: ["shop.synthetic.test"] });
+    expect(
+      resourceRows([view], { ...listFilter, q: "shop.synthetic" }, now).map(
+        (row) => row.entity.uid
+      )
+    ).toEqual(["entry"]);
   });
 });
 

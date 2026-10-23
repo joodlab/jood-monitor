@@ -6,12 +6,12 @@ import {
   isFinished,
   isSystem,
   isSystemNamespace,
+  matchesText,
   owningWorkload,
   podPhase,
   type ResourceItem,
   relatedPods,
   resourceId,
-  resourceStatus,
   workloadKinds,
 } from "./infrastructure";
 
@@ -226,15 +226,6 @@ export function itemProblem(item: ResourceItem, now: number) {
   );
 }
 
-function matches(entity: Entity, search: string) {
-  return (
-    !search ||
-    `${entity.name} ${entity.namespace ?? ""} ${entity.kind} ${resourceStatus(entity)}`
-      .toLowerCase()
-      .includes(search.toLowerCase())
-  );
-}
-
 function structuralLinks(views: ClusterView[], candidates: ResourceItem[]) {
   const links: GraphLink[] = [];
   for (const view of views) {
@@ -411,7 +402,8 @@ function seedItems(
   let finished = 0;
   let finishedFailed = 0;
   for (const { view, entity } of scoped) {
-    if (!matches(entity, options.search)) {
+    // The Resources table's text match, an Ingress's host names included.
+    if (!matchesText(entity, options.search)) {
       continue;
     }
     if (options.problems && !liveProblem(view, entity, now)) {
@@ -1127,14 +1119,7 @@ function gridPositions(items: GraphItem[]) {
   );
 }
 
-function initialPositions(
-  items: GraphItem[],
-  links: GraphLink[]
-): Record<string, Point> {
-  if (items.length && items.every((item) => item.entity.kind === "Namespace")) {
-    return gridPositions(items);
-  }
-  const placed = items.filter((item) => !item.parent);
+function cardPositions(placed: GraphItem[], links: GraphLink[]) {
   const neighbours = adjacency(placed, links);
   const groups = components(placed, neighbours);
   const blocks = [
@@ -1156,6 +1141,47 @@ function initialPositions(
     }
   }
   return positions;
+}
+
+// A pod with no workload or Service in view, drawn on its own. It keeps the
+// workload lane for ordering but renders as a pod chip.
+function standaloneChip(item: GraphItem) {
+  return (
+    item.entity.kind === "Pod" && item.lane === workloadLane && !item.parent
+  );
+}
+
+// Standalone pods pack as chips in columns of chipsPerColumn, the geometry
+// expanded pods use, right of every other card. Spread one per loose row
+// they made a bare-pod namespace so wide that its fit zoom was unreadable.
+function chipPositions(chips: GraphItem[], x: number) {
+  return Object.fromEntries(
+    chips.map((item, slot) => [item.id, slotAt(x, 0, slot)])
+  );
+}
+
+function initialPositions(
+  items: GraphItem[],
+  links: GraphLink[]
+): Record<string, Point> {
+  if (items.length && items.every((item) => item.entity.kind === "Namespace")) {
+    return gridPositions(items);
+  }
+  const placed = items.filter((item) => !item.parent);
+  const chips = placed.filter(standaloneChip);
+  const cards = placed.filter((item) => !standaloneChip(item));
+  const positions = cardPositions(cards, links);
+  if (!chips.length) {
+    return positions;
+  }
+  const right = cards.length
+    ? Math.max(
+        ...cards.map(
+          (item) => (positions[item.id]?.x ?? 0) + sizeOf(item).width
+        )
+      ) + laneGap
+    : 0;
+  return { ...positions, ...chipPositions(chips, right) };
 }
 
 // The first free column right of the expanded card, skipping cards (not

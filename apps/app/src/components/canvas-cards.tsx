@@ -266,9 +266,16 @@ function UsageLine({
   gap?: UsageGap;
 }) {
   if (entity.kind === "Ingress") {
+    // Configured host rules, not links: the hub does not know whether they
+    // resolve or serve anything. The title keeps every host readable when
+    // the line is cut off.
+    const hosts = entity.hosts?.join(", ");
     return (
-      <p className="truncate font-mono text-[13px] text-foreground/85">
-        {entity.hosts?.join(", ") || "No host rule observed"}
+      <p
+        className="truncate font-mono text-[13px] text-foreground/85"
+        title={hosts || undefined}
+      >
+        {hosts || "No host rule observed"}
       </p>
     );
   }

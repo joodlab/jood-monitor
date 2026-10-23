@@ -366,12 +366,13 @@ export function readinessLabel(pod: Entity) {
   return ready ? "Ready" : "Not ready";
 }
 
-// Case-insensitive match on the identifying text an operator would type.
+// Case-insensitive match on the identifying text an operator would type,
+// an Ingress's configured host names included.
 export function matchesText(entity: Entity, search: string, extra = "") {
   if (!search) {
     return true;
   }
-  return `${entity.name} ${entity.namespace ?? ""} ${entity.kind} ${resourceStatus(entity)} ${extra}`
+  return `${entity.name} ${entity.namespace ?? ""} ${entity.kind} ${resourceStatus(entity)} ${entity.hosts?.join(" ") ?? ""} ${extra}`
     .toLowerCase()
     .includes(search.toLowerCase());
 }

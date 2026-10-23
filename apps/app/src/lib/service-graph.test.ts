@@ -825,6 +825,83 @@ describe("standalone pods", () => {
   });
 });
 
+describe("bare-pod namespaces", () => {
+  // A synthetic batch namespace: one Service that selects nothing beside ten
+  // finished Job pods that no inventoried workload owns.
+  function batchFixture() {
+    const view = fixture();
+    view.inventory.entities.push(
+      entity("ns-batch", "Namespace", { name: "batch", namespace: undefined }),
+      entity("batch-svc", "Service", { namespace: "batch" }),
+      ...Array.from({ length: 10 }, (_, index) =>
+        pod(`job-${index}`, {
+          namespace: "batch",
+          status: "Succeeded",
+          ready: 0,
+        })
+      )
+    );
+    return view;
+  }
+
+  it("packs standalone pods as chip columns beside the other cards", () => {
+    const graph = serviceGraph([batchFixture()], {
+      ...options,
+      namespace: "batch",
+    });
+    expect(graph.items).toHaveLength(11);
+    const pods = graph.items.filter((item) => item.entity.kind === "Pod");
+    expect(pods.every((item) => item.lane === 2 && !item.parent)).toBe(true);
+    const positions = stablePositions(graph.items, {}, graph.links);
+    const boxes = graph.items.map((item) => box(positions[item.id], item));
+    const left = Math.min(...boxes.map((item) => item.x));
+    const top = Math.min(...boxes.map((item) => item.y));
+    const right = Math.max(...boxes.map((item) => item.x + item.width));
+    const bottom = Math.max(...boxes.map((item) => item.y + item.height));
+    // One Service card, then two columns of six and four pod chips.
+    expect(right - left).toBeLessThanOrEqual(844);
+    expect(bottom - top).toBeLessThanOrEqual(516);
+    expect(new Set(pods.map((item) => positions[item.id].x)).size).toBe(2);
+    for (const [index, a] of boxes.entries()) {
+      for (const b of boxes.slice(index + 1)) {
+        expect(overlaps(a, b)).toBe(false);
+      }
+    }
+  });
+
+  it("keeps standalone pods right of the workload cards", () => {
+    const view = batchFixture();
+    for (const item of view.inventory.entities) {
+      if (item.namespace === "batch") {
+        item.namespace = "shop";
+      }
+    }
+    const graph = serviceGraph([view], options);
+    const positions = stablePositions(graph.items, {}, graph.links);
+    const cards = graph.items.filter((item) => item.entity.kind !== "Pod");
+    const edge = Math.max(
+      ...cards.map((item) => positions[item.id].x + cardSize.width)
+    );
+    for (const item of graph.items.filter(
+      (entry) => entry.entity.kind === "Pod"
+    )) {
+      expect(positions[item.id].x).toBeGreaterThan(edge);
+    }
+  });
+});
+
+describe("hostname search", () => {
+  it("finds an Ingress by a configured host on the canvas", () => {
+    const graph = serviceGraph([fixture()], {
+      ...options,
+      search: "CART.synthetic.test",
+    });
+    expect(uids(graph.items)).toContain("cart-in");
+    expect(uids(graph.items)).toContain("cart-svc");
+    expect(uids(graph.items)).not.toContain("checkout-in");
+  });
+});
+
 describe("topology tree", () => {
   it("reads Ingress › Service › workload › pods", () => {
     const graph = serviceGraph([fixture()], {
