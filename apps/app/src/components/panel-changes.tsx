@@ -4,7 +4,14 @@ import { Button } from "@jood-monitor/ui/button";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { ArrowRight, ChevronDown, Info } from "lucide-react";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { fetchClusterChanges } from "../hooks/api/clusters";
 import { useDisplay } from "../hooks/display";
 import { findEntity } from "../lib/infrastructure";
@@ -17,7 +24,6 @@ import {
   changeNotices,
   changeScope,
   changesCapped,
-  changeTimeLabel,
   emptyChangesText,
   ownChanges,
   ownEmptyText,
@@ -35,6 +41,7 @@ import {
   type ActivityEntry,
   activityEntries,
   groupByDay,
+  listedChanges,
 } from "./activity-model";
 import { unreadableLinkTime } from "./dashboard-navigation";
 import { hasChanges, historyRefetchInterval } from "./inspector-model";
@@ -210,11 +217,14 @@ function RelationFilter({
   own,
   counts,
   onChange,
+  allRef,
 }: {
   kind: string;
   own: boolean;
   counts: ResourceChanges["counts"];
   onChange: (own: boolean) => void;
+  // The "All related" chip, which stays mounted while the filter does.
+  allRef: RefObject<HTMLButtonElement | null>;
 }) {
   const options = [
     { own: false, label: "All related", count: counts.all },
@@ -233,6 +243,7 @@ function RelationFilter({
           className="h-9 gap-1.5 rounded-full px-3 text-xs sm:h-8"
           key={option.label}
           onClick={() => onChange(option.own)}
+          ref={option.own ? undefined : allRef}
           size="sm"
           variant={own === option.own ? "secondary" : "outline"}
         >
@@ -246,13 +257,16 @@ function RelationFilter({
   );
 }
 
+// As on the Activity page: the headline already states the leading change
+// when it is the replica step, so only the rest are listed.
 function FieldChips({ entry }: { entry: ActivityEntry }) {
-  if (!entry.summary.changes.length) {
+  const changes = listedChanges(entry);
+  if (!changes.length) {
     return null;
   }
   return (
     <ul className="mt-1.5 flex flex-wrap gap-1.5">
-      {entry.summary.changes.map((change) => (
+      {changes.map((change) => (
         <li
           className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
           key={change.label}
@@ -268,17 +282,30 @@ function FieldChips({ entry }: { entry: ActivityEntry }) {
   );
 }
 
-// The row's source time, written out with what it measures. Plain text, so
-// a row's only tab stops are its actions.
-function ChangeTime({ event }: { event: Lifecycle }) {
+// The row's source time, written out with what it measures, and for a node
+// first observed well after it was created, its creation time. Plain text,
+// so a row's only tab stops are its actions.
+function ChangeTime({ entry }: { entry: ActivityEntry }) {
   const { now, frozen, timeZone } = useDisplay();
+  const { event, summary } = entry;
+  const created = summary.subjectCreatedAt;
+  const relative = now > 0 && !frozen;
   return (
     <p className="mt-1.5 text-muted-foreground text-xs">
-      {changeTimeLabel(event)}{" "}
+      {summary.timeLabel}{" "}
       <time className="tabular-nums" dateTime={event.observedAt}>
         {exactTime(event.observedAt, timeZone)}
       </time>
-      {now > 0 && !frozen && ` (${relativeTime(event.observedAt, now)})`}
+      {relative && ` (${relativeTime(event.observedAt, now)})`}
+      {created && (
+        <>
+          {" · created "}
+          <time className="tabular-nums" dateTime={created}>
+            {exactTime(created, timeZone)}
+          </time>
+          {relative && ` (${relativeTime(created, now)})`}
+        </>
+      )}
     </p>
   );
 }
@@ -397,7 +424,7 @@ function ChangeItem({
         )}
         <RelationBadges change={change} />
         <FieldChips entry={entry} />
-        <ChangeTime event={entry.event} />
+        <ChangeTime entry={entry} />
         <p className="mt-0.5 text-muted-foreground text-xs">
           {summary.attribution}
         </p>
@@ -614,6 +641,7 @@ export function ChangesTab({
 }) {
   const { frozen } = useDisplay();
   const [own, setOwn] = useState(false);
+  const allRef = useRef<HTMLButtonElement>(null);
   const shown = own ? ownChanges(changes.rows) : changes.rows;
   const omitted = "omitted" in changes.scope ? changes.scope.omitted : 0;
   const loaded = query.data != null;
@@ -643,6 +671,7 @@ export function ChangesTab({
       />
       {loaded && (
         <RelationFilter
+          allRef={allRef}
           counts={changes.counts}
           kind={entity.kind}
           onChange={setOwn}
@@ -655,7 +684,12 @@ export function ChangesTab({
         <Empty
           capped={changes.capped}
           entity={entity}
-          onAll={() => setOwn(false)}
+          // The button unmounts with this block, so focus moves first to
+          // the "All related" chip it selects.
+          onAll={() => {
+            allRef.current?.focus();
+            setOwn(false);
+          }}
           own={own}
           related={changes.counts.all}
         />

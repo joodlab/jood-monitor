@@ -7,7 +7,6 @@ import {
   changeNotices,
   changeScope,
   changesCapped,
-  changeTimeLabel,
   emptyChangesText,
   ownChanges,
   ownEmptyText,
@@ -442,15 +441,5 @@ describe("change notices", () => {
       "Restart count at this saved observation: 2 (when restarts happened is not recorded)."
     );
     expect(text.join(" ")).not.toMatch(CURRENT_WORDS);
-  });
-});
-
-describe("change time label", () => {
-  it("labels each row's time by what it measures", () => {
-    expect(changeTimeLabel(receipt)).toBe("Reported time");
-    expect(changeTimeLabel(capacity)).toBe("First observed in inventory");
-    expect(changeTimeLabel({ ...capacity, kind: "node_removed" })).toBe(
-      "First observed absent from inventory"
-    );
   });
 });

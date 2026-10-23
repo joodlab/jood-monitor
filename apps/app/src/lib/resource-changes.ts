@@ -284,18 +284,6 @@ export function changesCapped(events: readonly Lifecycle[]) {
   return events.length >= CLUSTER_CHANGE_LIMIT;
 }
 
-// Which time a row shows, by the shared rule: a receipt's reported time, or
-// when inventory first showed the change (or the node's absence).
-export function changeTimeLabel(event: Lifecycle) {
-  if (event.attribution === "reported") {
-    return "Reported time";
-  }
-  if (event.kind === "node_removed") {
-    return "First observed absent from inventory";
-  }
-  return "First observed in inventory";
-}
-
 export type ChangeNotice =
   | "frozen"
   | "stale"
