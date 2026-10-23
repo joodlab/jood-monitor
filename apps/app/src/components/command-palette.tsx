@@ -221,10 +221,12 @@ function usePaletteRun({
 function groupsOf(results: PaletteItem[]) {
   const groups = new Map<string, { result: PaletteItem; index: number }[]>();
   for (const [index, result] of results.entries()) {
-    groups.set(result.group, [
-      ...(groups.get(result.group) ?? []),
-      { result, index },
-    ]);
+    const list = groups.get(result.group);
+    if (list) {
+      list.push({ result, index });
+    } else {
+      groups.set(result.group, [{ result, index }]);
+    }
   }
   return [...groups.entries()];
 }
@@ -321,6 +323,10 @@ export function CommandPalette({
   const [active, setActive] = useState(0);
   const listId = useId();
   const input = useRef<HTMLInputElement>(null);
+  // The term is cleared once the finder has finished closing, so a closed
+  // finder does not rescan the inventory on every address or snapshot change,
+  // and reopening never shows the old results. Opening clears it too, in case
+  // the finder reopened before it finished closing.
   useEffect(() => {
     if (open) {
       setQuery("");
@@ -379,6 +385,8 @@ export function CommandPalette({
         onOpenChange={onOpenChange}
         onOpenChangeComplete={(next) => {
           if (!next) {
+            setQuery("");
+            setActive(0);
             observation.paletteClosed();
           }
         }}
