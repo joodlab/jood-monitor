@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { closingFocus, escapeConsumed, focusedOutside } from "./panel-focus";
+import {
+  closingFocus,
+  escapeConsumed,
+  finderFocus,
+  focusedOutside,
+} from "./panel-focus";
 
 // Synthetic stand-ins for DOM elements: a card on the canvas, the canvas
 // search field, a control inside the panel, and the body.
@@ -65,5 +70,50 @@ describe("panel focus", () => {
       true
     );
     expect(closingFocus(closeButton, body, panel, null)).toBe(true);
+  });
+});
+
+describe("finder focus", () => {
+  // The finder's input and the panel's title once it shows the chosen
+  // resource.
+  const input = fake("Find a page, resource or action");
+  const finder = { contains: (node: Fake) => node === input };
+  const title = fake("payments-api");
+
+  it("returns focus to the control that opened the finder", () => {
+    expect(finderFocus(input, body, finder, card, title)).toBe(card);
+    expect(finderFocus(input, body, finder, card, null)).toBe(card);
+  });
+  it("moves focus to the panel's title when the opener unmounted", () => {
+    // The pod row went with the resource the finder switched away from.
+    const gone = fake("checkout-5b8d4-a", false);
+    expect(finderFocus(input, body, finder, gone, title)).toBe(title);
+    // The input itself was removed first, dropping focus to the body.
+    expect(finderFocus(body, body, finder, gone, title)).toBe(title);
+  });
+  it("does not return focus to the body", () => {
+    expect(finderFocus(input, body, finder, body, title)).toBe(title);
+    expect(finderFocus(input, body, finder, null, title)).toBe(title);
+  });
+  it("falls back to the main region when neither is there", () => {
+    expect(
+      finderFocus(
+        input,
+        body,
+        finder,
+        fake("gone", false),
+        fake("closed", false)
+      )
+    ).toBe("main");
+    expect(finderFocus(input, body, finder, null, null)).toBe("main");
+  });
+  it("keeps focus that already moved elsewhere", () => {
+    // A panel the finder opened focused itself, or the saved-observation
+    // picker took focus.
+    expect(finderFocus(closeButton, body, finder, card, title)).toBe(false);
+    expect(finderFocus(search, body, finder, card, title)).toBe(false);
+  });
+  it("returns focus when the finder's element is not known", () => {
+    expect(finderFocus(input, body, null, card, title)).toBe(card);
   });
 });

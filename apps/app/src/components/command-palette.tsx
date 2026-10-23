@@ -32,6 +32,7 @@ import {
   targetPatch,
 } from "../lib/palette";
 import { ObservationTime } from "./observation-time";
+import { finderFocus } from "./panel-focus";
 
 // Keyboard-first jump to any page, namespace, cluster, workspace or observed
 // resource, and a few view commands (⌘K / Ctrl+K). Results come from the
@@ -94,6 +95,30 @@ function returnFocus(element: Element | null) {
   main.focus({ preventScroll: true });
 }
 
+// The title of a service panel that is open, not one closing with a page
+// change.
+const openPanelTitle =
+  '[data-slot="sheet-content"][data-open] [data-slot="sheet-title"]';
+
+// Base UI's finalFocus as the finder finishes closing (see finderFocus).
+// Base UI's own fallback skips a control that has unmounted, leaving focus
+// on the body. The target is focused here and `false` returned: Base UI
+// would move focus from an element that is not itself tabbable, such as
+// <main> or the panel, to its first control.
+function finderFinalFocus(finder: HTMLElement | null, opener: Element | null) {
+  const target = finderFocus(
+    document.activeElement,
+    document.body,
+    finder,
+    opener instanceof HTMLElement ? opener : null,
+    document.querySelector<HTMLElement>(openPanelTitle)
+  );
+  if (target !== false) {
+    returnFocus(target === "main" ? null : target);
+  }
+  return false;
+}
+
 // "View a saved observation…" opens the time picker once the finder has
 // finished closing, and focus then returns to where the finder was opened.
 function useObservationDialog(paletteOpen: boolean) {
@@ -118,6 +143,8 @@ function useObservationDialog(paletteOpen: boolean) {
   return {
     open,
     setOpen,
+    // What had focus as the finder opened.
+    opener,
     request: () => {
       requested.current = true;
     },
@@ -323,6 +350,7 @@ export function CommandPalette({
   const [active, setActive] = useState(0);
   const listId = useId();
   const input = useRef<HTMLInputElement>(null);
+  const finder = useRef<HTMLDivElement>(null);
   // The term is cleared once the finder has finished closing, so a closed
   // finder does not rescan the inventory on every address or snapshot change,
   // and reopening never shows the old results. Opening clears it too, in case
@@ -394,7 +422,11 @@ export function CommandPalette({
       >
         <DialogContent
           className="top-[15%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-xl"
+          finalFocus={() =>
+            finderFinalFocus(finder.current, observation.opener.current)
+          }
           initialFocus={input}
+          ref={finder}
           showCloseButton={false}
         >
           <DialogTitle className="sr-only">{title}</DialogTitle>

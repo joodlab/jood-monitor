@@ -28,6 +28,15 @@ describe("resource switch focus", () => {
     expect(switchFocus(false, body, body, panel)).toBe("open");
     expect(switchFocus(false, null, body, null)).toBe("open");
   });
+  it("leaves focus to the finder when a choice there switched the panel", () => {
+    // The finder's input, which closes and returns focus itself; it never
+    // becomes the element Escape returns to.
+    const finderInput = { name: "Find a page, resource or action" };
+    expect(switchFocus(true, finderInput, body, panel, true)).toBe("dialog");
+    expect(switchFocus(false, finderInput, body, null, true)).toBe("dialog");
+    // Focus in the panel still moves to the title.
+    expect(switchFocus(true, back, body, panel, false)).toBe("title");
+  });
 });
 
 // The docked service panel's width, which the canvas keeps its cards clear

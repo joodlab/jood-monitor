@@ -32,6 +32,9 @@ export function focusedOutside<T>(
 // What the panel does with focus when it opens or shows another resource:
 // - "invoker": focus is on a card, row or control outside the panel, which
 //   stays focused and becomes the element Escape returns to;
+// - "dialog": focus is in another dialog that is closing, such as the
+//   finder, which returns focus itself (see finderFocus); the element Escape
+//   returns to stays as it was, since the dialog's control is about to go;
 // - "title": another resource replaced the one shown while focus was in the
 //   panel or had dropped to the body (a Back or pod button unmounting), so
 //   focus moves to the panel's title instead of being lost;
@@ -40,10 +43,11 @@ export function switchFocus<T>(
   switching: boolean,
   active: T | null,
   body: T | null,
-  panel: Container<T> | null
-): "invoker" | "title" | "open" {
+  panel: Container<T> | null,
+  inOtherDialog = false
+): "invoker" | "dialog" | "title" | "open" {
   if (focusedOutside(active, body, panel)) {
-    return "invoker";
+    return inOtherDialog ? "dialog" : "invoker";
   }
   return switching ? "title" : "open";
 }
@@ -63,4 +67,31 @@ export function closingFocus<T, I extends { isConnected: boolean }>(
     return false;
   }
   return invoker?.isConnected ? invoker : true;
+}
+
+// Where focus goes when the finder (⌘K / Ctrl+K) finishes closing. Focus
+// that already moved elsewhere, such as into a panel the finder opened or
+// the saved-observation picker, stays there. Otherwise it returns to the
+// control that opened the finder or, when that control has gone (a pod row
+// in a panel the finder just switched), to the open panel's title, so focus
+// is never lost; "main" means neither is there, and the page's main region
+// takes it. Without the finder's element there is no telling where focus
+// is, so it is returned rather than risk losing it.
+export function finderFocus<T, E extends T & { isConnected: boolean }>(
+  active: T | null,
+  body: T | null,
+  finder: Container<T> | null,
+  opener: E | null,
+  title: E | null
+): E | "main" | false {
+  if (finder && focusedOutside(active, body, finder)) {
+    return false;
+  }
+  if (opener?.isConnected && opener !== body) {
+    return opener;
+  }
+  if (title?.isConnected) {
+    return title;
+  }
+  return "main";
 }

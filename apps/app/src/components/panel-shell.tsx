@@ -79,11 +79,19 @@ interface ElementRef {
   current: HTMLElement | null;
 }
 
+// Whether focus is in a dialog other than the panel, such as the finder.
+function inOtherDialog(active: Element | null, panel: HTMLElement | null) {
+  const dialog = active?.closest('[role="dialog"], [role="alertdialog"]');
+  return !!dialog && dialog !== panel;
+}
+
 // The element outside the panel that opened it, updated each time another
 // resource switches it, with an announcement for every switch. A switch
 // with focus in the panel or on the body leaves focus pending for the title,
-// taken as soon as the title is there. It runs as a layout effect, before
-// Base UI moves focus into the panel on first open.
+// taken as soon as the title is there. A switch from another dialog, such as
+// the finder, leaves focus to that dialog as it closes and keeps the element
+// Escape returns to. It runs as a layout effect, before Base UI moves focus
+// into the panel on first open.
 function useInvoker(
   open: boolean,
   popup: ElementRef,
@@ -121,7 +129,8 @@ function useInvoker(
       previous !== undefined,
       active,
       document.body,
-      popup.current
+      popup.current,
+      inOtherDialog(active, popup.current)
     );
     if (target === "invoker" && active instanceof HTMLElement) {
       invoker.current = active;
