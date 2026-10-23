@@ -37,7 +37,7 @@ import {
   valueDomainTop,
   withGaps,
 } from "../lib/chart-scale";
-import { blankRows, type LatestTail, latestTail } from "../lib/history-series";
+import { type LatestTail, latestTail } from "../lib/history-series";
 import { formatDateTime, timeZoneLabel } from "../lib/time";
 import { TimeText } from "./time";
 
@@ -64,8 +64,10 @@ export interface ChartSeries {
 }
 
 // A shaded period with a short label, such as a Diagnostic. A `blank`
-// period is one the read left out: nothing is drawn inside it, no line or
-// rate crosses it, and it is shaded apart from sampled periods.
+// period is one whose Diagnostic samples the read left out. It is shaded
+// apart from sampled periods, and every row the read did load is still
+// drawn: resources the Diagnostic did not cover keep their samples, and the
+// ones it covered have none there, so their lines break by the gap rule.
 export interface ChartSpan {
   blank?: boolean;
   end: number;
@@ -154,27 +156,6 @@ export interface ChartBreaks {
   resets: number;
 }
 
-// Each series with the blank spans left blank, and the null rows that added
-// to the first series, which the summary counts.
-function blankSeries(
-  series: readonly ChartSeries[],
-  spans: readonly ChartSpan[]
-) {
-  const blank = spans.filter((item) => item.blank);
-  if (!blank.length) {
-    return { series, added: 0 };
-  }
-  let added = 0;
-  const drawn = series.map((item, index) => {
-    const result = blankRows(item.rows, blank);
-    if (index === 0) {
-      added = result.added;
-    }
-    return { ...item, rows: result.rows };
-  });
-  return { series: drawn, added };
-}
-
 // Raw history for one subject, one or more series in one unit family. The
 // time axis is the fetched window, or a narrower client-side domain; the
 // summary always covers the fetched window. `countLabel` names what the
@@ -215,9 +196,7 @@ export function MetricChart({
   countLabel?: CountNoun;
 }) {
   const { timeZone, frozen } = useDisplay();
-  // Blank spans are cut from the rows before anything is counted or drawn.
-  const blanked = useMemo(() => blankSeries(fetched, spans), [fetched, spans]);
-  const series = blanked.series;
+  const series = fetched;
   const primary = series[0]?.rows;
   const stats = useMemo(() => rowStats(primary ?? []), [primary]);
   const max = useMemo(() => seriesMax(series), [series]);
@@ -311,12 +290,7 @@ export function MetricChart({
       )}
       {stats.count > 0 && (
         <ChartSummary
-          breaks={
-            breaks && {
-              gaps: breaks.gaps + blanked.added,
-              resets: breaks.resets,
-            }
-          }
+          breaks={breaks}
           countLabel={countLabel}
           frozen={frozen}
           percentBase={percentBase}
@@ -498,7 +472,8 @@ function ChartSummary({
 }) {
   const latest = stats.latest;
   const share = percentOf(latest?.value, percentBase?.value);
-  // Blank periods hold no rows, so they cannot show the source went quiet.
+  // A covered resource has no rows in a blank period, which does not show
+  // that the source went quiet.
   const tail =
     latest &&
     latestTail(

@@ -328,6 +328,14 @@ function configured(field: UsageField, value?: number | null) {
   return value == null ? "None reported" : formatUsage(field, value);
 }
 
+// A pod's limit is the sum over the containers that set one, so a reported
+// limit says what it leaves out.
+function limit(field: UsageField, value?: number | null) {
+  return value == null
+    ? configured(field, value)
+    : `${configured(field, value)} · containers with a limit only`;
+}
+
 function resourceRows(entity: Entity): MetaRow[] {
   if (
     !["Pod", "Deployment", "StatefulSet", "DaemonSet"].includes(entity.kind)
@@ -342,7 +350,7 @@ function resourceRows(entity: Entity): MetaRow[] {
     },
     {
       label: `CPU limit${suffix}`,
-      value: configured("cpu", entity.limitedCpu),
+      value: limit("cpu", entity.limitedCpu),
     },
     {
       label: `Memory request${suffix}`,
@@ -350,7 +358,7 @@ function resourceRows(entity: Entity): MetaRow[] {
     },
     {
       label: `Memory limit${suffix}`,
-      value: configured("memory", entity.limitedMemory),
+      value: limit("memory", entity.limitedMemory),
     },
   ];
 }

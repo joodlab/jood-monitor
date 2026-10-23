@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { SeriesHistorySeries } from "../contracts/types";
 import { rowStats } from "./chart-scale";
 import {
-  blankRows,
   chartSpans,
   counterIdentity,
   counterPoints,
@@ -14,7 +13,6 @@ import {
   omittedPeriods,
   periodWindow,
   spanExpiry,
-  withoutPeriods,
   zoomDomain,
 } from "./history-series";
 import { cpuStates, hostCpu, hostMemory } from "./host-metrics";
@@ -281,102 +279,9 @@ describe("omitted Diagnostic periods", () => {
     expect(mergePeriods([period, next])).toEqual([longer]);
   });
 
-  it("drop a series' points inside a period at its exact source time", () => {
-    const [item] = withoutPeriods(
-      [
-        series([
-          [4 * minute, "1"],
-          [5 * minute, "2"],
-          [20 * minute - 1, "3"],
-          [20 * minute, "4"],
-        ]),
-      ],
-      [period]
-    );
-    expect(item.points.map(([, value]) => value)).toEqual(["1", "4"]);
-  });
-
-  it("break a gauge line across a period and never draw inside it", () => {
-    // Samples every 30 s straight through the period, as an entity the
-    // Diagnostic did not cover still reports raw samples.
-    const rows = gaugeRows([
-      series(
-        Array.from({ length: 50 }, (_, index) => [
-          index * 30_000,
-          String(index),
-        ]),
-        { kind: "gauge", temporality: 0, monotonic: false }
-      ),
-    ]);
-    const blanked = blankRows(rows, [period]);
-    expect(
-      blanked.rows.filter(
-        (row) => row.time >= period.start && row.time <= period.end
-      )
-    ).toEqual([{ time: period.start, value: null }]);
-    const marker = blanked.rows.findIndex((row) => row.value == null);
-    expect(blanked.rows[marker - 1].time).toBe(t0 + 4.5 * minute);
-    expect(blanked.rows[marker + 1].time).toBe(t0 + 20 * minute);
-    expect(blanked.added).toBe(1);
-    expect(blankRows(rows, []).rows).toBe(rows);
-  });
-
-  it("replace the gap a period already makes rather than add another", () => {
-    // The scoped node has no raw sample there, so gaugeRows already breaks.
-    const rows = gaugeRows([
-      series(
-        [
-          [3.5 * minute, "1"],
-          [4 * minute, "2"],
-          [21 * minute, "3"],
-        ],
-        { kind: "gauge", temporality: 0, monotonic: false }
-      ),
-    ]);
-    expect(rows.map((row) => row.value)).toEqual([1, 2, null, 3]);
-    const blanked = blankRows(rows, [period]);
-    expect(blanked.rows.map((row) => [row.time - t0, row.value])).toEqual([
-      [3.5 * minute, 1],
-      [4 * minute, 2],
-      [5 * minute, null],
-      [21 * minute, 3],
-    ]);
-    expect(blanked.added).toBe(1);
-  });
-
-  it("never take a rate across a period", () => {
-    // A rate whose earlier sample is before the period is blanked, however
-    // short the gap, while rates on either side stay.
-    const rates = counterRates(
-      [
-        ...counterPoints([
-          series([
-            [3 * minute, "0"],
-            [4 * minute, "60"],
-            [20 * minute + 10_000, "1000"],
-            [21 * minute, "1050"],
-          ]),
-        ]).values(),
-      ][0]
-    ).rows;
-    const short = { start: t0 + 4 * minute + 10_000, end: t0 + 4.5 * minute };
-    const blanked = blankRows(
-      [{ time: t0 + 5 * minute, value: 0.5, interval: 60 }],
-      [short]
-    );
-    expect(blanked.rows).toEqual([{ time: t0 + 5 * minute, value: null }]);
-    expect(blanked.added).toBe(1);
-    const across = blankRows(rates, [period]);
-    expect(across.rows.map((row) => [row.time - t0, row.value])).toEqual([
-      [4 * minute, 1],
-      [20 * minute + 10_000, null],
-      [21 * minute, 1],
-    ]);
-  });
-
-  it("leave host CPU and memory blank across a period, with no rate over it", () => {
-    // Every state counts up one CPU second per second, sampled every 60 s
-    // through the period; memory in use is 1 GiB throughout.
+  it("keep every loaded sample of a node the Diagnostic did not cover", () => {
+    // Its host samples are raw, so the read loaded them through the period:
+    // the busy line and memory stay whole there.
     const offsets = Array.from({ length: 30 }, (_, index) => index * minute);
     const cpu = cpuStates.map((state) =>
       series(
@@ -396,41 +301,71 @@ describe("omitted Diagnostic periods", () => {
         attributes: { state: "used" },
       }
     );
-    const visible = withoutPeriods([...cpu, memory], [period]);
-    const busy = hostCpu(visible);
-    const drawn = blankRows(busy.rows, [period]);
     const inPeriod = (row: { time: number }) =>
       row.time >= period.start && row.time <= period.end;
-    expect(
-      drawn.rows.filter((row) => row.value != null && inPeriod(row))
-    ).toEqual([]);
-    // The first rate after the period would span it; it is a gap instead.
+    const busy = hostCpu([...cpu, memory]).rows.filter(inPeriod);
+    expect(busy.length).toBeGreaterThan(0);
+    expect(busy.every((row) => row.value != null)).toBe(true);
+    const used = hostMemory([...cpu, memory]).rows.filter(inPeriod);
+    expect(used.every((row) => row.value != null)).toBe(true);
+  });
+
+  it("break a covered node's lines where its Diagnostic samples were left out", () => {
+    // The covered node's samples in the period were all Diagnostic samples,
+    // so the read has none there: no rate spans the period and the memory
+    // line breaks.
+    const offsets = Array.from(
+      { length: 30 },
+      (_, index) => index * minute
+    ).filter((offset) => offset < 5 * minute || offset >= 20 * minute);
+    const cpu = cpuStates.map((state) =>
+      series(
+        offsets.map((offset) => [offset, String(100 + offset / 1000)]),
+        { series: `cpu-${state}`, attributes: { state } }
+      )
+    );
+    const memory = series(
+      offsets.map((offset) => [offset, "1073741824"]),
+      {
+        series: "memory-used",
+        name: "system.memory.usage",
+        unit: "By",
+        kind: "gauge",
+        temporality: 0,
+        monotonic: false,
+        attributes: { state: "used" },
+      }
+    );
+    const busy = hostCpu([...cpu, memory]);
     expect(
       busy.rows.find((row) => row.time === t0 + 20 * minute)?.value
     ).toBeNull();
     expect(
       busy.rows.filter((row) => row.value != null).map((row) => row.interval)
     ).toEqual(Array.from({ length: 13 }, () => 60));
-    const used = blankRows(hostMemory(visible).rows, [period]).rows;
-    expect(used.filter((row) => inPeriod(row))).toEqual([
-      { time: period.start, value: null },
-    ]);
+    const used = hostMemory([...cpu, memory]).rows;
+    expect(
+      used.filter(
+        (row) => row.time > t0 + 4 * minute && row.time < t0 + 20 * minute
+      )
+    ).toEqual([expect.objectContaining({ value: null })]);
   });
 
   it("say a period reaching the window's end was not loaded, not that the source went quiet", () => {
-    // A saved observation at 12:12, during the period: an entity the
-    // Diagnostic did not cover reported every 30 s up to it.
+    // A saved observation at 12:12, during the period: the covered node
+    // reported every 30 s until the Diagnostic started, and the read left
+    // out its Diagnostic samples after that.
     const to = t0 + 12 * minute;
     const rows = gaugeRows([
       series(
-        Array.from({ length: 25 }, (_, index) => [
+        Array.from({ length: 10 }, (_, index) => [
           index * 30_000,
           String(index),
         ]),
         { kind: "gauge", temporality: 0, monotonic: false }
       ),
     ]);
-    const latest = rowStats(blankRows(rows, [period]).rows).latest;
+    const latest = rowStats(rows).latest;
     expect(latest?.time).toBe(t0 + 4.5 * minute);
     expect(to - (latest?.time ?? to)).toBeGreaterThan(90_000);
     expect(latestTail(latest?.time ?? to, to, [period])).toEqual({

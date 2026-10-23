@@ -352,76 +352,7 @@ export function mergePeriods(...lists: readonly (readonly OmittedPeriod[])[]) {
 
 type Span = Pick<OmittedPeriod, "end" | "start">;
 
-function inside(time: number, periods: readonly Span[]) {
-  return periods.some((period) => time >= period.start && time <= period.end);
-}
-
-// The series without their points inside the periods, so nothing derived
-// from them (a rate, a latest value, a reference) uses that time.
-export function withoutPeriods(
-  series: readonly SeriesHistorySeries[],
-  periods: readonly Span[]
-): readonly SeriesHistorySeries[] {
-  if (!periods.length) {
-    return series;
-  }
-  return series.map((item) => ({
-    ...item,
-    points: item.points.filter(([nano]) => !inside(nanoMs(nano), periods)),
-  }));
-}
-
-// A chart row taken over an interval, such as a rate between two samples.
-interface IntervalRow extends ChartRow {
-  // Seconds before `time` that the row's earlier sample was taken.
-  interval?: number;
-}
-
-// Rows with each period left blank: a row inside one is dropped, a rate
-// whose interval reaches into one becomes a null row, and a null row breaks
-// the line across it, so no line or rate bridges the period. `added` counts
-// the null rows this made.
-export function blankRows<T extends IntervalRow>(
-  rows: readonly T[],
-  periods: readonly Span[]
-): { added: number; rows: readonly (T | ChartRow)[] } {
-  if (!periods.length) {
-    return { added: 0, rows };
-  }
-  const sorted = [...periods].sort((a, b) => a.start - b.start);
-  const kept: (T | ChartRow)[] = [];
-  let added = 0;
-  let next = 0;
-  for (const row of rows) {
-    if (inside(row.time, sorted)) {
-      continue;
-    }
-    // The first period passed since the previous row, if any.
-    let crossed: number | undefined;
-    while (next < sorted.length && sorted[next].end < row.time) {
-      crossed ??= sorted[next].start;
-      next++;
-    }
-    const begins =
-      row.interval == null ? row.time : row.time - row.interval * 1000;
-    const reaches =
-      row.value != null &&
-      sorted.some((period) => begins <= period.end && row.time >= period.start);
-    if (reaches) {
-      kept.push({ time: row.time, value: null });
-      added++;
-      continue;
-    }
-    if (crossed != null && kept.at(-1)?.value != null && row.value != null) {
-      kept.push({ time: crossed, value: null });
-      added++;
-    }
-    kept.push(row);
-  }
-  return { added, rows: kept };
-}
-
-// What follows a chart's latest kept row up to `to`.
+// What follows a chart's latest row up to `to`.
 export interface LatestTail {
   // Periods left out after the row, which a quiet tail may also hold.
   periods: number;

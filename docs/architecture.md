@@ -59,9 +59,10 @@ refuses the read before any R2 get when the index shows too many archives or
 archived points, and reads each object once in bounded groups. Rows are kept
 only inside the source-time window (Diagnostic rows only within a day of
 their source time), deduplicated, collapsed per series and source time by the
-rule rollups use, and returned as compact exact-string points. A read that
-does not fit is refused with 413, never truncated. REST history and frozen
-snapshots keep the single-entity read.
+rule rollups use, and returned as compact exact-string points. A read whose
+raw archives do not fit is refused with 413; a Diagnostic that would not fit
+beside them is left out whole and named in the response. Nothing else is
+dropped. REST history and frozen snapshots keep the single-entity read.
 
 Workspace notification objects use WebSocket hibernation. Reconnecting clients
 resynchronize saved scoped state; periodic queries cover missed notifications.

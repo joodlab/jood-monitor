@@ -88,8 +88,11 @@ The read then degrades explicitly rather than refusing the hour:
 - Diagnostic archives whose samples are all past the one-day Diagnostic
   retention are neither read nor counted.
 
-The dashboard leaves an omitted period blank, with no line or counter rate
-across it, says so, and can load the period on its own: the omitted window
+The dashboard shades an omitted period and says so. It still draws every
+sample the read loaded: resources the Diagnostic did not cover are complete
+there, and the nodes and Pods it covered have no samples in the period, so
+their lines break by the 90-second gap rule and no counter rate spans it.
+The dashboard can load the period on its own: the omitted window
 with a minute either side, normally five raw archives and the Diagnostic
 ones. That read keeps the same budget; if it still does not fit, the
 dashboard says so plainly. Charging a Diagnostic only to reads of its scoped

@@ -34,7 +34,6 @@ import {
   mergePeriods,
   type OmittedPeriod,
   omittedPeriods,
-  withoutPeriods,
   zoomDomain,
 } from "../lib/history-series";
 import {
@@ -383,6 +382,13 @@ function chartsNamed(
   return `The ${sections.map((section) => section.label).join(" and ")} charts`;
 }
 
+function chartsLower(
+  sections: readonly SectionRead[],
+  all: readonly SectionRead[]
+) {
+  return `t${chartsNamed(sections, all).slice(1)}`;
+}
+
 const DIAGNOSTIC_RETENTION_MS = DIAGNOSTIC_RETENTION_DAYS * DAY_MS;
 
 // How long the hub keeps a period's Diagnostic samples, counted from each
@@ -424,7 +430,7 @@ function focusedText(
     read.periods.some((item) => samePeriod(item, period))
   );
   if (still.length) {
-    return `Even on its own, the Diagnostic period ${between(period, timeZone)} holds more samples than the hub reads in one request, so its Diagnostic samples are still not loaded. ${chartsNamed(still, reads)} leave it blank.`;
+    return `Even on its own, the Diagnostic period ${between(period, timeZone)} holds more samples than the hub reads in one request, so its Diagnostic samples are still not loaded. Nodes and pods the Diagnostic covered show a gap there in ${chartsLower(still, reads)}.`;
   }
   const failed = reads.filter((read) => read.failed);
   if (failed.length === reads.length) {
@@ -552,9 +558,10 @@ export function OmissionNotice({
                 Samples taken during a Diagnostic {between(period, timeZone)}{" "}
                 were not loaded with {words.current}: together with the other
                 samples in the window they exceed what the hub reads in one
-                request. {chartsNamed(sections, reads)} leave that period blank.
-                The hub archives Diagnostic samples for the whole cluster, so
-                this applies even where the Diagnostic did not run.{" "}
+                request. The hub archives Diagnostic samples for the whole
+                cluster, so {chartsLower(sections, reads)} left them out. Nodes
+                and pods the Diagnostic covered show a gap there; samples from
+                other resources were read in full.{" "}
                 {periodRetention(period, now, timeZone)}
               </NoticeRow>
             );
@@ -643,8 +650,7 @@ const rateNoun: CountNoun = { one: "rate", other: "rates" };
 
 function HostCharts({
   entity,
-  series: fetched,
-  periods,
+  series,
   read,
   emptyReason,
   domain,
@@ -652,19 +658,15 @@ function HostCharts({
   spans,
 }: {
   entity: Entity;
+  // Every sample the read loaded. A period it left out has no samples from
+  // the nodes the Diagnostic covered, so their rates and lines break there.
   series: readonly SeriesHistorySeries[];
-  // Periods the read left out: no rate, value or reference uses them.
-  periods: readonly OmittedPeriod[];
   read: SeriesRead;
   emptyReason?: string;
   domain?: readonly [number, number];
   height: number;
   spans: readonly ChartSpan[];
 }) {
-  const series = useMemo(
-    () => withoutPeriods(fetched, periods),
-    [fetched, periods]
-  );
   const cpu = useMemo(() => hostCpu(series), [series]);
   const memory = useMemo(() => hostMemory(series), [series]);
   const cpuRows = useMemo(
@@ -837,7 +839,6 @@ function HostBody({
       emptyReason={emptyReason}
       entity={entity}
       height={height}
-      periods={periods}
       read={host.data}
       series={host.data.response.series}
       spans={spans}
