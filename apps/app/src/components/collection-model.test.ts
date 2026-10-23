@@ -495,7 +495,7 @@ describe("delivery health", () => {
     });
     expect(droppedStat(rose)).toMatchObject({
       value:
-        "3,815 · rose by 6 since this page opened (first higher total seen in the heartbeat the hub received at 09:59:50 UTC)",
+        "3,815 · rose by 6 since this page opened (first higher total in the heartbeat the hub received at 09:59:50 UTC)",
       tone: "warn",
     });
     const later = now + 16 * 60_000;

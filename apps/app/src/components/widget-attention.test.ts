@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { recordDeliveryWatch } from "../hooks/delivery";
 import { DisplayProvider } from "../hooks/display";
 import type { Attention, Severity } from "../lib/attention";
-import { AttentionWidget } from "./widget-attention";
+import { AttentionWidget, attentionRows } from "./widget-attention";
 
 // Server-rendered markup of the Needs attention widget. Synthetic clusters
 // and rows only.
@@ -131,7 +131,7 @@ describe("Needs attention widget", () => {
     const view = risen("synthetic-delivery");
     const html = render([], [view]);
     expect(html).toContain(
-      "Observer on synthetic-delivery-name discarded 6 more batches since this page opened (first higher total seen in the heartbeat received 14:00:15 UTC). Some samples or saved observations may be missing."
+      "Observer on synthetic-delivery-name discarded 6 more batches since this page opened (first higher total in the heartbeat received 14:00:15 UTC). Some samples or saved observations may be missing."
     );
     expect(html).toContain("Open Settings");
     expect(html).toContain("Notes");
@@ -139,6 +139,25 @@ describe("Needs attention widget", () => {
     expect(html).not.toContain("text-success-text");
     // The note is not an attention row, so no count or filter appears.
     expect(html).not.toContain('aria-label="Filter by severity"');
+  });
+
+  it("drops a severity filter once its rows clear and its control goes", () => {
+    // Critical chosen beside a warning row: that row and the notes hide.
+    const filtered = attentionRows(rows(["warning"]), "critical");
+    expect(filtered.visible).toHaveLength(0);
+    expect(filtered.withNotes).toBe(false);
+    // The warning clears, and with it the filter: every note shows again.
+    const cleared = attentionRows([], "critical");
+    expect(cleared.withNotes).toBe(true);
+    expect(attentionRows([], "warning").withNotes).toBe(true);
+    // Finished pods have no filter either.
+    const finished = attentionRows(
+      rows(["warning"]).map((row) => ({ ...row, terminal: true })),
+      "critical"
+    );
+    expect(finished.finished).toHaveLength(1);
+    expect(finished.withNotes).toBe(true);
+    expect(attentionRows(rows(["info"]), "info").withNotes).toBe(true);
   });
 
   it("keeps notes out of the counts beside problems", () => {

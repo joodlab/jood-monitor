@@ -751,7 +751,7 @@ function watchedChange(
     return `the total went down (${term.format(counter.resetFrom ?? 0)} → ${term.format(counter.lastValue)}) in the heartbeat received ${zonedClock(counter.resetAt ?? "", timeZone)}; the observer's counter reset, usually after a restart`;
   }
   if (change === "rise") {
-    return `rose by ${term.format(counter.risenBy)} since this page opened (first higher total seen in the heartbeat the hub received at ${zonedClock(counter.firstHigherHeartbeatAt ?? "", timeZone)})`;
+    return `rose by ${term.format(counter.risenBy)} since this page opened (first higher total in the heartbeat the hub received at ${zonedClock(counter.firstHigherHeartbeatAt ?? "", timeZone)})`;
   }
   if (counter.lastValue > 0) {
     const opened = formatClock(counter.firstSeen.at, timeZone).slice(0, 5);

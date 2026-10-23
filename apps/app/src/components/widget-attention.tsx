@@ -203,7 +203,7 @@ function deliveryNotes(
     return [
       {
         view,
-        text: `Observer on ${view.cluster.name} discarded ${batches} since this page opened (first higher total seen in the heartbeat received ${seen}). Some samples or saved observations may be missing.`,
+        text: `Observer on ${view.cluster.name} discarded ${batches} since this page opened (first higher total in the heartbeat received ${seen}). Some samples or saved observations may be missing.`,
       },
     ];
   });
@@ -273,6 +273,26 @@ function ShowAll({
   );
 }
 
+// The rows shown at a chosen severity, and whether delivery notes (info rows
+// outside the counts) show beside them. The filter is offered only beside
+// live rows; once they clear, a severity chosen earlier has no control left
+// to change it, so it no longer applies and every note shows again.
+export function attentionRows(
+  attention: Attention[],
+  severity: Severity | "all"
+) {
+  const live = attention.filter((item) => !item.terminal);
+  const active = live.length ? severity : "all";
+  return {
+    live,
+    finished: attention.filter((item) => item.terminal),
+    visible: live.filter(
+      (item) => active === "all" || item.severity === active
+    ),
+    withNotes: active === "all" || active === "info",
+  };
+}
+
 export function AttentionWidget({
   attention,
   views,
@@ -291,18 +311,15 @@ export function AttentionWidget({
   const watches = useDeliveryWatch(views);
   const summary = attentionSummary(attention);
   const coverage = observationCoverage(views, referenceTime);
-  const live = attention.filter((item) => !item.terminal);
-  const finished = attention.filter((item) => item.terminal);
-  const visible = live.filter(
-    (item) => severity === "all" || item.severity === severity
+  const { live, finished, visible, withNotes } = attentionRows(
+    attention,
+    severity
   );
   const shown = expanded ? visible : visible.slice(0, PREVIEW);
-  // Delivery notes are info rows outside the counts, shown with the info
-  // filter or all rows, and only for the live view.
-  const notes =
-    frozen || !(severity === "all" || severity === "info")
-      ? []
-      : deliveryNotes(views, watches, timeZone);
+  // Delivery notes are only for the live view. Any note rules out the
+  // all-clear, whichever filter is chosen.
+  const allNotes = frozen ? [] : deliveryNotes(views, watches, timeZone);
+  const notes = withNotes ? allNotes : [];
   // The visible rows are notes, problems or a mix of both (items).
   const noun = rowsNoun(visible);
   const counts: Record<string, number> = {
@@ -337,9 +354,9 @@ export function AttentionWidget({
           <SeverityIcon
             covered={!coverage.missing}
             decorative
-            severity={summary.worst ?? (notes.length ? "info" : undefined)}
+            severity={summary.worst ?? (allNotes.length ? "info" : undefined)}
           />
-          {heading(coverage, summary.actionable, live.length + notes.length)}
+          {heading(coverage, summary.actionable, live.length + allNotes.length)}
           {live.length > 0 && (
             <span className="font-normal text-muted-foreground text-sm">
               {severityText(summary)}
