@@ -202,7 +202,7 @@ function isConfiguredField(id: string): id is ConfiguredColumn {
 }
 
 // The words a configured label carries for screen readers, from the note
-// the table, the cards and the inspector share (lib/pod-requests).
+// the table and the cards share (lib/pod-requests).
 function configuredNote(field: ConfiguredColumn) {
   return `, configured, ${notUsage(field)}`;
 }

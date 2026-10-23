@@ -92,7 +92,9 @@ const summedLimitNote =
 
 // What follows "Configured, " in a configured value's note: a request or a
 // limit is never usage, and a summed limit says what it leaves out. The
-// table header, the phone card and the inspector read it from here.
+// pod table's header and the phone pod card read it from here. The
+// inspector's limit rows and its "% of limit" do not yet, so they show the
+// summed limit without this caveat.
 export function notUsage(field: ConfiguredField) {
   return limitFields.includes(field)
     ? `not usage. ${summedLimitNote}`
