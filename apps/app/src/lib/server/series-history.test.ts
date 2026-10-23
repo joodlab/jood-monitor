@@ -15,7 +15,10 @@ import {
   SERIES_PARSE_POINTS,
   SERIES_POINT_LIMIT,
   SeriesCollector,
+  seriesParseTooBroad,
   seriesTooBroad,
+  seriesTooManyArchives,
+  seriesTooManyPoints,
   withinHistory,
 } from "./series-history";
 import { metricKey, metricSeries } from "./telemetry";
@@ -213,7 +216,7 @@ describe("series collector", () => {
     );
     expect(status(() => read.add(rows))).toEqual({
       status: 413,
-      message: seriesTooBroad,
+      message: seriesTooManyPoints,
     });
   });
 });
@@ -246,7 +249,7 @@ describe("413 decisions", () => {
     const legacy = Array.from({ length: 10_001 }, () => row("1", base));
     expect(status(() => pendingRows(legacy))).toEqual({
       status: 413,
-      message: seriesTooBroad,
+      message: seriesTooManyPoints,
     });
     expect(pendingRows(legacy.slice(0, 10_000))).toHaveLength(10_000);
     expect(
@@ -256,7 +259,7 @@ describe("413 decisions", () => {
           filtered: true,
         })
       )
-    ).toEqual({ status: 413, message: seriesTooBroad });
+    ).toEqual({ status: 413, message: seriesTooManyPoints });
     expect(
       pendingRows({ rows: [row("1", base)], filtered: true })
     ).toHaveLength(1);
@@ -270,25 +273,50 @@ describe("413 decisions", () => {
       status(() => requireArchiveCount(Array.from({ length: 2001 })))
     ).toEqual({
       status: 413,
-      message: seriesTooBroad,
+      message: seriesTooManyArchives,
     });
     expect(requireParseBudget([{ points: 3 }, { points: 4 }], 7)).toBe(7);
     expect(
       status(() => requireParseBudget([{ points: SERIES_PARSE_POINTS + 1 }]))
-    ).toEqual({ status: 413, message: seriesTooBroad });
+    ).toEqual({ status: 413, message: seriesParseTooBroad });
   });
 
-  it("admits the reference cluster's default hour and refuses six hours", () => {
-    // 50 single-container pods on 5 nodes archive about 470 points a
-    // minute, about 2,350 per five-minute archive. One hour overlaps at most
-    // 13 archives; six hours, 73.
-    const window = (archives: number) =>
-      Array.from({ length: archives }, () => ({ points: 2350 }));
-    expect(status(() => requireParseBudget(window(13)))).toBe("accepted");
-    expect(status(() => requireParseBudget(window(73)))).toEqual({
-      status: 413,
-      message: seriesTooBroad,
-    });
+  it("names the limit reached, after the prefix the dashboard matches", () => {
+    const messages = [
+      seriesTooBroad,
+      seriesTooManyArchives,
+      seriesParseTooBroad,
+      seriesTooManyPoints,
+    ];
+    expect(new Set(messages).size).toBe(messages.length);
+    for (const message of messages) {
+      expect(message.startsWith("query too broad; ")).toBe(true);
+    }
+  });
+
+  it("admits a default hour and refuses six hours", () => {
+    // One hour overlaps at most 13 five-minute archives; six hours, 73.
+    // 50 single-container pods on 5 nodes archive about 2,350 points per
+    // archive; a busier cluster about 3,200 (about 38,500 an hour).
+    const window = (archives: number, points: number) =>
+      Array.from({ length: archives }, () => ({ points }));
+    for (const points of [2350, 3200]) {
+      expect(status(() => requireParseBudget(window(13, points)))).toBe(
+        "accepted"
+      );
+      expect(status(() => requireParseBudget(window(73, points)))).toEqual({
+        status: 413,
+        message: seriesParseTooBroad,
+      });
+    }
+    // About a third of headroom over the busier cluster's hour.
+    expect(SERIES_PARSE_POINTS / (13 * 3200)).toBeGreaterThan(1.3);
+  });
+
+  it("keeps the budget under the CPU cap at the slowest measured rate", () => {
+    // Local native workerd: 12.2 to 14.8 ms per 1,000 archived points; the
+    // deployment's CPU cap is 1,000 ms.
+    expect((SERIES_PARSE_POINTS / 1000) * 14.8).toBeLessThan(1000);
   });
 
   it("groups reads by count and closes a group early on points", () => {

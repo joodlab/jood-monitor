@@ -1215,10 +1215,10 @@ try {
     ["1"],
     "a Diagnostic sample older than a day is excluded; a standard one is kept"
   );
-  // The default hour of the reference cluster, 50 single-container pods on
-  // 5 nodes: each five-minute archive holds about 2,350 points and an hour
-  // overlaps 13 of them. The index declares those counts; each object holds
-  // one synthetic sample, five hours back so no other fixture overlaps.
+  // The default hour of a busy cluster: each five-minute archive holds
+  // about 3,200 points (about 38,500 an hour) and an hour overlaps 13 of
+  // them. The index declares those counts; each object holds one synthetic
+  // sample, five hours back so no other fixture overlaps.
   const hourBucket =
     (BigInt(Date.now() - 5 * 3_600_000) / 300_000n) * 300_000n * 1_000_000n;
   for (let index = 0; index < 13; index++) {
@@ -1229,7 +1229,7 @@ try {
       body: JSON.stringify({
         cluster: "series",
         kind: "raw",
-        points: 2350,
+        points: 3200,
         rows: [
           {
             ...oldRow(false),
@@ -1243,21 +1243,21 @@ try {
     });
   }
   const hourFrom = Number(hourBucket / 1_000_000n) + 30_000;
-  const referenceHour = await seriesRead({
+  const busyHour = await seriesRead({
     from: new Date(hourFrom).toISOString(),
     to: new Date(hourFrom + 3_600_000 + 60_000).toISOString(),
     entities: ["series-node-a"],
     names: ["k8s.node.cpu.usage"],
   });
-  assert.equal(referenceHour.status, 200, JSON.stringify(referenceHour));
-  assert.ok(13 * 2350 <= referenceHour.budget);
-  assert.equal(referenceHour.gets, 13, "each archive is read once");
+  assert.equal(busyHour.status, 200, JSON.stringify(busyHour));
+  assert.ok(13 * 3200 <= busyHour.budget);
+  assert.equal(busyHour.gets, 13, "each archive is read once");
   assert.deepEqual(
-    referenceHour.value.series.flatMap((item) =>
+    busyHour.value.series.flatMap((item) =>
       item.points.map(([, value]) => value)
     ),
     Array.from({ length: 13 }, (_, index) => String(index)),
-    "a default one-hour Pod or Node read of the reference cluster is admitted"
+    "a default one-hour Pod or Node read of a busy cluster is admitted"
   );
   const fakeArchives = async (count, points) => {
     const sourceStart = exactTime(
@@ -1282,7 +1282,11 @@ try {
   });
   assert.deepEqual(
     [crowded.status, crowded.error, crowded.gets],
-    [413, "query too broad; choose a shorter range", 0],
+    [
+      413,
+      "query too broad; more archives in this window than one read lists",
+      0,
+    ],
     "more than 2000 archives per kind is refused before any read"
   );
   await dropFakeArchives();
@@ -1292,8 +1296,12 @@ try {
     names: ["k8s.node.cpu.usage"],
   });
   assert.deepEqual(
-    [heavy.status, heavy.gets],
-    [413, 0],
+    [heavy.status, heavy.error, heavy.gets],
+    [
+      413,
+      "query too broad; more archived samples in this window than one read parses",
+      0,
+    ],
     "a parse-budget breach is refused with zero R2 reads"
   );
   await dropFakeArchives();

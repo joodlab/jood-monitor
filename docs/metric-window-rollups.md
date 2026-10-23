@@ -43,20 +43,28 @@ median 13.4 ms. Three of those runs timed each stage:
 | entity, name and window filter | 90–96 ms |
 
 Reading the same objects through `readArchiveObject`, including the local R2
-read, took 12.5 to 13.6 ms per 1,000 points. The budget is 37,000 points:
-about 500 ms locally at the median, half the deployment's 1,000 ms CPU cap
-(a 2× safety factor), and under 600 ms at the slowest run.
+read, took 12.5 to 13.6 ms per 1,000 points.
 
-Because archives are cluster-wide, the budget is sized for the reference
-cluster's default window. Fifty single-container pods on five nodes archive
-roughly 470 points a minute at the agent's cadences (pod, container and node
-usage every 30 seconds, host CPU and memory every 60 seconds), about 2,350
-points per five-minute archive. A one-hour window overlaps at most 13
-archives, about 30,500 points, so the default one-hour Pod, Node and Host
-charts load. Six hours (about 172,000 points) and a day are refused with 413
-for such a cluster instead of being drawn from part of the window. A cluster
-more than about a fifth larger can be refused even at one hour, until
-summary resolutions serve longer windows.
+Because archives are cluster-wide, the budget is sized for the default
+one-hour window, which overlaps at most 13 five-minute archives:
+
+- Fifty single-container pods on five nodes archive roughly 470 points a
+  minute at the agent's cadences (pod, container and node usage every 30
+  seconds, host CPU and memory every 60 seconds), about 2,350 points per
+  archive and about 30,500 points for the hour.
+- A busier cluster archives about 3,200 points per archive, about 38,500
+  points an hour and about 41,600 points for a 13-archive window. A budget
+  sized only for the smaller cluster would refuse its default Pod, Node and
+  Host charts.
+
+The budget is 56,000 points. That admits the busier cluster's hour with about
+a third to spare, and costs about 750 ms locally at the median and about 830
+ms at the slowest run, under the deployment's 1,000 ms CPU cap: about 1.3×
+headroom at the local median, not 2×. Six hours (about 172,000 points for the
+smaller cluster, about 234,000 for the busier one) and a day are refused with
+413 instead of being drawn from part of the window. A cluster archiving more
+than about 4,300 points per archive, about 1.8 times the smaller cluster, can
+be refused even at one hour, until summary resolutions serve longer windows.
 
 Local workerd timing is not Worker `cpuTime`. Measuring production CPU needs
 a non-production preview upload, which is an owner decision; revisit the

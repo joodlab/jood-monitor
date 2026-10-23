@@ -26,12 +26,13 @@ export const SERIES_NAME_LIMIT = 9;
 // Archived points one request may parse, counted from the archive index
 // before any object is fetched. Local native workerd took 12-15 ms per 1,000
 // archived points (gunzip, SHA-256, JSON.parse and filter; median 13.4 ms),
-// so this budget is about 500 ms there at the median, half the deployment's
-// 1,000 ms CPU cap, and under 600 ms at the slowest run. Archives are
-// cluster-wide, so it is sized for the reference cluster's default window:
-// one hour of 50 pods on 5 nodes overlaps at most 13 archives of about 2,350
-// points. See docs/metric-window-rollups.md.
-export const SERIES_PARSE_POINTS = 37_000;
+// so this budget is about 750 ms there at the median and about 830 ms at the
+// slowest run, under the deployment's 1,000 ms CPU cap. Archives are
+// cluster-wide, so it is sized for a default one-hour window, which overlaps
+// at most 13 archives: about 30,500 points for 50 pods on 5 nodes, and about
+// 41,600 for a cluster archiving 3,200 points per archive, with about a third
+// to spare. See docs/metric-window-rollups.md.
+export const SERIES_PARSE_POINTS = 56_000;
 // Archive objects listed per kind before a read is refused.
 const SERIES_ARCHIVE_LIMIT = 2000;
 // A day of raw samples, plus the slack a client clock may add.
@@ -44,10 +45,23 @@ const GROUP_POINTS = 200_000;
 // most one row more than this.
 const LEGACY_ROW_LIMIT = 10_000;
 
+// Every refusal starts "query too broad", which the dashboard matches to
+// give its advice; the rest names the limit the read reached.
+// A window longer than a day.
 export const seriesTooBroad = "query too broad; choose a shorter range";
+// More archives of one kind than one read lists.
+export const seriesTooManyArchives =
+  "query too broad; more archives in this window than one read lists";
+// More archived points than one read parses (SERIES_PARSE_POINTS).
+export const seriesParseTooBroad =
+  "query too broad; more archived samples in this window than one read parses";
+// More requested points than one response holds, or an earlier Durable
+// Object's reply that may have been cut.
+export const seriesTooManyPoints =
+  "query too broad; more samples than one response holds";
 
-function tooBroad(): never {
-  throw new HttpError(413, seriesTooBroad);
+function tooBroad(message: string): never {
+  throw new HttpError(413, message);
 }
 
 // The same window checks as single-series history, plus the one-day span.
@@ -60,7 +74,7 @@ export function checkSeriesWindow(fromMs: number, toMs: number, now: number) {
     throw new HttpError(400, rawRetentionMessage);
   }
   if (toMs - fromMs > SERIES_SPAN_MS) {
-    tooBroad();
+    tooBroad(seriesTooBroad);
   }
 }
 
@@ -70,20 +84,20 @@ export function checkSeriesWindow(fromMs: number, toMs: number, now: number) {
 export function pendingRows(reply: unknown): StoredMetric[] {
   if (Array.isArray(reply)) {
     if (reply.length > LEGACY_ROW_LIMIT) {
-      tooBroad();
+      tooBroad(seriesTooManyPoints);
     }
     return reply as StoredMetric[];
   }
   const { rows } = reply as { rows: StoredMetric[] };
   if (rows.length > SERIES_POINT_LIMIT) {
-    tooBroad();
+    tooBroad(seriesTooManyPoints);
   }
   return rows;
 }
 
 export function requireArchiveCount(archives: readonly unknown[]) {
   if (archives.length > SERIES_ARCHIVE_LIMIT) {
-    tooBroad();
+    tooBroad(seriesTooManyArchives);
   }
 }
 
@@ -97,7 +111,7 @@ export function requireParseBudget(
     points += archive.points;
   }
   if (points > budget) {
-    tooBroad();
+    tooBroad(seriesParseTooBroad);
   }
   return points;
 }
@@ -234,7 +248,7 @@ export class SeriesCollector {
       }
     }
     if (this.points > SERIES_POINT_LIMIT) {
-      tooBroad();
+      tooBroad(seriesTooManyPoints);
     }
   }
 
