@@ -14,13 +14,17 @@ export function PageState({
   snapshot,
   loading,
   onRetry,
+  onChooseTime,
 }: {
   snapshot: { isError: boolean; error: unknown; data?: unknown };
   loading: boolean;
   onRetry: () => void;
+  // Opens the saved-observation picker for errors another time can fix.
+  onChooseTime?: () => void;
 }) {
-  // Retry only where repeating the request can succeed; a time outside
-  // retention or an unreadable link points to Return to live instead.
+  // Retry only where repeating the request can succeed. A time outside
+  // retention or an unreadable link offers another time instead, beside the
+  // project bar's Return to live.
   const problem = snapshot.isError ? snapshotError(snapshot.error) : undefined;
   return (
     <>
@@ -38,6 +42,16 @@ export function PageState({
           {problem.retryable && (
             <Button onClick={onRetry} size="sm" variant="outline">
               Retry
+            </Button>
+          )}
+          {problem.chooseTime && onChooseTime && (
+            <Button
+              className="h-9 sm:h-8"
+              onClick={onChooseTime}
+              size="sm"
+              variant="outline"
+            >
+              Choose another time…
             </Button>
           )}
         </div>

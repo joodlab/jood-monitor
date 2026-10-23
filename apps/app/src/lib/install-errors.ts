@@ -158,6 +158,9 @@ export function requestError(error: unknown): RequestError {
 }
 
 export interface ReadError {
+  // Another saved-observation time can succeed, so the page offers a picker
+  // where Retry would be.
+  chooseTime?: true;
   detail: string;
   // Repeating the same request can succeed; otherwise Retry is hidden.
   retryable: boolean;
@@ -172,25 +175,27 @@ const readErrors: [string, ReadError][] = [
     "snapshot outside retention",
     {
       title: `This time is outside the ${INVENTORY_RETENTION_DAYS}-day retention`,
-      detail: `Saved inventory and events cover the last ${INVENTORY_RETENTION_DAYS} days. Choose a time within them, or use Return to live above.`,
+      detail: `Saved inventory and events cover the last ${INVENTORY_RETENTION_DAYS} days. Choose a time within them, or return to live.`,
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
     "invalid timestamp",
     {
       title: "This link's time could not be read",
-      detail:
-        "Choose a saved observation time instead, or use Return to live above.",
+      detail: "Choose a saved observation time instead, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
     "precision boundary too broad",
     {
       title: "The saved inventory at this time could not be resolved",
-      detail: "Choose a nearby time, or use Return to live above.",
+      detail: "Choose a nearby time, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   // The hub caps the current series it loads per cluster, live or frozen,
@@ -210,8 +215,9 @@ const readErrors: [string, ReadError][] = [
     "query too broad",
     {
       title: "The saved samples at this time are too many to load",
-      detail: "Choose another time, or use Return to live above.",
+      detail: "Choose another time, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
@@ -288,5 +294,7 @@ export function historyError(error: unknown, frozen: boolean): ReadError {
       retryable: false,
     };
   }
-  return readError(error, "History unavailable");
+  // A chart has no time picker of its own; the page's banner offers one.
+  const { title, detail, retryable } = readError(error, "History unavailable");
+  return { title, detail, retryable };
 }

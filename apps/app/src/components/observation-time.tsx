@@ -10,7 +10,7 @@ import { Input } from "@jood-monitor/ui/input";
 import { Label } from "@jood-monitor/ui/label";
 import { useForm } from "@tanstack/react-form";
 import { CalendarClock } from "lucide-react";
-import { useState } from "react";
+import { type ComponentProps, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import {
   DAY_MS,
@@ -37,6 +37,8 @@ export function ObservationTime({
   open: controlledOpen,
   onOpenChange,
   triggerClassName,
+  trigger = true,
+  finalFocus,
 }: {
   at?: string;
   onSelect: (at: string) => void;
@@ -44,6 +46,11 @@ export function ObservationTime({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   triggerClassName?: string;
+  // Without its own button, a surface that has one opens it.
+  trigger?: boolean;
+  // Where focus goes when the dialog closes; by default the control that
+  // had it before the dialog opened.
+  finalFocus?: ComponentProps<typeof DialogContent>["finalFocus"];
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = controlledOpen ?? ownOpen;
@@ -54,24 +61,26 @@ export function ObservationTime({
   const { timeZone } = useDisplay();
   return (
     <>
-      <Button
-        aria-label="Go to a saved observation time"
-        className={triggerClassName}
-        onClick={() => setOpen(true)}
-        size="icon-sm"
-        title="Go to a saved observation time"
-        variant="outline"
-      >
-        <CalendarClock />
-      </Button>
+      {trigger && (
+        <Button
+          aria-label="Go to a saved observation time"
+          className={triggerClassName}
+          onClick={() => setOpen(true)}
+          size="icon-sm"
+          title="Go to a saved observation time"
+          variant="outline"
+        >
+          <CalendarClock />
+        </Button>
+      )}
       <Dialog onOpenChange={setOpen} open={open}>
-        <DialogContent>
+        <DialogContent finalFocus={finalFocus}>
           <DialogHeader>
             <DialogTitle>View a saved observation</DialogTitle>
             <DialogDescription>
-              Inventory and metrics are shown as they were saved at the chosen
-              time. Missing coverage stays visible; collection status is not
-              retained historically.
+              Inventory and metrics are shown as saved at the chosen time, with
+              the collection settings and observer report captured alongside
+              them where the hub kept them. Missing coverage stays visible.
             </DialogDescription>
           </DialogHeader>
           {open && (
