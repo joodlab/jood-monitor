@@ -165,7 +165,12 @@ function StatusRow({
         aria-hidden="true"
         className={cn("size-4 shrink-0", toneIconColor[status.tone])}
       />
-      <span className={cn("truncate", toneTextColor[status.tone])}>
+      {/* The title keeps a qualifier the card width cuts off readable,
+          e.g. "traffic not measured". */}
+      <span
+        className={cn("truncate", toneTextColor[status.tone])}
+        title={status.text}
+      >
         {status.text}
       </span>
       {children}

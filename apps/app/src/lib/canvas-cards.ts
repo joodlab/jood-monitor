@@ -178,8 +178,8 @@ function historyText(pods: Entity[]) {
 }
 
 // No cause is named: a selector that matches nothing and a workload scaled
-// to zero look the same in the inventory.
-const routedEmptyText =
+// to zero look the same in the inventory. The List view's rows use it too.
+export const routedEmptyText =
   "Routed Service has no endpoint pods · configuration observed, traffic not measured";
 
 // Live failing pods out of the active ones: "CrashLoopBackOff · 1 of 3 pods".

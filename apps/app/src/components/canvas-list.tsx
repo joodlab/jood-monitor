@@ -9,12 +9,18 @@ import {
   namespaceSummary,
   nodeStatusText,
   podDetail,
+  routedEmptyText,
   staleText,
   type Tone,
   toneOf,
 } from "../lib/canvas-cards";
 import { problemsFirst } from "../lib/canvas-list";
-import { findEntity, relatedPods, resourceStatus } from "../lib/infrastructure";
+import {
+  findEntity,
+  relatedPods,
+  resourceStatus,
+  routedServiceWithoutEndpoints,
+} from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
   type GraphItem,
@@ -33,14 +39,16 @@ function staleView(item: GraphItem, now: number) {
   return inventoryFreshness(item.view.inventory.sourceTime, now) !== "fresh";
 }
 
-// Pods and nodes read as their canvas cards do: a finished pod as history
-// with no readiness ("Finished · Failed · 0 restarts"), a node with the
-// reason it needs attention.
+// Pods, nodes and routed Services without endpoint pods read as their canvas
+// cards do: a finished pod as history with no readiness ("Finished · Failed ·
+// 0 restarts"), a node or Service with the reason it needs attention.
 export function rowMeta(item: GraphItem, now: number) {
   const { view, entity } = item;
   const parts = [cardSubtitle(entity, item.replicaSets?.length)];
   if (entity.kind === "Ingress") {
     parts.push(entity.hosts?.join(", ") || "no host rule");
+  } else if (routedServiceWithoutEndpoints(view, entity, now)) {
+    parts.push(routedEmptyText);
   } else if (entity.kind === "Pod") {
     parts.push(podDetail(entity));
     const node = findEntity(view, entity.nodeUid)?.name;
