@@ -1,6 +1,7 @@
-import type { SeriesHistorySeries } from "../contracts/types";
+import type { SeriesHistorySeries, SeriesOmission } from "../contracts/types";
 import { type ChartRow, GAP_MS, type Sample, withGaps } from "./chart-scale";
 import { DAY_MS, DIAGNOSTIC_RETENTION_DAYS } from "./retention";
+import { type RawWindow, rawWindow } from "./time";
 
 // Pure transforms from a bounded series read to chart rows. Source times stay
 // exact nanoseconds until drawn; a missing or unusable sample becomes a gap
@@ -287,4 +288,150 @@ export function zoomDomain(
   const from = Math.max(window.from, period.start - 60_000);
   const to = Math.min(window.to, period.end + 60_000);
   return from < to ? [from, to] : [window.from, window.to];
+}
+
+// A period whose Diagnostic samples a read left out (SeriesOmission): the
+// hub's exact bounds, and the epoch milliseconds the charts leave blank.
+export interface OmittedPeriod {
+  // Last millisecond, the floor of `to`.
+  end: number;
+  from: string;
+  // First millisecond, the floor of `from`.
+  start: number;
+  to: string;
+}
+
+const utcTimestamp = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/;
+
+// The millisecond an exact RFC 3339 UTC time falls in, as nanoMs counts it.
+function timestampMs(value: string) {
+  const match = utcTimestamp.exec(value);
+  const seconds = match ? Date.parse(`${match[1]}Z`) : Number.NaN;
+  if (!(match && Number.isFinite(seconds))) {
+    return;
+  }
+  return (
+    seconds + Math.floor(Number((match[2] ?? "").padEnd(9, "0")) / 1_000_000)
+  );
+}
+
+// The read's omitted Diagnostic periods, oldest first, as charts draw them.
+// The hub's bounds are five-minute archive windows, so a period is always
+// longer than GAP_MS.
+export function omittedPeriods(
+  omitted: readonly SeriesOmission[] | undefined
+): OmittedPeriod[] {
+  const periods: OmittedPeriod[] = [];
+  for (const item of omitted ?? []) {
+    const start = timestampMs(item.from);
+    const end = timestampMs(item.to);
+    if (item.kind === "diagnostic" && start != null && end != null) {
+      periods.push({ from: item.from, to: item.to, start, end });
+    }
+  }
+  return periods.sort((a, b) => a.start - b.start);
+}
+
+// Several reads' periods as one list: periods that overlap or adjoin, as
+// two reads of one Diagnostic made a little apart, are joined.
+export function mergePeriods(...lists: readonly (readonly OmittedPeriod[])[]) {
+  const sorted = lists.flat().sort((a, b) => a.start - b.start);
+  const merged: OmittedPeriod[] = [];
+  for (const period of sorted) {
+    const last = merged.at(-1);
+    if (last && period.start <= last.end + 1) {
+      if (period.end > last.end) {
+        merged[merged.length - 1] = { ...last, end: period.end, to: period.to };
+      }
+    } else {
+      merged.push(period);
+    }
+  }
+  return merged;
+}
+
+type Span = Pick<OmittedPeriod, "end" | "start">;
+
+function inside(time: number, periods: readonly Span[]) {
+  return periods.some((period) => time >= period.start && time <= period.end);
+}
+
+// The series without their points inside the periods, so nothing derived
+// from them (a rate, a latest value, a reference) uses that time.
+export function withoutPeriods(
+  series: readonly SeriesHistorySeries[],
+  periods: readonly Span[]
+): readonly SeriesHistorySeries[] {
+  if (!periods.length) {
+    return series;
+  }
+  return series.map((item) => ({
+    ...item,
+    points: item.points.filter(([nano]) => !inside(nanoMs(nano), periods)),
+  }));
+}
+
+// A chart row taken over an interval, such as a rate between two samples.
+interface IntervalRow extends ChartRow {
+  // Seconds before `time` that the row's earlier sample was taken.
+  interval?: number;
+}
+
+// Rows with each period left blank: a row inside one is dropped, a rate
+// whose interval reaches into one becomes a null row, and a null row breaks
+// the line across it, so no line or rate bridges the period. `added` counts
+// the null rows this made.
+export function blankRows<T extends IntervalRow>(
+  rows: readonly T[],
+  periods: readonly Span[]
+): { added: number; rows: readonly (T | ChartRow)[] } {
+  if (!periods.length) {
+    return { added: 0, rows };
+  }
+  const sorted = [...periods].sort((a, b) => a.start - b.start);
+  const kept: (T | ChartRow)[] = [];
+  let added = 0;
+  let next = 0;
+  for (const row of rows) {
+    if (inside(row.time, sorted)) {
+      continue;
+    }
+    // The first period passed since the previous row, if any.
+    let crossed: number | undefined;
+    while (next < sorted.length && sorted[next].end < row.time) {
+      crossed ??= sorted[next].start;
+      next++;
+    }
+    const begins =
+      row.interval == null ? row.time : row.time - row.interval * 1000;
+    const reaches =
+      row.value != null &&
+      sorted.some((period) => begins <= period.end && row.time >= period.start);
+    if (reaches) {
+      kept.push({ time: row.time, value: null });
+      added++;
+      continue;
+    }
+    if (crossed != null && kept.at(-1)?.value != null && row.value != null) {
+      kept.push({ time: crossed, value: null });
+      added++;
+    }
+    kept.push(row);
+  }
+  return { added, rows: kept };
+}
+
+// Where a period is read on its own: a minute either side, ending no later
+// than `end` (the hub's now, or the saved observation) and starting no
+// earlier than the raw retention, as rawWindow decides.
+export function periodWindow(
+  period: Span,
+  end: number,
+  hubTime: number | undefined
+): RawWindow {
+  const to = Math.min(period.end + 60_000, end);
+  const from = Math.min(period.start - 60_000, to);
+  const window = rawWindow(to, (to - from) / 3_600_000, hubTime);
+  // Unclamped, the start stays exact rather than a product of hours.
+  return window.outside || window.clamped ? window : { ...window, from };
 }

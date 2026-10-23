@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { historyRefetchInterval } from "../../components/inspector-model";
 import type { SeriesHistory } from "../../contracts/types";
 import { getSeriesHistoryFn } from "../../functions/clusters";
+import { periodWindow } from "../../lib/history-series";
 import { historyError } from "../../lib/install-errors";
 import { rawRetentionMessage } from "../../lib/retention";
 import {
@@ -21,6 +22,9 @@ export interface SeriesWindow {
   connection?: string;
   // The snapshot's hub time; the 7-day raw boundary is measured from it.
   hubClock?: HubClock;
+  // A period a read left out (epoch ms), read on its own with a minute
+  // either side instead of the range.
+  period?: { end: number; start: number };
   range: string;
   referenceTime: number;
   scope?: string;
@@ -44,7 +48,7 @@ export function useSeriesHistory<T = SeriesRead>({
   inspected,
   entities,
   names,
-  window: { at, connection, hubClock, scope, range, referenceTime },
+  window: { at, connection, hubClock, period, scope, range, referenceTime },
   part,
   enabled = true,
   select,
@@ -73,9 +77,11 @@ export function useSeriesHistory<T = SeriesRead>({
       at ?? "live",
       "series",
       part,
+      period ? `${period.start}-${period.end}` : "range",
     ],
     enabled: enabled && !!inspected && entities.length > 0 && referenceTime > 0,
-    refetchInterval: historyRefetchInterval(at, connection),
+    // A period read covers archived samples, which polling does not change.
+    refetchInterval: period ? false : historyRefetchInterval(at, connection),
     retry: (failures, error) =>
       failures < 1 && historyError(error, !!at).retryable,
     select,
@@ -88,7 +94,9 @@ export function useSeriesHistory<T = SeriesRead>({
       if (to == null) {
         throw new Error("invalid timestamp");
       }
-      const bounds = rawWindow(to, Number(range), hubTime);
+      const bounds = period
+        ? periodWindow(period, to, hubTime)
+        : rawWindow(to, Number(range), hubTime);
       // A request the hub would refuse is not sent; it fails the same way.
       if (bounds.outside) {
         throw new Error(rawRetentionMessage);
@@ -100,7 +108,9 @@ export function useSeriesHistory<T = SeriesRead>({
           entities: [...entities],
           names: [...names],
           from: new Date(bounds.from).toISOString(),
-          to: at,
+          // A period ends before the window does; the range ends at the
+          // saved observation, or at the hub's now when live.
+          to: period ? new Date(bounds.to).toISOString() : at,
         },
       });
       return {

@@ -155,6 +155,31 @@ describe("history errors", () => {
     }
   });
 
+  it("never offers a shorter range for a Diagnostic period read on its own", () => {
+    for (const frozen of [true, false]) {
+      const error = historyError(
+        new Error(
+          "query too broad; more archived samples in this window than one read parses"
+        ),
+        frozen,
+        "1",
+        { period: true }
+      );
+      expect(error.title).toBe(
+        "This Diagnostic period holds too many samples to load"
+      );
+      expect(error.detail).toContain(
+        "more samples than the hub reads in one request"
+      );
+      expect(error.detail).not.toContain("shorter range");
+      expect(error.retryable).toBe(false);
+    }
+    // Other failures read as they do for the range.
+    expect(
+      historyError(new Error("Failed to fetch"), false, "1", { period: true })
+    ).toEqual(historyError(new Error("Failed to fetch"), false, "1"));
+  });
+
   it("asks for a shorter range only when one exists", () => {
     for (const message of [
       "query too broad; choose a shorter range",

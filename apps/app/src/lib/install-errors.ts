@@ -284,15 +284,25 @@ const SHORTEST_RANGE = "1";
 // the dashboard's own, raised before asking) means the saved time is past
 // the raw window. Live it can only mean the clocks disagreed, which a retry
 // may outlast. `range` is the chart's range in hours, when the caller knows
-// it.
+// it; `period` marks a Diagnostic period read on its own, which has no
+// shorter window to offer.
 export function historyError(
   error: unknown,
   frozen: boolean,
-  range?: string
+  range?: string,
+  { period = false }: { period?: boolean } = {}
 ): ReadError {
   const message = errorText(error);
   if (frozen && message.includes(rawRetentionMessage)) {
     return rawRetention;
+  }
+  if (period && message.includes("query too broad")) {
+    return {
+      title: "This Diagnostic period holds too many samples to load",
+      detail:
+        "Even on its own, with a minute either side, it holds more samples than the hub reads in one request, so it cannot be shown. The full range leaves it blank.",
+      retryable: false,
+    };
   }
   // History is already one entity and metric, and the read is refused whole;
   // only a shorter window can help, unless this is already the shortest.

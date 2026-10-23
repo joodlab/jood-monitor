@@ -25,7 +25,12 @@ import {
   references,
   type UsageField,
 } from "../lib/chart-scale";
-import { chartSpans, nanoMs } from "../lib/history-series";
+import {
+  chartSpans,
+  nanoMs,
+  type OmittedPeriod,
+  omittedPeriods,
+} from "../lib/history-series";
 import { hasHostSamples } from "../lib/host-metrics";
 import type { ResourceSummary } from "../lib/infrastructure";
 import { historyError } from "../lib/install-errors";
@@ -36,11 +41,15 @@ import { useMediaQuery } from "./canvas-hooks";
 import { type Coverage, podGroups } from "./inspector-model";
 import { CoverageNote } from "./inspector-sections";
 import {
+  blankSpans,
   ChartSkeleton,
   DiagnosticNotices,
   type HostQuery,
   NodeHostSection,
+  OmissionNotice,
+  omittedEmptyReason,
   RetentionFootnote,
+  type SectionRead,
   toChartSpans,
   useHostHistory,
 } from "./panel-metrics-host";
@@ -66,6 +75,8 @@ type HistoryWindow = SeriesWindow;
 interface FieldHistory {
   clamped: boolean;
   from: number;
+  // Diagnostic periods the read left out, which the chart leaves blank.
+  omitted: OmittedPeriod[];
   series: SeriesHistorySeries[];
   to: number;
 }
@@ -103,6 +114,7 @@ export function useHistory(
       clamped: read.clamped,
       from: read.from,
       to: read.to,
+      omitted: omittedPeriods(read.response.omitted),
       series: read.response.series.filter((item) => item.name === name),
     }),
     [name]
@@ -188,9 +200,30 @@ export function MetricsTab({
 // Phones get shorter charts so a section fits on screen.
 const phoneQuery = "(max-width: 767px)";
 
+// What one section's read left out, for the omission notice.
+function sectionRead(
+  label: string,
+  query: {
+    data?: { from: number; to: number };
+    isError: boolean;
+    isPending: boolean;
+  },
+  periods: readonly OmittedPeriod[]
+): SectionRead {
+  return {
+    label,
+    pending: query.isPending,
+    failed: query.isError,
+    periods,
+    window: query.data && { from: query.data.from, to: query.data.to },
+  };
+}
+
 // A Pod's Metrics API charts; a Node's in their own section beside the
 // Host section. A zoom applies to every chart and resets with the
-// resource or window.
+// resource or window. A Diagnostic period the range's reads left out can be
+// read on its own instead: every section then reads that period, with a
+// minute either side, until the way back is chosen.
 function UsageHistory({
   view,
   entity,
@@ -208,18 +241,51 @@ function UsageHistory({
 }) {
   const { at, timeZone } = useDisplay();
   const node = entity.kind === "Node";
-  const host = useHostHistory(cpu.inspected, cpu.window, node);
+  const readKey = `${view.cluster.id}:${entity.uid}:${range}:${at ?? "live"}`;
+  const [focus, setFocus] = useState<{ key: string; period: OmittedPeriod }>();
+  const focused = focus?.key === readKey ? focus.period : undefined;
+  const periodWindow: HistoryWindow = {
+    ...cpu.window,
+    period: focused && { start: focused.start, end: focused.end },
+  };
+  const periodCpu = useHistory(
+    focused ? cpu.inspected : null,
+    "cpu",
+    periodWindow
+  );
+  const periodMemory = useHistory(
+    focused ? memory.inspected : null,
+    "memory",
+    periodWindow
+  );
+  const shownCpu = focused ? periodCpu : cpu;
+  const shownMemory = focused ? periodMemory : memory;
+  const host = useHostHistory(
+    cpu.inspected,
+    focused ? periodWindow : cpu.window,
+    node
+  );
   const phone = useMediaQuery(phoneQuery);
   const height = node && phone ? 180 : 220;
-  const zoomKey = `${view.cluster.id}:${entity.uid}:${range}:${at ?? "live"}`;
+  const zoomKey = `${readKey}:${focused?.from ?? "range"}`;
   const [zoom, setZoom] = useState<{
     key: string;
     domain: [number, number];
   }>();
   const domain = zoom?.key === zoomKey ? zoom.domain : undefined;
-  const clamped = clampedFrom(cpu, memory);
+  const clamped = clampedFrom(shownCpu, shownMemory);
   const hostShown =
     node && !!host.data && hasHostSamples(host.data.response.series);
+  const reads = [
+    sectionRead(
+      "Kubernetes Metrics API",
+      shownCpu.query,
+      shownCpu.query.data?.omitted ?? []
+    ),
+    ...(node
+      ? [sectionRead("Host", host, omittedPeriods(host.data?.response.omitted))]
+      : []),
+  ];
   const kubernetes = charts.map((chart) => (
     <div className="rounded-lg border bg-background/40 p-4" key={chart.field}>
       <HistoryPlot
@@ -233,7 +299,7 @@ function UsageHistory({
         field={chart.field}
         heading={node ? "h4" : undefined}
         height={height}
-        history={chart.field === "cpu" ? cpu : memory}
+        history={chart.field === "cpu" ? shownCpu : shownMemory}
         title={chart.title}
       />
     </div>
@@ -261,12 +327,26 @@ function UsageHistory({
           -day raw window.
         </p>
       )}
+      <OmissionNotice
+        focused={focused}
+        hubClock={cpu.window.hubClock}
+        onBack={() => {
+          setFocus(undefined);
+          setZoom(undefined);
+        }}
+        onLoad={(period) => {
+          setFocus({ key: readKey, period });
+          setZoom(undefined);
+        }}
+        range={range}
+        reads={reads}
+      />
       {node ? (
         <NodeSections
           domain={domain}
           entity={entity}
           height={height}
-          history={cpu}
+          history={shownCpu}
           host={host}
           kubernetes={kubernetes}
           onReset={() => setZoom(undefined)}
@@ -329,6 +409,7 @@ function NodeSections({
         height={height}
         host={host}
         hubClock={hubClock}
+        period={!!history.window.period}
         range={history.window.range}
         view={view}
       />
@@ -503,14 +584,24 @@ function HistoryPlot({
     [entity, field]
   );
   const series = query.data?.series;
+  const omitted = query.data?.omitted;
   const samples = useMemo(() => chartSamples(series), [series]);
-  // Periods sampled during a Diagnostic, at the cadence these series show.
-  const spans = useMemo(() => toChartSpans(chartSpans(series ?? [])), [series]);
+  // Periods sampled during a Diagnostic, at the cadence these series show,
+  // and periods the read left out, which stay blank.
+  const spans = useMemo(
+    () => [
+      ...toChartSpans(chartSpans(series ?? [])),
+      ...blankSpans(omitted ?? []),
+    ],
+    [series, omitted]
+  );
   if (query.isPending) {
     return <ChartSkeleton heading={heading} height={height} title={title} />;
   }
   if (query.isError) {
-    const problem = historyError(query.error, frozen, history.window.range);
+    const problem = historyError(query.error, frozen, history.window.range, {
+      period: !!history.window.period,
+    });
     const Title = heading ?? "h3";
     return (
       <div className="space-y-2">
@@ -534,7 +625,11 @@ function HistoryPlot({
     >
       <ResourceChart
         domain={domain}
-        emptyReason={emptyReason}
+        emptyReason={
+          [query.data.omitted.length ? omittedEmptyReason : "", emptyReason]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
         field={field}
         from={query.data.from}
         heading={heading}

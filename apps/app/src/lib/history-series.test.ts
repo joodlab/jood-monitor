@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { SeriesHistorySeries } from "../contracts/types";
 import {
+  blankRows,
   chartSpans,
   counterIdentity,
   counterPoints,
   counterRates,
   diagnosticSpans,
   gaugeRows,
+  mergePeriods,
+  omittedPeriods,
+  periodWindow,
   spanExpiry,
+  withoutPeriods,
   zoomDomain,
 } from "./history-series";
+import { cpuStates, hostCpu, hostMemory } from "./host-metrics";
 
 // Synthetic fixture values only.
 const t0 = Date.parse("2026-10-22T12:00:00Z");
@@ -223,5 +229,216 @@ describe("Diagnostic spans", () => {
     expect(
       zoomDomain({ start: t0 + 700_000, end: t0 + 800_000 }, window)
     ).toEqual([window.from, window.to]);
+  });
+});
+
+// The hub's omission of three five-minute Diagnostic archives, 12:05:00 to
+// 12:19:59.999999999 UTC.
+const omission = {
+  kind: "diagnostic" as const,
+  from: "2026-10-22T12:05:00.000000000Z",
+  to: "2026-10-22T12:19:59.999999999Z",
+  points: 18_000,
+};
+const [period] = omittedPeriods([omission]);
+const minute = 60_000;
+
+describe("omitted Diagnostic periods", () => {
+  it("read the hub's exact bounds into the milliseconds charts leave blank", () => {
+    expect(period).toEqual({
+      from: omission.from,
+      to: omission.to,
+      start: t0 + 5 * minute,
+      end: t0 + 20 * minute - 1,
+    });
+    expect(period.end - period.start).toBeGreaterThan(90_000);
+    expect(omittedPeriods(undefined)).toEqual([]);
+  });
+
+  it("show a period several reads left out once", () => {
+    const [later] = omittedPeriods([
+      {
+        ...omission,
+        from: "2026-10-22T12:40:00.000000000Z",
+        to: "2026-10-22T12:44:59.999999999Z",
+      },
+    ]);
+    expect(mergePeriods([later, period], [period])).toEqual([period, later]);
+    // A later read of the same Diagnostic found one more archive.
+    const [longer] = omittedPeriods([
+      { ...omission, to: "2026-10-22T12:24:59.999999999Z" },
+    ]);
+    const [next] = omittedPeriods([
+      {
+        ...omission,
+        from: "2026-10-22T12:20:00.000000000Z",
+        to: "2026-10-22T12:24:59.999999999Z",
+      },
+    ]);
+    expect(mergePeriods([period], [longer])).toEqual([longer]);
+    expect(mergePeriods([period, next])).toEqual([longer]);
+  });
+
+  it("drop a series' points inside a period at its exact source time", () => {
+    const [item] = withoutPeriods(
+      [
+        series([
+          [4 * minute, "1"],
+          [5 * minute, "2"],
+          [20 * minute - 1, "3"],
+          [20 * minute, "4"],
+        ]),
+      ],
+      [period]
+    );
+    expect(item.points.map(([, value]) => value)).toEqual(["1", "4"]);
+  });
+
+  it("break a gauge line across a period and never draw inside it", () => {
+    // Samples every 30 s straight through the period, as an entity the
+    // Diagnostic did not cover still reports raw samples.
+    const rows = gaugeRows([
+      series(
+        Array.from({ length: 50 }, (_, index) => [
+          index * 30_000,
+          String(index),
+        ]),
+        { kind: "gauge", temporality: 0, monotonic: false }
+      ),
+    ]);
+    const blanked = blankRows(rows, [period]);
+    expect(
+      blanked.rows.filter(
+        (row) => row.time >= period.start && row.time <= period.end
+      )
+    ).toEqual([{ time: period.start, value: null }]);
+    const marker = blanked.rows.findIndex((row) => row.value == null);
+    expect(blanked.rows[marker - 1].time).toBe(t0 + 4.5 * minute);
+    expect(blanked.rows[marker + 1].time).toBe(t0 + 20 * minute);
+    expect(blanked.added).toBe(1);
+    expect(blankRows(rows, []).rows).toBe(rows);
+  });
+
+  it("replace the gap a period already makes rather than add another", () => {
+    // The scoped node has no raw sample there, so gaugeRows already breaks.
+    const rows = gaugeRows([
+      series(
+        [
+          [3.5 * minute, "1"],
+          [4 * minute, "2"],
+          [21 * minute, "3"],
+        ],
+        { kind: "gauge", temporality: 0, monotonic: false }
+      ),
+    ]);
+    expect(rows.map((row) => row.value)).toEqual([1, 2, null, 3]);
+    const blanked = blankRows(rows, [period]);
+    expect(blanked.rows.map((row) => [row.time - t0, row.value])).toEqual([
+      [3.5 * minute, 1],
+      [4 * minute, 2],
+      [5 * minute, null],
+      [21 * minute, 3],
+    ]);
+    expect(blanked.added).toBe(1);
+  });
+
+  it("never take a rate across a period", () => {
+    // A rate whose earlier sample is before the period is blanked, however
+    // short the gap, while rates on either side stay.
+    const rates = counterRates(
+      [
+        ...counterPoints([
+          series([
+            [3 * minute, "0"],
+            [4 * minute, "60"],
+            [20 * minute + 10_000, "1000"],
+            [21 * minute, "1050"],
+          ]),
+        ]).values(),
+      ][0]
+    ).rows;
+    const short = { start: t0 + 4 * minute + 10_000, end: t0 + 4.5 * minute };
+    const blanked = blankRows(
+      [{ time: t0 + 5 * minute, value: 0.5, interval: 60 }],
+      [short]
+    );
+    expect(blanked.rows).toEqual([{ time: t0 + 5 * minute, value: null }]);
+    expect(blanked.added).toBe(1);
+    const across = blankRows(rates, [period]);
+    expect(across.rows.map((row) => [row.time - t0, row.value])).toEqual([
+      [4 * minute, 1],
+      [20 * minute + 10_000, null],
+      [21 * minute, 1],
+    ]);
+  });
+
+  it("leave host CPU and memory blank across a period, with no rate over it", () => {
+    // Every state counts up one CPU second per second, sampled every 60 s
+    // through the period; memory in use is 1 GiB throughout.
+    const offsets = Array.from({ length: 30 }, (_, index) => index * minute);
+    const cpu = cpuStates.map((state) =>
+      series(
+        offsets.map((offset) => [offset, String(100 + offset / 1000)]),
+        { series: `cpu-${state}`, attributes: { state } }
+      )
+    );
+    const memory = series(
+      offsets.map((offset) => [offset, "1073741824"]),
+      {
+        series: "memory-used",
+        name: "system.memory.usage",
+        unit: "By",
+        kind: "gauge",
+        temporality: 0,
+        monotonic: false,
+        attributes: { state: "used" },
+      }
+    );
+    const visible = withoutPeriods([...cpu, memory], [period]);
+    const busy = hostCpu(visible);
+    const drawn = blankRows(busy.rows, [period]);
+    const inPeriod = (row: { time: number }) =>
+      row.time >= period.start && row.time <= period.end;
+    expect(
+      drawn.rows.filter((row) => row.value != null && inPeriod(row))
+    ).toEqual([]);
+    // The first rate after the period would span it; it is a gap instead.
+    expect(
+      busy.rows.find((row) => row.time === t0 + 20 * minute)?.value
+    ).toBeNull();
+    expect(
+      busy.rows.filter((row) => row.value != null).map((row) => row.interval)
+    ).toEqual(Array.from({ length: 13 }, () => 60));
+    const used = blankRows(hostMemory(visible).rows, [period]).rows;
+    expect(used.filter((row) => inPeriod(row))).toEqual([
+      { time: period.start, value: null },
+    ]);
+  });
+
+  it("read a period on its own with a minute either side, within the window", () => {
+    const hub = t0 + 3_600_000;
+    expect(periodWindow(period, hub, hub)).toEqual({
+      outside: false,
+      from: period.start - minute,
+      to: period.end + minute,
+      clamped: false,
+    });
+    // A saved observation two minutes after the period ends the read.
+    expect(periodWindow(period, period.end + 2000, hub)).toMatchObject({
+      to: period.end + 2000,
+    });
+    // The 7-day raw boundary (with a minute's slack) cuts the start.
+    const boundary = period.start + 30_000;
+    expect(
+      periodWindow(period, hub, boundary + 7 * 86_400_000 - 60_000)
+    ).toEqual({
+      outside: false,
+      from: boundary,
+      to: period.end + minute,
+      clamped: true,
+    });
+    expect(periodWindow(period, hub, hub + 8 * 86_400_000)).toEqual({
+      outside: true,
+    });
   });
 });

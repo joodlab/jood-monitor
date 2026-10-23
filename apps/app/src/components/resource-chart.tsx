@@ -37,6 +37,7 @@ import {
   valueDomainTop,
   withGaps,
 } from "../lib/chart-scale";
+import { blankRows } from "../lib/history-series";
 import { formatDateTime, timeZoneLabel } from "../lib/time";
 import { TimeText } from "./time";
 
@@ -62,12 +63,17 @@ export interface ChartSeries {
   rows: readonly MetricRow[];
 }
 
-// A shaded period with a short label, such as a Diagnostic.
+// A shaded period with a short label, such as a Diagnostic. A `blank`
+// period is one the read left out: nothing is drawn inside it, no line or
+// rate crosses it, and it is shaded apart from sampled periods.
 export interface ChartSpan {
+  blank?: boolean;
   end: number;
   label: string;
   start: number;
 }
+
+const noSpans: readonly ChartSpan[] = [];
 
 type Heading = "h3" | "h4";
 
@@ -148,6 +154,27 @@ export interface ChartBreaks {
   resets: number;
 }
 
+// Each series with the blank spans left blank, and the null rows that added
+// to the first series, which the summary counts.
+function blankSeries(
+  series: readonly ChartSeries[],
+  spans: readonly ChartSpan[]
+) {
+  const blank = spans.filter((item) => item.blank);
+  if (!blank.length) {
+    return { series, added: 0 };
+  }
+  let added = 0;
+  const drawn = series.map((item, index) => {
+    const result = blankRows(item.rows, blank);
+    if (index === 0) {
+      added = result.added;
+    }
+    return { ...item, rows: result.rows };
+  });
+  return { series: drawn, added };
+}
+
 // Raw history for one subject, one or more series in one unit family. The
 // time axis is the fetched window, or a narrower client-side domain; the
 // summary always covers the fetched window. `countLabel` names what the
@@ -158,9 +185,9 @@ export function MetricChart({
   family,
   from,
   to,
-  series,
+  series: fetched,
   references = [],
-  spans = [],
+  spans = noSpans,
   domain,
   height = 200,
   emptyReason,
@@ -188,6 +215,9 @@ export function MetricChart({
   countLabel?: CountNoun;
 }) {
   const { timeZone, frozen } = useDisplay();
+  // Blank spans are cut from the rows before anything is counted or drawn.
+  const blanked = useMemo(() => blankSeries(fetched, spans), [fetched, spans]);
+  const series = blanked.series;
   const primary = series[0]?.rows;
   const stats = useMemo(() => rowStats(primary ?? []), [primary]);
   const max = useMemo(() => seriesMax(series), [series]);
@@ -281,7 +311,12 @@ export function MetricChart({
       )}
       {stats.count > 0 && (
         <ChartSummary
-          breaks={breaks}
+          breaks={
+            breaks && {
+              gaps: breaks.gaps + blanked.added,
+              resets: breaks.resets,
+            }
+          }
           countLabel={countLabel}
           frozen={frozen}
           percentBase={percentBase}
@@ -367,14 +402,19 @@ function ReferenceLegend({
 // What the shaded periods are. The shading itself is decorative; the chart's
 // description names each period with its times.
 function SpanLegend({ spans }: { spans: readonly ChartSpan[] }) {
-  const labels = [...new Set(spans.map((item) => item.label))];
+  const labels = new Map(spans.map((item) => [item.label, !!item.blank]));
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-      {labels.map((label) => (
+      {[...labels].map(([label, blank]) => (
         <li className="flex items-center gap-1.5" key={label}>
           <span
             aria-hidden="true"
-            className="h-2.5 w-5 rounded-xs bg-info/15"
+            className={cn(
+              "h-2.5 w-5 rounded-xs",
+              blank
+                ? "border border-muted-foreground/50 border-dashed bg-muted-foreground/10"
+                : "bg-info/15"
+            )}
           />
           <span>{label}</span>
         </li>
@@ -498,24 +538,38 @@ function scaledRows(
 
 // Shading only. Labels drawn in the plot would widen its margins and overlap
 // one another, so the legend and the description name each period instead.
+// A blank period is shaded in a neutral tone, apart from sampled ones.
 function spanMarks(spans: readonly ChartSpan[], top: number) {
-  if (!spans.length) {
-    return [];
-  }
-  return [
-    decorative(
-      rect(spans, {
-        id: "spans",
-        x1: "start",
-        x2: "end",
-        y1: () => 0,
-        y2: () => top,
-        fill: "var(--info)",
-        fillOpacity: 0.12,
-        inset: 0,
-      })
-    ),
+  const marks = [
+    {
+      id: "spans",
+      items: spans.filter((item) => !item.blank),
+      fill: "var(--info)",
+      fillOpacity: 0.12,
+    },
+    {
+      id: "blank-spans",
+      items: spans.filter((item) => item.blank),
+      fill: "var(--muted-foreground)",
+      fillOpacity: 0.08,
+    },
   ];
+  return marks
+    .filter((mark) => mark.items.length > 0)
+    .map((mark) =>
+      decorative(
+        rect(mark.items, {
+          id: mark.id,
+          x1: "start",
+          x2: "end",
+          y1: () => 0,
+          y2: () => top,
+          fill: mark.fill,
+          fillOpacity: mark.fillOpacity,
+          inset: 0,
+        })
+      )
+    );
 }
 
 // The x scale spans the fetched window. A zoom is a viewport on it, so the

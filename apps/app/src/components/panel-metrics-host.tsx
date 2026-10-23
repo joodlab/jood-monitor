@@ -1,8 +1,16 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
-import { Info, Timer, ZoomIn, ZoomOut } from "lucide-react";
-import { lazy, type ReactNode, Suspense, useId, useMemo, useRef } from "react";
+import { EyeOff, Info, Timer, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+} from "react";
 import type { SeriesHistorySeries } from "../contracts/types";
 import {
   type SeriesRead,
@@ -22,6 +30,10 @@ import { collectionState, profileKnown } from "../lib/collection-state";
 import {
   chartSpans,
   type DiagnosticSpan,
+  mergePeriods,
+  type OmittedPeriod,
+  omittedPeriods,
+  withoutPeriods,
   zoomDomain,
 } from "../lib/history-series";
 import {
@@ -44,6 +56,7 @@ import {
 import { minutesLeft } from "../lib/install-enrollment";
 import { historyError } from "../lib/install-errors";
 import { nodeProfileOutcome } from "../lib/metrics";
+import { DAY_MS, DIAGNOSTIC_RETENTION_DAYS } from "../lib/retention";
 import { formatDateTime, hubNow } from "../lib/time";
 import { profileLabel } from "./collection-model";
 import type { ChartSpan } from "./resource-chart";
@@ -113,6 +126,20 @@ export function toChartSpans(spans: readonly DiagnosticSpan[]): ChartSpan[] {
     label: spanLabel(span),
   }));
 }
+
+// Periods whose Diagnostic samples the read left out, shaded and left blank.
+export function blankSpans(periods: readonly OmittedPeriod[]): ChartSpan[] {
+  return periods.map((period) => ({
+    start: period.start,
+    end: period.end,
+    label: "Diagnostic · not loaded",
+    blank: true,
+  }));
+}
+
+// Why a chart with an omitted period may have nothing to draw.
+export const omittedEmptyReason =
+  "Samples taken during a Diagnostic in this interval were not loaded; the notice above says why.";
 
 // Samples taken during a Diagnostic are kept a day, so a window reaching
 // further back can show earlier periods as gaps.
@@ -201,6 +228,7 @@ function NoticeRow({
 }
 
 const noticeIcon = "mt-px size-3.5 shrink-0 text-info-text";
+const omittedIcon = "mt-px size-3.5 shrink-0 text-muted-foreground";
 
 // A Diagnostic on this node: running, waiting or paused (live only), and
 // each period in the window that ended, with its expiry. Zooming changes
@@ -314,6 +342,216 @@ export function DiagnosticNotices({
   );
 }
 
+// One section's read for the omission notice: the charts it draws (shown
+// only beside another section) and what it left out.
+export interface SectionRead {
+  failed: boolean;
+  label: string;
+  pending: boolean;
+  periods: readonly OmittedPeriod[];
+  // The window the read covers, once it answered.
+  window?: { from: number; to: number };
+}
+
+// "this hour" and "Back to the hour", for the page's range in hours.
+function rangeWords(range: string) {
+  if (range === "1") {
+    return { current: "this hour", back: "Back to the hour" };
+  }
+  if (range === "24") {
+    return { current: "this day", back: "Back to the day" };
+  }
+  return {
+    current: `these ${range} hours`,
+    back: `Back to the ${range} hours`,
+  };
+}
+
+function samePeriod(a: OmittedPeriod, b: OmittedPeriod) {
+  return a.start <= b.end && b.start <= a.end;
+}
+
+// "The charts" when every section is meant, else the sections by name.
+function chartsNamed(
+  sections: readonly SectionRead[],
+  all: readonly SectionRead[]
+) {
+  if (sections.length === all.length) {
+    return "The charts";
+  }
+  return `The ${sections.map((section) => section.label).join(" and ")} charts`;
+}
+
+const DIAGNOSTIC_RETENTION_MS = DIAGNOSTIC_RETENTION_DAYS * DAY_MS;
+
+// How long the hub keeps a period's Diagnostic samples, counted from each
+// sample's source time, at `now`.
+function periodRetention(period: OmittedPeriod, now: number, timeZone: string) {
+  const cutoff = now - DIAGNOSTIC_RETENTION_MS;
+  if (period.end < cutoff) {
+    return `They have expired since: the hub keeps Diagnostic samples ${DIAGNOSTIC_RETENTION_HOURS} hours after their source time.`;
+  }
+  if (period.start < cutoff) {
+    return `Samples before ${zoneTime(cutoff, timeZone)} have expired; the rest expire by ${zoneTime(period.end + DIAGNOSTIC_RETENTION_MS, timeZone)}.`;
+  }
+  return `Diagnostic samples are kept ${DIAGNOSTIC_RETENTION_HOURS} hours after their source time, so these expire between ${formatDateTime(period.start + DIAGNOSTIC_RETENTION_MS, timeZone)} and ${zoneTime(period.end + DIAGNOSTIC_RETENTION_MS, timeZone)}.`;
+}
+
+function between(period: OmittedPeriod, timeZone: string) {
+  return `between ${formatDateTime(period.start, timeZone)} and ${zoneTime(period.end, timeZone)}`;
+}
+
+function focusedText(
+  period: OmittedPeriod,
+  reads: readonly SectionRead[],
+  words: ReturnType<typeof rangeWords>,
+  now: number,
+  timeZone: string
+) {
+  const window = reads.find((read) => read.window)?.window ?? {
+    from: period.start - 60_000,
+    to: period.end + 60_000,
+  };
+  // The read is cut at the window's end or the raw retention, if it reaches.
+  const padded =
+    window.from <= period.start - 60_000 && window.to >= period.end + 60_000;
+  const shown = `${formatDateTime(window.from, timeZone)} to ${zoneTime(window.to, timeZone)}, ${padded ? "a minute either side of" : "the part of the window that holds"} the Diagnostic samples ${words.current} left out`;
+  if (reads.some((read) => read.pending)) {
+    return `Reading the Diagnostic period on its own: ${shown}.`;
+  }
+  const still = reads.filter((read) =>
+    read.periods.some((item) => samePeriod(item, period))
+  );
+  if (still.length) {
+    return `Even on its own, the Diagnostic period ${between(period, timeZone)} holds more samples than the hub reads in one request, so its Diagnostic samples are still not loaded. ${chartsNamed(still, reads)} leave it blank.`;
+  }
+  const failed = reads.filter((read) => read.failed);
+  if (failed.length === reads.length) {
+    return "The Diagnostic period could not be read on its own; the charts below say why.";
+  }
+  const unread = failed.length
+    ? ` ${chartsNamed(failed, reads)} could not read it; they say why.`
+    : "";
+  return `Showing the Diagnostic period on its own: ${shown}.${unread} ${periodRetention(period, now, timeZone)}`;
+}
+
+// Diagnostic periods a read left out to stay within what the hub parses in
+// one request, each with a way to read it on its own; while one is read on
+// its own, what that read loaded and the way back. Focus moves to the
+// button that replaces the one pressed.
+export function OmissionNotice({
+  reads,
+  focused,
+  range,
+  onLoad,
+  onBack,
+  hubClock,
+}: {
+  reads: readonly SectionRead[];
+  focused?: OmittedPeriod;
+  range: string;
+  onLoad: (period: OmittedPeriod) => void;
+  onBack: () => void;
+  hubClock?: SeriesWindow["hubClock"];
+}) {
+  const { now: clock, timeZone } = useDisplay();
+  const box = useRef<HTMLDivElement>(null);
+  // The period whose button was pressed, until focus moved.
+  const pressed = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const from = pressed.current;
+    if (from == null) {
+      return;
+    }
+    const buttons = [
+      ...(box.current?.querySelectorAll<HTMLButtonElement>("button") ?? []),
+    ];
+    const target = focused
+      ? buttons.find((button) => button.dataset.back != null)
+      : buttons.find((button) => button.dataset.load === from);
+    target?.focus();
+    pressed.current = undefined;
+  }, [focused]);
+  const periods = mergePeriods(...reads.map((read) => read.periods));
+  // The display clock is zero until hydration; times wait for it.
+  if (!(clock && (focused || periods.length))) {
+    return null;
+  }
+  const now = hubNow(hubClock, clock) ?? clock;
+  const words = rangeWords(range);
+  return (
+    <div
+      className="rounded-lg border border-muted-foreground/40 border-dashed bg-muted/30 px-3 py-2 text-xs"
+      ref={box}
+      role="note"
+    >
+      <ul className="space-y-2">
+        {focused ? (
+          <NoticeRow
+            action={
+              <Button
+                className="h-8 focus-visible:ring-2 focus-visible:ring-ring max-sm:h-9"
+                data-back
+                onClick={() => {
+                  pressed.current = focused.from;
+                  onBack();
+                }}
+                size="sm"
+                variant="outline"
+              >
+                <ZoomOut aria-hidden />
+                {words.back}
+              </Button>
+            }
+            icon={<EyeOff aria-hidden className={omittedIcon} />}
+          >
+            {focusedText(focused, reads, words, now, timeZone)}
+          </NoticeRow>
+        ) : (
+          periods.map((period) => {
+            const sections = reads.filter((read) =>
+              read.periods.some((item) => samePeriod(item, period))
+            );
+            const expired = period.end < now - DIAGNOSTIC_RETENTION_MS;
+            return (
+              <NoticeRow
+                action={
+                  !expired && (
+                    <Button
+                      aria-label={`Load the Diagnostic period ${between(period, timeZone)} on its own`}
+                      className="h-8 focus-visible:ring-2 focus-visible:ring-ring max-sm:h-9"
+                      data-load={period.from}
+                      onClick={() => {
+                        pressed.current = period.from;
+                        onLoad(period);
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      <ZoomIn aria-hidden />
+                      Load the Diagnostic period
+                    </Button>
+                  )
+                }
+                icon={<EyeOff aria-hidden className={omittedIcon} />}
+                key={period.from}
+              >
+                Samples taken during a Diagnostic {between(period, timeZone)}{" "}
+                were not loaded with {words.current}: together with the other
+                samples in the window they exceed what the hub reads in one
+                request. {chartsNamed(sections, reads)} leave that period blank.
+                The hub archives Diagnostic samples for the whole cluster, so
+                this applies even where the Diagnostic did not run.{" "}
+                {periodRetention(period, now, timeZone)}
+              </NoticeRow>
+            );
+          })
+        )}
+      </ul>
+    </div>
+  );
+}
+
 // The setting the hub asks this node to collect with, and whether the node
 // collector acknowledged it. A saved observation states what it captured.
 function configuredText(view: ClusterView, uid: string, now: number) {
@@ -392,7 +630,8 @@ const rateNoun: CountNoun = { one: "rate", other: "rates" };
 
 function HostCharts({
   entity,
-  series,
+  series: fetched,
+  periods,
   read,
   emptyReason,
   domain,
@@ -401,12 +640,18 @@ function HostCharts({
 }: {
   entity: Entity;
   series: readonly SeriesHistorySeries[];
+  // Periods the read left out: no rate, value or reference uses them.
+  periods: readonly OmittedPeriod[];
   read: SeriesRead;
   emptyReason?: string;
   domain?: readonly [number, number];
   height: number;
   spans: readonly ChartSpan[];
 }) {
+  const series = useMemo(
+    () => withoutPeriods(fetched, periods),
+    [fetched, periods]
+  );
   const cpu = useMemo(() => hostCpu(series), [series]);
   const memory = useMemo(() => hostMemory(series), [series]);
   const cpuRows = useMemo(
@@ -523,6 +768,7 @@ function HostBody({
   height,
   now,
   range,
+  period,
 }: {
   view: ClusterView;
   entity: Entity;
@@ -531,10 +777,16 @@ function HostBody({
   height: number;
   now: number;
   range?: string;
+  period: boolean;
 }) {
   const { frozen } = useDisplay();
   const series = host.data?.response.series;
-  const spans = useMemo(() => toChartSpans(chartSpans(series ?? [])), [series]);
+  const omitted = host.data?.response.omitted;
+  const periods = useMemo(() => omittedPeriods(omitted), [omitted]);
+  const spans = useMemo(
+    () => [...toChartSpans(chartSpans(series ?? [])), ...blankSpans(periods)],
+    [series, periods]
+  );
   if (host.isPending) {
     return (
       <>
@@ -548,7 +800,7 @@ function HostBody({
     );
   }
   if (host.isError) {
-    const problem = historyError(host.error, frozen, range);
+    const problem = historyError(host.error, frozen, range, { period });
     return (
       <p className="rounded-md border p-3 text-sm" role="alert">
         {problem.title}.{problem.detail && ` ${problem.detail}`}{" "}
@@ -561,14 +813,18 @@ function HostBody({
     );
   }
   const empty = !hasHostSamples(host.data.response.series);
+  const reasons = [
+    periods.length ? omittedEmptyReason : "",
+    empty ? hostEmptyReason(view, entity.uid, now, !frozen) : "",
+  ].filter(Boolean);
+  const emptyReason = reasons.length ? reasons.join(" ") : undefined;
   return (
     <HostCharts
       domain={domain}
-      emptyReason={
-        empty ? hostEmptyReason(view, entity.uid, now, !frozen) : undefined
-      }
+      emptyReason={emptyReason}
       entity={entity}
       height={height}
+      periods={periods}
       read={host.data}
       series={host.data.response.series}
       spans={spans}
@@ -601,6 +857,7 @@ export function NodeHostSection({
   height,
   hubClock,
   range,
+  period = false,
 }: {
   view: ClusterView;
   entity: Entity;
@@ -610,6 +867,8 @@ export function NodeHostSection({
   hubClock?: SeriesWindow["hubClock"];
   // The range the host read covers, for the refusal's advice.
   range?: string;
+  // The read is a Diagnostic period on its own, not the range.
+  period?: boolean;
 }) {
   const { now: clock, frozen, referenceTime } = useDisplay();
   const id = useId();
@@ -639,6 +898,7 @@ export function NodeHostSection({
         height={height}
         host={host}
         now={now}
+        period={period}
         range={range}
         view={view}
       />
