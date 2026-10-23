@@ -147,6 +147,40 @@ describe("inventory coverage", () => {
     expect(render(emptyGraph)).not.toContain("kept as history");
   });
 
+  it("never claims routed Services were checked on stale live inventory", () => {
+    const render = (views: ClusterView[], frozen = false) =>
+      renderToStaticMarkup(
+        createElement(TopologyEmpty, {
+          coverage: inventoryCoverage(views, now, frozen),
+          frozen,
+          graph: emptyGraph,
+          namespace: "shop",
+          problems: true,
+          search: "",
+          showSystem: false,
+        })
+      );
+    // Fresh heartbeat, inventory 10 minutes old: the routed-Service rule
+    // skipped it, while pods, workloads and nodes were still judged.
+    const stale = render([cluster("synthetic-a", ago(10), ago(600))]);
+    expect(stale).toContain("No live problems in the last inventory");
+    expect(stale).toContain(
+      "No failing pods, under-replicated workloads or node problems in shop. Routed Services without endpoint pods are judged only on fresh inventory."
+    );
+    expect(stale).not.toContain("or routed Services without endpoint pods in");
+    // A stale observer over fresh inventory: the rule did run.
+    const observer = render([cluster("synthetic-a", ago(150), ago(150))]);
+    expect(observer).toContain(
+      "node problems or routed Services without endpoint pods in shop."
+    );
+    // A saved observation is judged as captured, however old.
+    const saved = render([cluster("synthetic-a", null, ago(600))], true);
+    expect(saved).toContain(
+      "node problems or routed Services without endpoint pods in shop."
+    );
+    expect(saved).not.toContain("judged only on fresh inventory");
+  });
+
   it("ages inventory whose heartbeat is ahead of the hub clock", () => {
     const skewed = new Date(now + 5 * 60_000).toISOString();
     const views = [cluster("synthetic-a", skewed, ago(30))];

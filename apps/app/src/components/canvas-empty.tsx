@@ -97,11 +97,22 @@ function historyText(graph: ServiceGraph) {
   return ` ${finishedText(finished, graph.finishedFailed ?? 0)} ${finished === 1 ? "pod is" : "pods are"} kept as history.`;
 }
 
+// What the empty Problems only canvas checked. Routed Services without
+// endpoint pods are judged only on fresh live inventory (or a saved
+// observation), so stale live inventory never claims there are none.
+function problemText(props: EmptyProps, scope: string) {
+  const { coverage, frozen } = props;
+  if (!frozen && coverage.aged - coverage.observerAged > 0) {
+    return `No failing pods, under-replicated workloads or node problems in ${scope}. Routed Services without endpoint pods are judged only on fresh inventory.`;
+  }
+  return `No failing pods, under-replicated workloads, node problems or routed Services without endpoint pods in ${scope}.`;
+}
+
 function emptyCopy(props: EmptyProps): EmptyCopy {
   const { graph, problems, search, showSystem, frozen } = props;
   const scope = scopeText(props.namespace);
   const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads, node problems or routed Services without endpoint pods in ${scope}.`;
+  const problemList = problemText(props, scope);
   const history = historyText(graph);
   switch (emptyTopology(graph, { problems, search }, props.coverage)) {
     case "hiddenSystem":
