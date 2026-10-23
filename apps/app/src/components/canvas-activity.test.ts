@@ -113,6 +113,8 @@ describe("canvas Activity panel", () => {
       ]
     );
     expect(html).toContain("Reported time: ");
+    // Visible, not only in the tooltip, and only on the reported row.
+    expect(html.split(" · reported by automation")).toHaveLength(2);
     expect(html).toContain("Node first observed");
     expect(html).toContain("First observed in inventory: ");
     expect(html).toContain(" · created ");

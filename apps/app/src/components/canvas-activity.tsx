@@ -237,6 +237,9 @@ function ChangeContent({
               <TimeText label="Created" value={row.summary.subjectCreatedAt} />
             </>
           )}
+          {/* A reported row says so in words, not only in its icon tint and
+              tooltip; observed rows need no extra words. */}
+          {row.summary.evidence === "reported" && " · reported by automation"}
           {clusterName && ` · ${clusterName}`}
         </span>
       </span>
