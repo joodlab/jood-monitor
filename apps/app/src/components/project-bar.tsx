@@ -443,7 +443,7 @@ export function ProjectBar({
         <div className="flex items-center gap-1">
           <Button
             aria-keyshortcuts="Control+K Meta+K"
-            aria-label="Find a page or resource"
+            aria-label="Find a page, resource or action"
             className="h-8 gap-2 px-2 text-muted-foreground"
             onClick={onSearch}
             variant="ghost"
