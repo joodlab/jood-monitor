@@ -6,7 +6,10 @@ import { build } from "esbuild";
 
 // Seeds a clearly labeled synthetic fleet through the real local machine API.
 // Every name, address and value below is invented; nothing describes real infrastructure.
-// DEMO_LOOP=1 keeps heartbeats and metrics fresh every 30 seconds for live demos.
+// DEMO_LOOP=1 keeps heartbeats and metrics fresh every 30 seconds for live demos,
+// with synthetic host samples every 60 seconds.
+// DEMO_DIAGNOSTIC=1 (with DEMO_LOOP=1) also starts a nine-minute Diagnostic on
+// synthetic-cluster-node-a and sends its synthetic host samples every 5 seconds.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const origin = process.env.DEMO_ORIGIN ?? "http://127.0.0.1:3040";
 if (!["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname)) {
@@ -476,20 +479,42 @@ function usage(entity, step) {
   };
 }
 
-// Samples follow the collection profile as a real observer does: nothing
-// while paused, pod CPU/memory only outside Basic and only in the selected
-// namespaces when Standard names some.
-function samplesFor(clusterId, entities, steps, now, profile) {
-  const name =
-    profile.name === "diagnostic" &&
+// The profile in effect at `now`: an expired Diagnostic is its return profile.
+function effectiveProfile(profile, now) {
+  return profile.name === "diagnostic" &&
     profile.expiresAt &&
     Date.parse(profile.expiresAt) <= now
-      ? profile.returnProfile || "basic"
-      : profile.name;
+    ? profile.returnProfile || "basic"
+    : profile.name;
+}
+
+// What a node's collector stamps as jood.collection.profile: Diagnostic only
+// on the nodes it targets, the return profile elsewhere.
+function nodeProfile(profile, nodeUid, now) {
+  const name = effectiveProfile(profile, now);
+  if (name === "diagnostic" && !profile.nodeUids.includes(nodeUid)) {
+    return profile.returnProfile || "basic";
+  }
+  return name;
+}
+
+// Samples follow the collection profile as a real observer does: nothing
+// while paused, pod CPU/memory only outside Basic and only in the selected
+// namespaces when Standard names some. Rows carry the node's profile as the
+// observer stamps it; during a Diagnostic, the Metrics API rows of its node
+// and pods stay at the observer's 30-second cadence (one per refresh).
+function samplesFor(clusterId, entities, steps, now, profile) {
+  const name = effectiveProfile(profile, now);
   const podSampled = (entity) =>
     name !== "basic" &&
     (!profile.namespaces.length ||
       profile.namespaces.includes(entity.namespace));
+  const profileOf = (entity) =>
+    nodeProfile(
+      profile,
+      entity.kind === "Node" ? entity.uid : entity.nodeUid,
+      now
+    );
   const measured = profile.paused
     ? []
     : entities.filter(
@@ -503,6 +528,10 @@ function samplesFor(clusterId, entities, steps, now, profile) {
   for (let step = 0; step < steps; step++) {
     const nano = BigInt(now - (steps - 1 - step) * 15_000) * 1_000_000n;
     for (const entity of measured) {
+      const collected = profileOf(entity);
+      if (collected === "diagnostic" && step !== steps - 1) {
+        continue;
+      }
       const prefix = entity.kind === "Node" ? "k8s.node" : "k8s.pod";
       const value = usage(entity, step);
       for (const [name, unit, amount] of [
@@ -536,6 +565,10 @@ function samplesFor(clusterId, entities, steps, now, profile) {
               {
                 key: "jood.source",
                 value: { stringValue: "synthetic fixture" },
+              },
+              {
+                key: "jood.collection.profile",
+                value: { stringValue: collected },
               },
             ],
           }),
@@ -605,6 +638,12 @@ async function send(cluster, credential, { steps, scale }) {
     credential
   );
   const samples = samplesFor(cluster.id, entities, steps, now, profile);
+  await deliver(credential, samples);
+  return { entities: entities.length, points: samples.length, profile };
+}
+
+// OTLP batches stay under the hub's 10,000-point request limit.
+async function deliver(credential, samples) {
   for (let index = 0; index < samples.length; index += 8000) {
     const response = await fetch(`${origin}/v1/metrics`, {
       method: "POST",
@@ -618,7 +657,200 @@ async function send(cluster, credential, { steps, scale }) {
       throw new Error(`OTLP fixture: ${response.status}`);
     }
   }
-  return { entities: entities.length, points: samples.length };
+}
+
+// Synthetic host samples, shaped like the node collector's /proc reads:
+// cumulative CPU seconds per state (iowait is not collected) and memory
+// in use, available and total, from invented rates.
+const cpuShares = {
+  user: 0.62,
+  nice: 0.02,
+  system: 0.26,
+  interrupt: 0.02,
+  softirq: 0.05,
+  steal: 0.03,
+};
+const WAVE_SECONDS = 1800;
+const day = 86_400_000;
+// A fixed synthetic boot, stable across reruns on the same day.
+const bootMs = Math.floor(Date.now() / day) * day - 40 * day;
+const seededAt = Date.now();
+// synthetic-node-b reboots two hours before seeding; its counters restart.
+const rebootMs = seededAt - 2 * 3_600_000;
+// synthetic-node-c's collector misses four minutes, thirty minutes ago.
+const hostGap = [seededAt - 30 * 60_000, seededAt - 26 * 60_000];
+// Past nine-minute Diagnostics on synthetic-cluster-node-a.
+const pastDiagnostics = [3 * 3_600_000, (22 * 60 + 40) * 60_000].map((ago) => [
+  seededAt - ago,
+  seededAt - ago + 9 * 60_000,
+]);
+
+function hostBusy(node) {
+  if (node.name === "synthetic-node-b") {
+    return 5.4;
+  }
+  const seed = [...node.uid].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return node.capacityCpu * (0.18 + (seed % 7) / 40);
+}
+
+function nodeBoot(node, ms) {
+  return node.name === "synthetic-node-b" && ms >= rebootMs ? rebootMs : bootMs;
+}
+
+// CPU seconds since boot for a rate of busy * (1 + 0.15 sin(2πt/P)),
+// integrated exactly so every counter only increases.
+function busySeconds(busy, boot, ms) {
+  const angle = (time) => (2 * Math.PI * time) / 1000 / WAVE_SECONDS;
+  return (
+    busy * ((ms - boot) / 1000) +
+    ((0.15 * busy * WAVE_SECONDS) / (2 * Math.PI)) *
+      (Math.cos(angle(boot)) - Math.cos(angle(ms)))
+  );
+}
+
+function hostRow(clusterId, node, profile, nano, metric) {
+  const row = {
+    id: 0,
+    key: "",
+    series: "",
+    clusterId,
+    entityUid: node.uid,
+    integer: false,
+    timeUnixNano: String(nano),
+    sourceTime: new Date(Number(nano / 1_000_000n)).toISOString(),
+    receivedAt: new Date().toISOString(),
+    diagnostic: false,
+    resource: JSON.stringify({
+      attributes: [
+        { key: "jood.collection.profile", value: { stringValue: profile } },
+        { key: "jood.source", value: { stringValue: "synthetic fixture" } },
+        { key: "k8s.node.name", value: { stringValue: node.name } },
+        { key: "k8s.node.uid", value: { stringValue: node.uid } },
+      ],
+    }),
+    scope: JSON.stringify({ name: "jood-monitor/host", version: "synthetic" }),
+    attributes: metric.state
+      ? JSON.stringify({
+          attributes: [{ key: "state", value: { stringValue: metric.state } }],
+        })
+      : "{}",
+    ...metric.fields,
+  };
+  row.key = metricKey(row);
+  row.series = metricSeries(row);
+  return row;
+}
+
+function hostSamples(clusterId, node, times, profile) {
+  const rows = [];
+  for (const ms of times) {
+    const nano = BigInt(ms) * 1_000_000n;
+    const boot = nodeBoot(node, ms);
+    const busy = busySeconds(hostBusy(node), boot, ms);
+    const elapsed = (ms - boot) / 1000;
+    const states = {
+      ...Object.fromEntries(
+        Object.entries(cpuShares).map(([state, share]) => [state, busy * share])
+      ),
+      idle: node.capacityCpu * elapsed - busy,
+    };
+    for (const [state, seconds] of Object.entries(states)) {
+      rows.push(
+        hostRow(clusterId, node, profile, nano, {
+          state,
+          fields: {
+            name: "system.cpu.time",
+            unit: "s",
+            kind: "sum",
+            temporality: 2,
+            monotonic: true,
+            value: seconds.toFixed(2),
+            startTimeUnixNano: String(BigInt(boot) * 1_000_000n),
+          },
+        })
+      );
+    }
+    // MemTotal − MemAvailable reads a little above the working set.
+    const used = Math.min(
+      node.capacityMemory * 0.96,
+      usage(node, Math.floor(ms / 15_000)).memory * 1.08 +
+        Math.sin(ms / 600_000) * 64 * MiB
+    );
+    const gauge = (name, value, state) =>
+      hostRow(clusterId, node, profile, nano, {
+        state,
+        fields: {
+          name,
+          unit: "By",
+          kind: "gauge",
+          temporality: 0,
+          monotonic: false,
+          value: String(Math.round(value)),
+          startTimeUnixNano: "0",
+        },
+      });
+    rows.push(
+      gauge("system.memory.usage", used, "used"),
+      gauge("system.memory.usage", node.capacityMemory - used, "available"),
+      gauge("system.memory.limit", node.capacityMemory)
+    );
+  }
+  return rows;
+}
+
+const within = (ms, [start, end]) => ms >= start && ms < end;
+
+// Four hours of 60-second host samples per Ready node, with node-c's gap
+// and node-a's past Diagnostics (every 5 seconds, profile diagnostic), which
+// replace its 60-second samples while they run.
+async function hostBackfill(cluster, credential, entities, profile) {
+  const nodes = entities.filter(
+    (entity) => entity.kind === "Node" && entity.status === "True"
+  );
+  const end = Math.floor(seededAt / 60_000) * 60_000;
+  const minutes = Array.from(
+    { length: 240 },
+    (_, index) => end - (239 - index) * 60_000
+  );
+  let points = 0;
+  for (const node of nodes) {
+    const bursts =
+      node.uid === "synthetic-cluster-node-a" ? pastDiagnostics : [];
+    const standard = minutes.filter(
+      (ms) =>
+        !(
+          (node.name === "synthetic-node-c" && within(ms, hostGap)) ||
+          bursts.some((burst) => within(ms, burst))
+        )
+    );
+    const samples = hostSamples(
+      cluster.id,
+      node,
+      standard,
+      nodeProfile(profile, node.uid, seededAt)
+    );
+    for (const [start, stop] of bursts) {
+      const times = [];
+      for (let ms = start; ms < stop; ms += 5000) {
+        times.push(ms);
+      }
+      samples.push(...hostSamples(cluster.id, node, times, "diagnostic"));
+    }
+    await deliver(credential, samples);
+    points += samples.length;
+  }
+  return points;
+}
+
+// The host samples a collector takes at `now`: every 60 s, except on a node
+// in a running Diagnostic, which DEMO_DIAGNOSTIC's 5-second sender covers.
+function liveHost(cluster, entities, profile, now) {
+  return entities
+    .filter((entity) => entity.kind === "Node" && entity.status === "True")
+    .filter((node) => nodeProfile(profile, node.uid, now) !== "diagnostic")
+    .flatMap((node) =>
+      hostSamples(cluster.id, node, [now], nodeProfile(profile, node.uid, now))
+    );
 }
 
 for (const cluster of clusters) {
@@ -644,14 +876,82 @@ for (const cluster of clusters) {
       credential
     );
   }
+  const host = await hostBackfill(
+    cluster,
+    credential,
+    fleet(cluster.id, 3).entities,
+    result.profile
+  );
   console.log(
-    `Seeded ${cluster.name}: ${result.entities} synthetic entities, ${result.points} metric points`
+    `Seeded ${cluster.name}: ${result.entities} synthetic entities, ${result.points} metric points, ${host} synthetic host points`
   );
 }
+
+// A nine-minute Diagnostic on synthetic-cluster-node-a, started as an
+// operator would, then that node's synthetic host samples every 5 seconds
+// until it expires. Its Metrics API rows carry the diagnostic profile meanwhile.
+async function startDiagnostic() {
+  const cluster = clusters[0];
+  const credential = await credentialFor(cluster);
+  const node = fleet(cluster.id, 3).entities.find(
+    (entity) => entity.uid === `${cluster.id}-node-a`
+  );
+  const expiresAt = Date.now() + 9 * 60_000;
+  await request(`/api/v1/clusters/${cluster.id}/profile`, {
+    name: "diagnostic",
+    nodeUids: [node.uid],
+    expiresAt: new Date(expiresAt).toISOString(),
+    returnProfile: "standard",
+  });
+  // Acknowledge at once, as a node collector applying the profile would.
+  await send(cluster, credential, { steps: 1, scale: 3 });
+  console.log(
+    `Started a synthetic Diagnostic on ${node.name} until ${new Date(expiresAt).toISOString()}`
+  );
+  (async () => {
+    while (Date.now() < expiresAt) {
+      await deliver(
+        credential,
+        hostSamples(cluster.id, node, [Date.now()], "diagnostic")
+      );
+      await sleep(5000);
+    }
+    console.log(
+      `Synthetic Diagnostic on ${node.name} expired; 60-second host samples resume`
+    );
+  })().catch((error) => {
+    console.error(`Synthetic Diagnostic sender stopped: ${error.message}`);
+  });
+}
+
+if (process.env.DEMO_DIAGNOSTIC === "1") {
+  if (process.env.DEMO_LOOP === "1") {
+    await startDiagnostic();
+  } else {
+    console.log("DEMO_DIAGNOSTIC=1 needs DEMO_LOOP=1; no Diagnostic started.");
+  }
+}
+let lastHost = Date.now();
 while (process.env.DEMO_LOOP === "1") {
   await sleep(30_000);
+  const hostDue = Date.now() - lastHost >= 59_000;
   for (const cluster of clusters) {
-    await send(cluster, await credentialFor(cluster), { steps: 2, scale: 3 });
+    const credential = await credentialFor(cluster);
+    const result = await send(cluster, credential, { steps: 2, scale: 3 });
+    if (hostDue) {
+      await deliver(
+        credential,
+        liveHost(
+          cluster,
+          fleet(cluster.id, 3).entities,
+          result.profile,
+          Date.now()
+        )
+      );
+    }
+  }
+  if (hostDue) {
+    lastHost = Date.now();
   }
   console.log(`Refreshed synthetic fleet at ${new Date().toISOString()}`);
 }
