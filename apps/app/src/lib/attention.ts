@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { metricsApiUnavailable } from "./collection-state";
+import { metricsApiUnavailable, profileKnown } from "./collection-state";
 import {
   isFinished,
   nodeConditionProblems,
@@ -243,30 +243,25 @@ function clusterItems(
   ];
 }
 
-// A saved observation carries the profile and heartbeat only when they were
-// archived with it; otherwise the view holds current metadata, never its own.
-function metadata(
-  view: ClusterView,
-  frozen: boolean,
-  field: "heartbeat" | "profile"
-) {
-  return !frozen || view.observationMetadataAvailable?.[field] === true;
-}
-
 // Why every node lacks usage, said once for the cluster instead of once per
 // node. Info only: these explain missing samples, they are not problems. The
-// Metrics API report counts only from a fresh heartbeat, as the usage gaps
-// read it, so an old report never explains today's missing samples.
+// collection settings and observer report count by Settings' rule: always
+// live, and in a saved observation only where they were captured with it.
+// The Metrics API report counts only from a heartbeat fresh when it was read
+// (live) or when the saved inventory arrived, as the usage gaps read it, so
+// an old report never explains missing samples.
 function collectionNotes(
   view: ClusterView,
   now: number,
   frozen: boolean
 ): Attention[] {
   const notes: { key: string; title: string }[] = [];
-  if (view.profile.paused && metadata(view, frozen, "profile")) {
+  if (view.profile.paused && profileKnown(view, frozen)) {
     notes.push({
       key: "collection:paused",
-      title: "Collection is paused by an operator; history is preserved",
+      title: frozen
+        ? "Collection was paused when this observation was captured; history is preserved"
+        : "Collection is paused by an operator; history is preserved",
     });
   }
   if (metricsApiUnavailable(view, now, frozen)) {

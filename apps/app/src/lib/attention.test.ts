@@ -8,6 +8,7 @@ import {
   dataAge,
   observationCoverage,
 } from "./attention";
+import { profileKnown } from "./collection-state";
 
 const now = Date.parse("2026-10-22T12:00:00Z");
 const fresh = new Date(now - 10_000).toISOString();
@@ -230,7 +231,26 @@ describe("attention", () => {
     // A saved observation names the pause only when its profile was archived.
     expect(attentionItems([paused], now, true)).toHaveLength(2);
     paused.observationMetadataAvailable = { profile: true, heartbeat: false };
-    expect(attentionItems([paused], now, true)).toHaveLength(1);
+    expect(
+      attentionItems([paused], now, true).map((item) => item.title)
+    ).toEqual([
+      "Collection was paused when this observation was captured; history is preserved",
+    ]);
+  });
+  it("knows a paused profile by Settings' rule", () => {
+    const paused = view([entity("node-a", "Node", { status: "True" })]);
+    paused.profile.paused = true;
+    const note = "Collection is paused by an operator; history is preserved";
+    const titles = (frozen: boolean) =>
+      attentionItems([paused], now, frozen).map((item) => item.title);
+    // A view carrying a capture record without its profile is a saved
+    // observation's, whatever the caller says, as Settings reads it.
+    paused.observationMetadataAvailable = { profile: false, heartbeat: true };
+    expect(profileKnown(paused)).toBe(false);
+    expect(titles(false)).not.toContain(note);
+    paused.observationMetadataAvailable = { profile: true, heartbeat: false };
+    expect(profileKnown(paused)).toBe(true);
+    expect(titles(false)).toContain(note);
   });
   it("names an unavailable Metrics API once instead of per node", () => {
     const unmeasured = view([
