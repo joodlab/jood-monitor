@@ -48,6 +48,21 @@ Source nanoseconds and int64 values stay strings or BigInt. Semantic series
 identity excludes only the per-sample source window. Original attributes,
 resource and scope remain available in raw history and exports.
 
+Dashboard charts read raw history through one validated, scoped server
+function per section (`getSeriesHistoryFn`): up to 20 entities and 9 metric
+names over at most a day. The cluster Durable Object filters its outbox by
+both sets in SQL, binding each set as one JSON value, and marks the reply as
+filtered; an object from an earlier version answers with its unfiltered,
+capped array, which the Worker refuses when cut and otherwise filters again.
+The Worker then lists the overlapping raw and Diagnostic archives from D1,
+refuses the read before any R2 get when the index shows too many archives or
+archived points, and reads each object once in bounded groups. Rows are kept
+only inside the source-time window (Diagnostic rows only within a day of
+their source time), deduplicated, collapsed per series and source time by the
+rule rollups use, and returned as compact exact-string points. A read that
+does not fit is refused with 413, never truncated. REST history and frozen
+snapshots keep the single-entity read.
+
 Workspace notification objects use WebSocket hibernation. Reconnecting clients
 resynchronize saved scoped state; periodic queries cover missed notifications.
 Notifications are coalesced to one per thirty seconds. Durable alarms target

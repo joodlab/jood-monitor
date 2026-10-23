@@ -1,6 +1,6 @@
 ---
 title: Metrics and history
-description: Supported units, exact values, source freshness and retention.
+description: Supported units, exact values, source freshness, retention and the Metrics tab charts.
 ---
 
 The hub accepts OTLP/HTTP **protobuf metrics** at `/v1/metrics`, optionally
@@ -18,6 +18,9 @@ not supported. Unsupported points produce an OTLP partial-success response.
 | `k8s.node.cpu.usage`, `k8s.pod.cpu.usage`, `container.cpu.usage` | CPU cores | gauge |
 | `k8s.node.memory.usage`, `k8s.pod.memory.usage`, `container.memory.usage` | bytes | gauge |
 
+The hub accepts `system.network.errors` from other OTLP sources, but the Jood
+agent never sends it, so a Jood cluster has no network error history.
+
 Raw values retain signed int64 precision. Source and start nanoseconds remain
 exact strings or BigInt. Conversion for chart presentation does not replace
 the original stored observation. Source and receipt time are distinct.
@@ -25,6 +28,50 @@ the original stored observation. Source and receipt time are distinct.
 Only `jood.source.window` is excluded from semantic series identity. Original
 resource, scope and attributes remain in raw history and OTLP exports.
 OpenMetrics projects supported cumulative counters and deduplicates label sets.
+
+## Node and Pod charts
+
+The Metrics tab of a Pod or Node draws raw samples at their source time for
+the selected range. A gap longer than 90 seconds stays blank; nothing is
+interpolated, and a missing sample is never drawn as zero.
+
+A Node shows two sections that are read and shown separately:
+
+- **Kubernetes Metrics API**: CPU used and memory working set, as the
+  observer samples them every 30 seconds (every 60 seconds on Basic).
+- **Host (node collector, /proc)**: read from the node's `/proc` by the node
+  collector every 60 seconds on every profile, and every 5 seconds during a
+  Diagnostic on that node.
+  - **Host CPU busy** is the per-second rate of the cumulative
+    `system.cpu.time` counters: user + nice + system + interrupt + softirq +
+    steal, drawn only where all six states have a rate. iowait is not
+    collected and is not counted as busy. A rate is taken only between two
+    samples at most 90 seconds apart that share a start time and do not
+    decrease; anything else is a gap or a counter reset (for example a
+    reboot), left blank. The dashed line is the node's capacity, all CPUs.
+  - **Host memory in use** is `MemTotal − MemAvailable` from `/proc/meminfo`
+    (`system.memory.usage` with `state=used`), with MemTotal from the latest
+    `system.memory.limit` in the window. It is measured differently from the
+    Metrics API working set, and both are shown as reported.
+
+Each section says why it is empty when the hub knows: collection is paused,
+the node collector has not acknowledged this node, or no host samples
+arrived in the interval. The node collector DaemonSet runs on linux/amd64
+nodes without taints by default.
+
+## Diagnostic periods
+
+Samples taken during a Diagnostic carry the `diagnostic` collection profile.
+Charts shade those periods and label them with the interval the samples show,
+for example `Diagnostic · samples every 5 s` on host charts. The Kubernetes
+Metrics API keeps its own cadence during a Diagnostic, so its charts show
+every 30 seconds. **Zoom to Diagnostic** narrows only the charts' time axis;
+the read stays the selected range.
+
+Diagnostic raw samples are kept one day, counted from each sample's source
+time, so a period expires gradually: its first sample a day after it was
+taken and its last sample a day after that one. A window reaching further
+back than a day can show earlier Diagnostic periods as gaps.
 
 ## Retention
 
@@ -36,6 +83,24 @@ Counter resets and collection gaps are reflected in coverage and delta fields.
 History queries require workspace and cluster scope. Narrow large queries to
 an entity and metric. A quota error is explicit; an incomplete result should
 not be presented as a complete chart.
+
+## Large windows
+
+The dashboard reads a chart's series in one bounded request: up to 20
+entities and 9 metric names, a window of at most one day, reading each
+five-minute archive once. Archives are kept per cluster, so the cost of a
+window depends on everything the cluster reported in it, not only on the
+chart's own series. A request is refused whole with HTTP 413, and the chart
+says **This window holds too many samples to load. Choose a shorter range.**,
+when the window:
+
+- overlaps more than 2,000 archives of one kind;
+- holds more archived points than the hub parses in one request; or
+- would return more than 30,000 points.
+
+The hub decides from its archive index before reading any archive, so a
+refusal costs no archive reads. A chart is never drawn from a truncated read.
+A busy cluster may need a shorter range than a quiet one.
 
 ## Limits
 
