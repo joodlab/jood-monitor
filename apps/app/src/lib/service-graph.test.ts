@@ -318,7 +318,7 @@ describe("problems-only topology", () => {
       stale: false,
     });
     expect(status.tone).toBe("neutral");
-    expect(status.text).toBe("2/2 ready · 1 finished with failures");
+    expect(status.text).toBe("2/2 ready · 1 finished (1 failed)");
   });
 
   it("seeds a ready node whose network is unavailable", () => {
@@ -379,6 +379,7 @@ describe("problems-only topology", () => {
     view.inventory.edges.push(edge("report-2", "cart-rs", "owned_by"));
     const graph = serviceGraph([view], { ...options, problems: true });
     expect(graph.items).toHaveLength(0);
+    expect(graph.finished).toBe(3);
     expect(graph.finishedFailed).toBe(2);
     expect(
       emptyTopology(
@@ -395,6 +396,7 @@ describe("problems-only topology", () => {
     expect(live.finishedFailed).toBe(2);
     // Outside Problems only nothing is left out, so nothing is counted.
     expect(serviceGraph([view], options).finishedFailed).toBeUndefined();
+    expect(serviceGraph([view], options).finished).toBeUndefined();
   });
 
   it("keeps a pod inside its start-up grace out of the problem view", () => {

@@ -72,6 +72,28 @@ export function isFinished(pod: Entity) {
   return finishedStatuses.has(podPhase(pod));
 }
 
+// The one counting rule every pod total uses (the Fleet tile, Servers, the
+// canvas): active pods have not finished; finished pods are history that
+// Kubernetes still retains, failed ones counted apart. System pods are
+// counted among the active ones and named separately.
+export function podTally(pods: Entity[]) {
+  const tally = { active: 0, finished: 0, finishedFailed: 0, systemActive: 0 };
+  for (const pod of pods) {
+    if (isFinished(pod)) {
+      tally.finished++;
+      if (podPhase(pod) === "Failed") {
+        tally.finishedFailed++;
+      }
+    } else {
+      tally.active++;
+      if (isSystem(pod)) {
+        tally.systemActive++;
+      }
+    }
+  }
+  return tally;
+}
+
 // Node conditions that make a Ready node a problem: any reported pressure or
 // an unavailable network. Shared by the canvas, Servers and attention model.
 export function nodeConditionProblems(node: Entity) {

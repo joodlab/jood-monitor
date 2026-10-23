@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import {
   cardSubtitle,
   failingMembers,
+  namespaceHistoryText,
   namespaceStatus,
   namespaceSummary,
   nodeStatusText,
@@ -81,10 +82,10 @@ function rowStatus(item: GraphItem, problem: boolean, now: number): RowStatus {
       sourceTime: view.inventory.sourceTime,
       stale,
     });
-    const history = summary.finishedFailed
-      ? ` · ${summary.finishedFailed} finished with failures`
-      : "";
-    return { meta: `Namespace · ${status.text}${history}`, tone: status.tone };
+    return {
+      meta: `Namespace · ${status.text}${namespaceHistoryText(summary)}`,
+      tone: status.tone,
+    };
   }
   const members = entity.kind === "Pod" ? [] : relatedPods(view, entity);
   return {

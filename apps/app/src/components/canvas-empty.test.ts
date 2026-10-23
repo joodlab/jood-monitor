@@ -120,6 +120,33 @@ describe("inventory coverage", () => {
     );
   });
 
+  it("names finished pods in the Problems only copy", () => {
+    const views = [cluster("synthetic-a", ago(10), ago(30))];
+    const render = (graph: ServiceGraph) =>
+      renderToStaticMarkup(
+        createElement(TopologyEmpty, {
+          coverage: inventoryCoverage(views, now),
+          frozen: false,
+          graph,
+          namespace: "batch",
+          problems: true,
+          search: "",
+          showSystem: false,
+        })
+      );
+    const html = render({ ...emptyGraph, finished: 5, finishedFailed: 2 });
+    expect(html).toContain("No live problems observed");
+    expect(html).toContain(
+      "No failing pods, under-replicated workloads or node problems in batch."
+    );
+    expect(html).toContain("5 finished (2 failed) pods are kept as history.");
+    expect(html).not.toContain("with failures");
+    expect(render({ ...emptyGraph, finished: 1, finishedFailed: 0 })).toContain(
+      "1 finished pod is kept as history."
+    );
+    expect(render(emptyGraph)).not.toContain("kept as history");
+  });
+
   it("ages inventory whose heartbeat is ahead of the hub clock", () => {
     const skewed = new Date(now + 5 * 60_000).toISOString();
     const views = [cluster("synthetic-a", skewed, ago(30))];

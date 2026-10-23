@@ -14,6 +14,7 @@ import {
   percent,
   percentage,
   podReady,
+  podTally,
 } from "../lib/infrastructure";
 import { freshness, inventoryFreshness, nodeTotals } from "../lib/metrics";
 
@@ -32,17 +33,20 @@ export interface StatTile {
   value: string;
 }
 
+// Active pods by podTally's rule, the one Servers and the canvas count by;
+// `system` says how many of them run in system namespaces.
 export function podCounts(views: ClusterView[]) {
-  const pods = views.flatMap((view) =>
-    view.inventory.entities.filter(
-      (entity) => entity.kind === "Pod" && !isFinished(entity)
-    )
+  const all = views.flatMap((view) =>
+    view.inventory.entities.filter((entity) => entity.kind === "Pod")
   );
+  const tally = podTally(all);
+  const pods = all.filter((pod) => !isFinished(pod));
   const known = pods.filter((pod) => podReady(pod) != null);
   return {
-    total: pods.length,
+    total: tally.active,
     known: known.length,
     ready: pods.filter((pod) => podReady(pod) === true).length,
+    system: tally.systemActive,
   };
 }
 
@@ -245,7 +249,7 @@ export function fleetTiles(
         stalePods,
         "pod",
         readinessKnown
-          ? "Active pods, Kubernetes Ready condition"
+          ? `Active pods in all namespaces, incl. ${pods.system} in system namespaces`
           : `${pods.total - pods.known} of ${pods.total} without readiness`
       ),
       tone: readinessKnown && pods.ready < pods.total ? "warning" : undefined,

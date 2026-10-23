@@ -8,6 +8,7 @@ import {
   nodeConditionProblems,
   oomObserved,
   podPhase,
+  podTally,
   type ResourceSummary,
   resourceStatus,
   workloadKinds,
@@ -160,13 +161,19 @@ function shortfall(entity: Entity) {
   );
 }
 
-// Retained failed member pods, worded as on namespace cards: history named
+// "5 finished (2 failed)", or "3 finished" when none failed: the one wording
+// the canvas uses for finished pods Kubernetes still retains.
+export function finishedText(finished: number, failed: number) {
+  return failed
+    ? `${finished} finished (${failed} failed)`
+    : `${finished} finished`;
+}
+
+// Retained finished member pods, worded as on namespace cards: history named
 // so the counts add up, never a live failure.
 function historyText(pods: Entity[]) {
-  const count = pods.filter(
-    (pod) => isFinished(pod) && podPhase(pod) === "Failed"
-  ).length;
-  return count ? ` · ${count} finished with failures` : "";
+  const { finished, finishedFailed } = podTally(pods);
+  return finished ? ` · ${finishedText(finished, finishedFailed)}` : "";
 }
 
 // Live failing pods out of the active ones: "CrashLoopBackOff · 1 of 3 pods".
@@ -405,15 +412,19 @@ export function podDetail(pod: Entity) {
 }
 
 export interface NamespaceSummary {
-  // Active pods whose readiness is known to be ready; absent when any active
-  // pod has no readiness, so the count never overstates.
+  // Pods that have not finished (podTally's active pods).
   activePods: number;
   // Active pods with a live problem.
   failing: number;
   // Retained failed pods: history, as on the attention list, never a warning.
   finishedFailed: number;
+  // Finished pods Kubernetes still retains, failed ones included.
+  finishedPods: number;
   ingresses: number;
+  // Every pod in the namespace, finished ones included.
   pods: number;
+  // Active pods whose readiness is known to be ready; absent when any active
+  // pod has no readiness, so the count never overstates.
   ready?: number;
   services: number;
   shortWorkloads: number;
@@ -443,13 +454,15 @@ function namespaceMembers(view: ClusterView) {
 }
 
 function countPods(pods: Entity[], now: number) {
+  const tally = podTally(pods);
   const active = pods.filter((pod) => !isFinished(pod));
   const known = active.every((pod) => pod.ready != null);
   return {
     pods: pods.length,
-    activePods: active.length,
+    activePods: tally.active,
+    finishedPods: tally.finished,
     failing: pods.filter((pod) => livePodProblem(pod, now)).length,
-    finishedFailed: pods.filter((pod) => podPhase(pod) === "Failed").length,
+    finishedFailed: tally.finishedFailed,
     ready: known
       ? active.filter((pod) => (pod.ready ?? 0) > 0).length
       : undefined,
@@ -476,6 +489,49 @@ export function namespaceSummary(
       now
     ),
   };
+}
+
+interface PodCount {
+  // Failed pods among the finished ones, shown after the count.
+  detail?: string;
+  key: "pods" | "finished";
+  noun: string;
+  title?: string;
+  value: number;
+}
+
+// The pod chips of a namespace card: "8 pods" counts unfinished pods, then
+// "1 finished (1 failed)" for the history Kubernetes still retains, so the
+// chips add up to every pod in the inventory. A namespace of only finished
+// pods shows no "0 pods"; one with no pods at all says "0 pods".
+export function namespacePodCounts(summary: NamespaceSummary): PodCount[] {
+  const pods: PodCount = {
+    key: "pods",
+    value: summary.activePods,
+    noun: summary.activePods === 1 ? "pod" : "pods",
+  };
+  if (!summary.finishedPods) {
+    return [pods];
+  }
+  const finished: PodCount = {
+    key: "finished",
+    value: summary.finishedPods,
+    noun: "finished",
+    detail: summary.finishedFailed
+      ? `${summary.finishedFailed} failed`
+      : undefined,
+    title:
+      "Finished pods still retained by Kubernetes; older runs may have been removed",
+  };
+  return summary.activePods ? [pods, finished] : [finished];
+}
+
+// The finished pods after a namespace row's status, as on its card:
+// " · 5 finished (2 failed)", or nothing without finished pods.
+export function namespaceHistoryText(summary: NamespaceSummary) {
+  return summary.finishedPods
+    ? ` · ${finishedText(summary.finishedPods, summary.finishedFailed)}`
+    : "";
 }
 
 function namespaceProblem(summary: NamespaceSummary) {

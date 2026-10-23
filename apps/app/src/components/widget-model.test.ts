@@ -6,6 +6,7 @@ import {
   fleetTiles,
   fleetUsage,
   fleetUsageLabel,
+  podCounts,
   scopeHealth,
   workspaceCards,
 } from "./widget-model";
@@ -147,10 +148,38 @@ describe("fleet tiles", () => {
     const byId = Object.fromEntries(tiles.map((tile) => [tile.id, tile]));
     expect(byId.servers).toMatchObject({ value: "1 / 2", tone: "critical" });
     expect(byId.pods.value).toBe("1 / 1");
+    expect(byId.pods.detail).toBe(
+      "Active pods in all namespaces, incl. 0 in system namespaces"
+    );
     expect(byId.problems).toMatchObject({
       value: "1",
       severity: "critical",
       tone: "critical",
+    });
+  });
+});
+
+describe("fleet pod counts", () => {
+  it("counts active pods in every namespace and names the system ones", () => {
+    const cluster = view("a", "w", [
+      entity("p1", "Pod", { status: "Running", ready: 1, namespace: "shop" }),
+      entity("dns", "Pod", {
+        status: "Running",
+        ready: 1,
+        namespace: "kube-system",
+      }),
+      entity("job", "Pod", { status: "Failed", ready: 0, namespace: "batch" }),
+    ]);
+    expect(podCounts([cluster])).toEqual({
+      total: 2,
+      known: 2,
+      ready: 2,
+      system: 1,
+    });
+    const tiles = fleetTiles([cluster], [], now, false);
+    expect(tiles.find((tile) => tile.id === "pods")).toMatchObject({
+      value: "2 / 2",
+      detail: "Active pods in all namespaces, incl. 1 in system namespaces",
     });
   });
 });

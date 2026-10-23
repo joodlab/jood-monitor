@@ -1,11 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   type ServiceGraphOptions,
   serviceGraph,
   topologyTree,
 } from "../lib/service-graph";
-import { rowMeta } from "./canvas-list";
+import { rowMeta, TopologyList } from "./canvas-list";
 
 // Synthetic inventory only: a namespace with two pods that no workload owns
 // and no Service selects, beside a Ready node.
@@ -108,6 +110,29 @@ describe("topology list rows", () => {
     expect(rowText(views, "debug-shell")).toBe(
       "Pod · shop · CrashLoopBackOff · 0/1 ready · 4 restarts · on node-a"
     );
+  });
+
+  it("reads a namespace row as its card does, finished pods named once", () => {
+    const views = [view()];
+    views[0].inventory.entities.push(
+      entity("job-1", "Pod", { status: "Succeeded", ready: 0, desired: 1 }),
+      entity("job-2", "Pod", { status: "Failed", ready: 0, desired: 1 })
+    );
+    const graph = serviceGraph(views, { ...options, namespace: "all" });
+    const html = renderToStaticMarkup(
+      createElement(TopologyList, {
+        graph,
+        expanded: [],
+        now,
+        onExpand: () => undefined,
+        onInspect: () => undefined,
+        onNamespace: () => undefined,
+      })
+    );
+    expect(html).toContain(
+      "Namespace · 1 of 1 pod need attention · 3 finished (2 failed)"
+    );
+    expect(html).not.toContain("with failures");
   });
 
   it("names why a Ready node needs attention", () => {

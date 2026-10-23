@@ -4,6 +4,8 @@ import {
   cardStatus,
   cardSubtitle,
   leadingStatus,
+  namespaceHistoryText,
+  namespacePodCounts,
   namespaceStatus,
   namespaceSummary,
   podDetail,
@@ -177,7 +179,7 @@ describe("card status line", () => {
       cardStatus(web, summarize(view, web, now), { ...fresh, problem: true })
     ).toEqual({
       tone: "warning",
-      text: "CrashLoopBackOff · 1 of 3 pods · 1 finished with failures",
+      text: "CrashLoopBackOff · 1 of 3 pods · 1 finished (1 failed)",
     });
   });
 
@@ -192,7 +194,7 @@ describe("card status line", () => {
     });
     expect(status).toEqual({
       tone: "warning",
-      text: "Not ready · 2/3 ready · 1 finished with failures",
+      text: "Not ready · 2/3 ready · 1 finished (1 failed)",
     });
     expect(status.text).not.toContain("Failed");
     expect(status.text).not.toContain("of 4 pods");
@@ -204,7 +206,7 @@ describe("card status line", () => {
     const web = { ...find(view, "web"), ready: 3 };
     expect(cardStatus(web, summarize(view, web, now), fresh)).toEqual({
       tone: "neutral",
-      text: "3/3 ready · 1 finished with failures",
+      text: "3/3 ready · 1 finished (1 failed)",
     });
   });
 
@@ -412,6 +414,7 @@ describe("namespace cards", () => {
       shortWorkloads: 1,
       pods: 3,
       activePods: 3,
+      finishedPods: 0,
       failing: 1,
       finishedFailed: 0,
       ready: 2,
@@ -450,9 +453,78 @@ describe("namespace cards", () => {
     expect(namespaceSummary(view, "shop", now)).toMatchObject({
       pods: 5,
       activePods: 3,
+      finishedPods: 2,
       failing: 1,
       finishedFailed: 1,
     });
+  });
+
+  // Synthetic namespaces: only finished Job pods, a mix, finished without
+  // failures, and nothing at all.
+  function counts(pods: Entity[]) {
+    const view = fixture();
+    view.inventory.entities = [
+      entity("ns-batch", "Namespace", { name: "batch", namespace: undefined }),
+      ...pods.map((item) => ({ ...item, namespace: "batch" })),
+    ];
+    return namespaceSummary(view, "batch", now);
+  }
+  const done = (uid: string, status = "Succeeded") =>
+    pod(uid, { status, ready: 0 });
+
+  it("counts only finished pods as history, never as 0 pods", () => {
+    const summary = counts([
+      done("a"),
+      done("b"),
+      done("c"),
+      done("d", "Failed"),
+      done("e", "Failed / OOM observed"),
+    ]);
+    expect(namespacePodCounts(summary)).toEqual([
+      {
+        key: "finished",
+        value: 5,
+        noun: "finished",
+        detail: "2 failed",
+        title:
+          "Finished pods still retained by Kubernetes; older runs may have been removed",
+      },
+    ]);
+    expect(namespaceHistoryText(summary)).toBe(" · 5 finished (2 failed)");
+    expect(namespaceStatus(summary, fresh)).toEqual({
+      tone: "neutral",
+      text: "No running pods",
+    });
+  });
+
+  it("counts unfinished pods beside the finished ones", () => {
+    const summary = counts([
+      ...Array.from({ length: 8 }, (_, index) => pod(`web-${index}`)),
+      done("job", "Failed"),
+    ]);
+    expect(
+      namespacePodCounts(summary).map((item) =>
+        [item.value, item.noun, item.detail].filter(Boolean).join(" ")
+      )
+    ).toEqual(["8 pods", "1 finished 1 failed"]);
+    expect(namespaceHistoryText(summary)).toBe(" · 1 finished (1 failed)");
+  });
+
+  it("names no failures when every finished pod succeeded", () => {
+    const summary = counts([pod("web"), done("job")]);
+    expect(namespacePodCounts(summary)).toMatchObject([
+      { key: "pods", value: 1, noun: "pod" },
+      { key: "finished", value: 1, detail: undefined },
+    ]);
+    expect(namespaceHistoryText(summary)).toBe(" · 1 finished");
+  });
+
+  it("says 0 pods for a namespace without any", () => {
+    const summary = counts([]);
+    expect(namespacePodCounts(summary)).toEqual([
+      { key: "pods", value: 0, noun: "pods" },
+    ]);
+    expect(namespaceHistoryText(summary)).toBe("");
   });
 
   it("is healthy only with every running pod ready and fresh inventory", () => {

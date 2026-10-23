@@ -40,6 +40,8 @@ import {
   type CardContext,
   cardStatus,
   cardSubtitle,
+  type NamespaceSummary,
+  namespacePodCounts,
   namespaceStatus,
   namespaceSummary,
   podDetail,
@@ -538,30 +540,53 @@ const ResourceCard = memo(function ResourceCard({
   );
 });
 
-function NamespaceCounts({
-  counts,
-}: {
-  counts: {
-    always?: boolean;
-    icon: LucideIcon;
-    one: string;
-    many: string;
-    value: number;
-  }[];
-}) {
-  // Kinds the namespace does not contain are left out; pods always show.
-  const shown = counts.filter((count) => count.value > 0 || count.always);
+interface CountChip {
+  detail?: string;
+  icon: LucideIcon;
+  key: string;
+  noun: string;
+  title?: string;
+  value: number;
+}
+
+function NamespaceCounts({ counts }: { counts: CountChip[] }) {
   return (
     <ul className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-muted-foreground text-xs tabular-nums">
-      {shown.map(({ icon: Icon, one, many, value }) => (
-        <li className="flex items-center gap-1" key={many}>
+      {counts.map(({ icon: Icon, key, noun, value, detail, title }) => (
+        <li className="flex items-center gap-1" key={key} title={title}>
           <Icon aria-hidden="true" className="size-3.5" />
           <span className="text-foreground/85">{value}</span>
-          {value === 1 ? one : many}
+          {noun}
+          {detail && ` (${detail})`}
         </li>
       ))}
     </ul>
   );
+}
+
+const kindCounts = [
+  { key: "ingresses", icon: Globe, one: "ingress", many: "ingresses" },
+  { key: "services", icon: Waypoints, one: "service", many: "services" },
+  { key: "workloads", icon: Box, one: "workload", many: "workloads" },
+] as const;
+
+// Kinds the namespace does not contain are left out. Pods always show, as
+// unfinished pods beside the finished ones Kubernetes still retains; the
+// finished ones are history in the neutral tone, never a warning.
+function namespaceCounts(summary: NamespaceSummary): CountChip[] {
+  const kinds = kindCounts
+    .map(({ key, icon, one, many }) => ({
+      key,
+      icon,
+      value: summary[key],
+      noun: summary[key] === 1 ? one : many,
+    }))
+    .filter((count) => count.value > 0);
+  const pods = namespacePodCounts(summary).map((count) => ({
+    ...count,
+    icon: count.key === "finished" ? History : Container,
+  }));
+  return [...kinds, ...pods];
 }
 
 // A namespace is Railway's group: its contents counted by kind, with a
@@ -575,36 +600,7 @@ const NamespaceCard = memo(function NamespaceCard({
   const { view, entity } = item;
   const summary = namespaceSummary(view, entity.name, now);
   const status = namespaceStatus(summary, context(data));
-  const counts = [
-    {
-      icon: Globe,
-      one: "ingress",
-      many: "ingresses",
-      value: summary.ingresses,
-    },
-    {
-      icon: Waypoints,
-      one: "service",
-      many: "services",
-      value: summary.services,
-    },
-    { icon: Box, one: "workload", many: "workloads", value: summary.workloads },
-    {
-      always: true,
-      icon: Container,
-      one: "pod",
-      many: "pods",
-      value: summary.pods,
-    },
-    // Retained failed pods are history, as on the attention list: named here
-    // so the counts add up, without a warning tone.
-    {
-      icon: History,
-      one: "finished with failures",
-      many: "finished with failures",
-      value: summary.finishedFailed,
-    },
-  ];
+  const counts = namespaceCounts(summary);
   return (
     <div style={{ width: cardSize.width }}>
       <CardFrame

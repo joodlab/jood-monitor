@@ -125,6 +125,52 @@ function render(views: ClusterView[], at?: string) {
 
 const allClear = "No problem pods or servers";
 
+describe("Servers header", () => {
+  it("counts placed active pods and the active system pods it hides", () => {
+    const view = cluster("synthetic-a", ago(10), ago(30));
+    const pod = (uid: string, extra: Partial<Entity>) =>
+      ({
+        uid,
+        kind: "Pod",
+        name: uid,
+        status: "Running",
+        ready: 1,
+        desired: 1,
+        ...extra,
+      }) as Entity;
+    view.inventory.entities.push(
+      pod("synthetic-dns", {
+        namespace: "kube-system",
+        nodeUid: "synthetic-node",
+      }),
+      pod("synthetic-old-dns", {
+        namespace: "kube-system",
+        nodeUid: "synthetic-node",
+        status: "Succeeded",
+        ready: 0,
+      }),
+      pod("synthetic-pending", { namespace: "synthetic", status: "Pending" })
+    );
+    const markup = renderToStaticMarkup(
+      createElement(
+        Provider,
+        {},
+        createElement(Servers, {
+          views: [view],
+          search: "",
+          onInspect: () => undefined,
+          referenceTime: now,
+        })
+      )
+    );
+    // The pending pod is on no server, and the finished system pod is not
+    // active, so neither is counted.
+    expect(markup.replaceAll("<!-- -->", "")).toContain(
+      "1 server · 1 active pod placed · 1 active system pod hidden. Placement is"
+    );
+  });
+});
+
 describe("Servers under Problems only", () => {
   it("gives an all clear only with a current observer and inventory", () => {
     expect(render([cluster("synthetic-a", ago(10), ago(30))])).toContain(

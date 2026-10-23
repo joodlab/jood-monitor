@@ -3,6 +3,7 @@ import { liveNodeProblem, livePodProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
+  isFinished,
   isSystem,
   isSystemNamespace,
   owningWorkload,
@@ -44,8 +45,10 @@ export interface ServiceGraphOptions {
   showSystem: boolean;
 }
 export interface ServiceGraph {
-  // Problems only: finished pods that failed, in scope and matching, left out
-  // as history rather than drawn as problems. Absent outside Problems only.
+  // Problems only: finished pods, in scope and matching, left out as history
+  // rather than drawn as problems, and how many of them failed. Absent
+  // outside Problems only.
+  finished?: number;
   finishedFailed?: number;
   grouped: boolean;
   // Cards this filter would draw from hidden system namespaces: matching or
@@ -405,15 +408,17 @@ function seedItems(
 ) {
   const seeds = new Set<string>();
   let unshown = 0;
+  let finished = 0;
   let finishedFailed = 0;
   for (const { view, entity } of scoped) {
     if (!matches(entity, options.search)) {
       continue;
     }
     if (options.problems && !liveProblem(view, entity, now)) {
-      // Finished pods that failed are history: counted, never a problem.
-      if (entity.kind === "Pod" && podPhase(entity) === "Failed") {
-        finishedFailed++;
+      // Finished pods are history: counted, never a problem.
+      if (entity.kind === "Pod" && isFinished(entity)) {
+        finished++;
+        finishedFailed += Number(podPhase(entity) === "Failed");
       }
       continue;
     }
@@ -424,7 +429,7 @@ function seedItems(
       unshown++;
     }
   }
-  return { seeds, unshown, finishedFailed };
+  return { seeds, unshown, finished, finishedFailed };
 }
 
 // Pods with no owning workload that are not an endpoint of a Service in view
@@ -536,7 +541,7 @@ function selectIds(
   if (!(options.search || options.problems)) {
     return { selected: new Set(candidates.keys()), unshown: 0 };
   }
-  const { seeds, unshown, finishedFailed } = seedItems(
+  const { seeds, unshown, finished, finishedFailed } = seedItems(
     scoped,
     options,
     options.now ?? Date.now()
@@ -546,6 +551,7 @@ function selectIds(
       ? problemContext(seeds, links)
       : searchContext(seeds, links),
     unshown,
+    finished: options.problems ? finished : undefined,
     finishedFailed: options.problems ? finishedFailed : undefined,
   };
 }
@@ -584,7 +590,7 @@ export function serviceGraph(
     }
   }
   const links = structuralLinks(views, [...candidates.values()]);
-  const { selected, unshown, finishedFailed } = selectIds(
+  const { selected, unshown, finished, finishedFailed } = selectIds(
     scoped,
     links,
     candidates,
@@ -622,6 +628,7 @@ export function serviceGraph(
     links: links.filter((link) => ids.has(link.source) && ids.has(link.target)),
     grouped: false,
     unshown,
+    finished,
     finishedFailed,
     hiddenSystem:
       bounded.length || !focused ? 0 : hiddenSystemSeeds(views, options),
