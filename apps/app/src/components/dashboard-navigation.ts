@@ -151,8 +151,8 @@ export function workspacePatch(workspace: string): Partial<SearchState> {
 }
 
 // Opens a resource in the panel. The tab stays, so the operator's choice
-// follows them to the next resource; a live link's copy time belonged to
-// the previous one.
+// follows them to the next resource; the observation a live link
+// remembers belonged to the previous one.
 export function inspectPatch(
   view: ClusterView,
   entity: Entity,

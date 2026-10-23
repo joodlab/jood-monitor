@@ -25,8 +25,8 @@ export interface SearchState {
   // Topology Graph/List choice; absent follows the screen width. Kept in the
   // URL so it survives namespace drills, cluster changes and Back.
   layout?: TopologyLayout;
-  // When a live link was copied, so the panel can offer that saved
-  // observation if the linked resource is gone. Only with a resource open
+  // The observation a live link remembers, so the panel can offer it if
+  // the linked resource is gone. Only with a resource open
   // and no saved-observation time.
   linkedAt?: string;
   mode: string;
@@ -191,7 +191,7 @@ function observationTime(value: unknown) {
   return new Date(time).toISOString();
 }
 
-// A live link's copy time, canonical by the same rule. Only a readable one
+// The observation a live link remembers, canonical by the same rule. Only a readable one
 // is kept: it backs an offer, so there is nothing to explain without it.
 function linkedTime(value: unknown) {
   const time = observationTime(value);

@@ -695,8 +695,8 @@ export function targetPatch(
 
 // The search a result's link carries, validated as the route would read it,
 // so an opened tab shows what Enter would have. As there, another resource
-// keeps the panel's tab but not a live link's copy time, which belonged to
-// the resource open before; the resource already open keeps it.
+// keeps the panel's tab but not the observation a live link remembers,
+// which belonged to the resource open before; the resource already open keeps it.
 export function paletteHref(
   search: SearchState,
   patch: Partial<SearchState>

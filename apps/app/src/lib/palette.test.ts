@@ -571,7 +571,7 @@ describe("palette links", () => {
     expect(targetPatch({ action: "freeze" })).toBeUndefined();
   });
 
-  // A live link's copy time, opened on its resource's Changes tab.
+  // A live link's remembered observation, opened on its resource's Changes tab.
   const linked = validateMonitorSearch({
     view: "resources",
     resource: "storefront-pod",
@@ -580,7 +580,7 @@ describe("palette links", () => {
     panel: "changes",
   });
 
-  it("drops a live link's copy time for another resource, as Enter does", () => {
+  it("drops a live link's remembered observation for another resource, as Enter does", () => {
     expect(linked.linkedAt).toBe("2026-10-22T12:00:00.000Z");
     const other = paletteHref(
       linked,
@@ -604,7 +604,7 @@ describe("palette links", () => {
     expect(elsewhere.linkedAt).toBeUndefined();
   });
 
-  it("keeps the copy time when the result is the resource already open", () => {
+  it("keeps the remembered observation when the result is the resource already open", () => {
     const same = paletteHref(
       linked,
       targetPatch({
@@ -618,7 +618,7 @@ describe("palette links", () => {
     });
   });
 
-  it("drops the copy time with the panel for a page", () => {
+  it("drops the remembered observation with the panel for a page", () => {
     const page = find(paletteResults("", sources(linked)), "page:activity");
     const next = paletteHref(linked, patchOf(page) ?? {});
     expect(next.resource).toBeUndefined();

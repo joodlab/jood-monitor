@@ -93,7 +93,7 @@ describe("panel tab", () => {
   });
 });
 
-describe("link copy time", () => {
+describe("live link remembered observation", () => {
   const linked = (raw: object) =>
     validateMonitorSearch({ ...open, ...raw }).linkedAt;
 
