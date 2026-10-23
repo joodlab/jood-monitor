@@ -207,6 +207,17 @@ describe("Pods table requests", () => {
       expect(markup).toContain("configured, not usage");
       expect(column(id).sortUndefined).toBe("last");
     }
+    // The observer adds up only the limits that are set, and the header
+    // says so rather than presenting a partial sum as the pod's cap.
+    const limit = renderToStaticMarkup(
+      (column("memoryLimit").header as () => ReactNode)()
+    );
+    expect(limit).toContain("Only containers that set a limit are counted");
+    expect(
+      renderToStaticMarkup(
+        (column("memoryRequest").header as () => ReactNode)()
+      )
+    ).not.toContain("containers that set a limit");
   });
   it("shows absolute amounts, a reported 0 and unknown values", () => {
     expect(cell("cpuRequest", "web")).toContain(">250m<");

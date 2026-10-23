@@ -8,7 +8,7 @@ import {
 import { cn } from "@jood-monitor/ui/utils";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CircleCheck, CircleHelp, Clock, TriangleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   compactCpu,
   compactMemory,
@@ -156,15 +156,41 @@ function usageColumn(field: "cpu" | "memory"): Column {
 }
 
 // Configured requests and limits sit beside measured usage, so the header
-// says which they are; the button's accessible name says it too.
-function ConfiguredHeader({ label }: { label: string }) {
+// says which they are; the button's accessible name says it too. Keyboard
+// focus lands on the sort button around the label, not on the label, so the
+// button's visible focus opens the tooltip as hover does.
+function ConfiguredHeader({ label, note }: { label: string; note?: string }) {
+  const [open, setOpen] = useState(false);
+  const [trigger, setTrigger] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const button = trigger?.closest("button");
+    if (!button) {
+      return;
+    }
+    const show = () => {
+      if (button.matches(":focus-visible")) {
+        setOpen(true);
+      }
+    };
+    const hide = () => setOpen(false);
+    button.addEventListener("focus", show);
+    button.addEventListener("blur", hide);
+    return () => {
+      button.removeEventListener("focus", show);
+      button.removeEventListener("blur", hide);
+    };
+  }, [trigger]);
   return (
-    <Tooltip>
-      <TooltipTrigger render={<span />}>
+    <Tooltip onOpenChange={setOpen} open={open}>
+      <TooltipTrigger ref={setTrigger} render={<span />}>
         {label}
-        <span className="sr-only">, configured, not usage</span>
+        <span className="sr-only">
+          , configured, not usage{note ? `. ${note}` : ""}
+        </span>
       </TooltipTrigger>
-      <TooltipContent>Configured, not usage</TooltipContent>
+      <TooltipContent>
+        Configured, not usage{note ? `. ${note}` : ""}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -190,11 +216,20 @@ const configuredLabels: Record<ConfiguredField, string> = {
   memoryLimit: "Memory limit",
 };
 
+// The observer adds up the limits that are set, so a pod with one limited
+// and one unlimited container shows a finite limit it is not capped by.
+const configuredNotes: Partial<Record<ConfiguredField, string>> = {
+  memoryLimit:
+    "Only containers that set a limit are counted; one without a limit is not capped",
+};
+
 function configuredColumn(field: ConfiguredField): Column {
   const label = configuredLabels[field];
   return {
     id: field,
-    header: () => <ConfiguredHeader label={label} />,
+    header: () => (
+      <ConfiguredHeader label={label} note={configuredNotes[field]} />
+    ),
     accessorFn: (row) => podRequestText(row.entity)[field].sort,
     sortUndefined: "last",
     cell: ({ row }) => (
