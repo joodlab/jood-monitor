@@ -6,10 +6,11 @@ import {
   filterActivity,
   groupByDay,
   hiddenStepsText,
+  listedChanges,
   quietActivityText,
   receivedLate,
   recentActivity,
-  rolloutSteps,
+  replicaSetSteps,
 } from "./activity-model";
 
 let sequence = 0;
@@ -54,12 +55,18 @@ describe("activity headlines", () => {
     });
   });
   it("keeps node capacity in the action", () => {
-    const [entry] = activityEntries([
-      event("node_join", {}, { ...node, capacityCpu: 4 }),
+    const [joined, seen] = activityEntries([
+      event(
+        "node_join",
+        {},
+        { ...node, capacityCpu: 4, createdAt: "2026-10-22T11:59:30Z" }
+      ),
+      event("node_join", {}, { ...node, createdAt: "2026-09-12T12:00:00Z" }),
     ]);
-    expect(entry.headline.subject).toBe("node-a");
-    expect(entry.headline.action).toBe("Joined (4.00 cores)");
-    expect(entry.headline.context).toEqual(["Node"]);
+    expect(joined.headline.subject).toBe("node-a");
+    expect(joined.headline.action).toBe("Joined (4.00 cores)");
+    expect(joined.headline.context).toEqual(["Node"]);
+    expect(seen.headline.action).toBe("First observed in inventory");
   });
   it("uses the verb when the title does not start with the subject", () => {
     const [entry] = activityEntries([
@@ -69,8 +76,28 @@ describe("activity headlines", () => {
       }),
     ]);
     expect(entry.headline.subject).toBe("srv-1");
+    expect(entry.headline.context).toEqual(["Server"]);
     expect(entry.headline.action).toBe("Drain reported");
     expect(entry.summary.attribution).toContain("not independently verified");
+  });
+  it("lists only the changes the headline does not already state", () => {
+    const [scaled, resized] = activityEntries([
+      event(
+        "workload_horizontal",
+        { ...web, desired: 2, requestedCpu: 0.1 },
+        { ...web, desired: 3, requestedCpu: 0.2 }
+      ),
+      event(
+        "workload_vertical",
+        { ...web, requestedCpu: 0.1 },
+        { ...web, requestedCpu: 0.2 }
+      ),
+    ]);
+    expect(scaled.summary.changes).toHaveLength(2);
+    expect(listedChanges(scaled)).toEqual([
+      { label: "CPU request", before: "100m", after: "200m" },
+    ]);
+    expect(listedChanges(resized)).toEqual(resized.summary.changes);
   });
   it("shows the whole title when no subject is known", () => {
     const [entry] = activityEntries([
@@ -99,8 +126,8 @@ describe("activity filters", () => {
       { ...web, requestedCpu: 0.2 }
     ),
   ]);
-  it("hides rollout steps unless asked", () => {
-    expect(rolloutSteps(entries)).toBe(1);
+  it("hides ReplicaSet changes unless asked", () => {
+    expect(replicaSetSteps(entries)).toBe(1);
     expect(filterActivity(entries, "all", false)).toHaveLength(3);
     expect(filterActivity(entries, "all", true)).toHaveLength(4);
     expect(filterActivity(entries, "scaling", false)).toHaveLength(1);
@@ -115,13 +142,13 @@ describe("activity filters", () => {
     });
     expect(activityCounts(entries, true).scaling).toBe(2);
   });
-  it("leaves rollout steps out of recent activity", () => {
+  it("leaves ReplicaSet changes out of recent activity", () => {
     expect(recentActivity(entries, 2).map((entry) => entry.event.kind)).toEqual(
       ["workload_horizontal", "node_join"]
     );
   });
-  it("counts hidden rollout steps instead of claiming no changes", () => {
-    const rollout = activityEntries([
+  it("counts hidden ReplicaSet changes instead of claiming no changes", () => {
+    const replicaSets = activityEntries([
       event(
         "workload_horizontal",
         { ...rs, desired: 0 },
@@ -133,21 +160,22 @@ describe("activity filters", () => {
         { ...rs, name: "web-5d1", desired: 0 }
       ),
     ]);
-    expect(recentActivity(rollout, 6)).toHaveLength(0);
-    expect(rolloutSteps(rollout)).toBe(2);
-    expect(quietActivityText(rolloutSteps(rollout))).toBe(
-      "No node, scaling or resource changes besides 2 Deployment rollout steps were observed in the selected range. Rollout steps are on the Activity page."
+    expect(recentActivity(replicaSets, 6)).toHaveLength(0);
+    expect(replicaSetSteps(replicaSets)).toBe(2);
+    expect(quietActivityText(replicaSetSteps(replicaSets))).toBe(
+      "No node, scaling or resource changes besides 2 ReplicaSet changes were observed in the selected range. ReplicaSet changes are on the Activity page."
     );
-    expect(quietActivityText(1)).toContain(
-      "besides 1 Deployment rollout step "
-    );
+    expect(quietActivityText(1)).toContain("besides 1 ReplicaSet change ");
     expect(quietActivityText(0)).toBe(
       "No node, scaling or resource changes were observed in the selected range."
     );
     expect(hiddenStepsText(1)).toBe(
-      "1 Deployment rollout step not shown; see the Activity page."
+      "1 ReplicaSet change not shown; see the Activity page."
     );
-    expect(hiddenStepsText(3)).toContain("3 Deployment rollout steps");
+    expect(hiddenStepsText(3)).toContain("3 ReplicaSet changes");
+    for (const text of [quietActivityText(2), hiddenStepsText(2)]) {
+      expect(text.toLowerCase()).not.toContain("rollout");
+    }
   });
 });
 

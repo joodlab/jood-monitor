@@ -4,7 +4,7 @@ import type { Attention } from "./attention";
 import {
   activityRows,
   changeDetail,
-  hiddenRolloutSteps,
+  hiddenReplicaSetSteps,
   hiddenStepsText,
   liveAttention,
   quietAttention,
@@ -40,7 +40,7 @@ const view = {
 } as unknown as ClusterView;
 
 describe("activity panel", () => {
-  it("lists changes newest first without rollout steps, up to the limit", () => {
+  it("lists changes newest first without ReplicaSet changes, up to the limit", () => {
     const rs = { uid: "r", kind: "ReplicaSet", name: "web-7c9" };
     const rows = activityRows(
       [
@@ -76,7 +76,7 @@ describe("activity panel", () => {
     expect(subjectName(rows[0])).toBe("shop/web");
   });
 
-  it("counts hidden rollout steps instead of reporting no change", () => {
+  it("counts hidden ReplicaSet changes instead of reporting no change", () => {
     const rs = { uid: "r", kind: "ReplicaSet", name: "web-7c9" };
     const old = { uid: "q", kind: "ReplicaSet", name: "web-5f1" };
     const events = [
@@ -84,15 +84,18 @@ describe("activity panel", () => {
       event("2", "workload_horizontal", { ...old, desired: 1 }, old),
     ];
     expect(activityRows(events, [view], 8)).toEqual([]);
-    expect(hiddenRolloutSteps(events)).toBe(2);
+    expect(hiddenReplicaSetSteps(events)).toBe(2);
     expect(quietChangesText(2, "last hour")).toBe(
-      "No node, scaling or resource changes besides 2 Deployment rollout steps observed in the last hour. Rollout steps are on the Activity page."
+      "No node, scaling or resource changes besides 2 ReplicaSet changes observed in the last hour. ReplicaSet changes are on the Activity page."
     );
     expect(quietChangesText(0, "last hour")).toBe(
       "No node, scaling or resource changes observed in the last hour."
     );
     expect(hiddenStepsText(1)).toBe(
-      "1 Deployment rollout step not shown; see the Activity page."
+      "1 ReplicaSet change not shown; see the Activity page."
+    );
+    expect(quietChangesText(2, "last hour").toLowerCase()).not.toContain(
+      "rollout"
     );
   });
 
@@ -109,6 +112,16 @@ describe("activity panel", () => {
       )
     );
     expect(changeDetail(scaled)).toBe("2 → 3 replicas");
+    // A scale and a template change in one inventory: replicas still lead.
+    const both = describeEvent(
+      event(
+        "4",
+        "workload_horizontal",
+        { ...web, desired: 3, requestedMemory: 512 * 1024 ** 2 },
+        { ...web, desired: 4, requestedMemory: 768 * 1024 ** 2 }
+      )
+    );
+    expect(changeDetail(both)).toBe("3 → 4 replicas · +1 more");
     const resized = describeEvent(
       event(
         "2",
