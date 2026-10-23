@@ -32,7 +32,9 @@ function ToolButton({
   layout,
   onClick,
   side,
+  className,
 }: {
+  className?: string;
   icon: LucideIcon;
   label: string;
   hint?: string;
@@ -61,7 +63,8 @@ function ToolButton({
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
               "aria-pressed:bg-primary/15 aria-pressed:text-primary aria-pressed:ring-1 aria-pressed:ring-primary/50",
-              locked && "cursor-not-allowed opacity-70"
+              locked && "cursor-not-allowed opacity-70",
+              className
             )}
             data-layout={layout}
             onClick={locked ? undefined : onClick}
@@ -90,10 +93,11 @@ function Group({
   orientation: Orientation;
   children: ReactNode;
 }) {
+  // Centred, so the 32 px buttons line up with a larger touch target.
   return (
     <fieldset
       className={cn(
-        "m-0 flex min-w-0 gap-0.5 border-0 p-0",
+        "m-0 flex min-w-0 items-center gap-0.5 border-0 p-0",
         orientation === "vertical" ? "flex-col" : "flex-row"
       )}
     >
@@ -174,6 +178,8 @@ function FilterGroup(props: CanvasToolbarProps & { side: "right" | "bottom" }) {
       <Group label="Filters" orientation={orientation}>
         {onProblems && (
           <ToolButton
+            // The filter phones reach for first gets a 44 px touch target.
+            className="pointer-coarse:size-11"
             hint={
               props.problems
                 ? "Problems only: on. Showing problems and the configured path to them"

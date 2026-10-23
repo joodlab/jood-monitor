@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
+  getClusterStatus,
   getEvents,
   getHistory,
   getSnapshot,
@@ -11,8 +12,10 @@ import {
   workspaces,
 } from "../../actions/clusters";
 import { operatorMiddleware } from "../../middlewares/operator";
+import { serverTimingMiddleware } from "../../middlewares/server-timing";
 import {
   clusterSchema,
+  clusterStatusSchema,
   eventsSchema,
   historySchema,
   idSchema,
@@ -22,17 +25,23 @@ import {
 } from "../../schemas/clusters";
 
 export const getSnapshotFn = createServerFn({ method: "GET" })
-  .middleware([operatorMiddleware])
+  .middleware([operatorMiddleware, serverTimingMiddleware])
   .validator(snapshotSchema)
-  .handler(({ context, data }) => getSnapshot(context.env, data));
+  .handler(({ context, data }) =>
+    getSnapshot(context.env, data, context.timing)
+  );
 export const getHistoryFn = createServerFn({ method: "GET" })
   .middleware([operatorMiddleware])
   .validator(historySchema)
   .handler(({ context, data }) => getHistory(context.env, data));
 export const getEventsFn = createServerFn({ method: "GET" })
-  .middleware([operatorMiddleware])
+  .middleware([operatorMiddleware, serverTimingMiddleware])
   .validator(eventsSchema)
-  .handler(({ context, data }) => getEvents(context.env, data));
+  .handler(({ context, data }) => getEvents(context.env, data, context.timing));
+export const getClusterStatusFn = createServerFn({ method: "GET" })
+  .middleware([operatorMiddleware])
+  .validator(clusterStatusSchema)
+  .handler(({ context, data }) => getClusterStatus(context.env, data));
 export const getWorkspacesFn = createServerFn({ method: "GET" })
   .middleware([operatorMiddleware])
   .handler(({ context }) => workspaces(context.env));

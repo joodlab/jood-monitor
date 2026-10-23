@@ -9,7 +9,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import { ArrowRight, Braces, CalendarSearch, ChevronDown } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { useDisplay } from "../hooks/display";
-import { formatClock } from "../lib/time";
+import { formatClock, rangeLabel, rangeText } from "../lib/time";
 import { ActivityIcon } from "./activity-item";
 import {
   type ActivityEntry,
@@ -30,11 +30,6 @@ import { TimeText } from "./time";
 // acted, and the raw evidence on request. Application logs are not
 // collected, so this is the closest thing to a log and says so.
 
-const rangeNames: Record<string, string> = {
-  "1": "last hour",
-  "6": "last 6 hours",
-  "24": "last day",
-};
 const EVENT_LIMIT = 300;
 
 type Inspect = (view: ClusterView, entity: Entity) => void;
@@ -346,13 +341,14 @@ function NoChanges({
   onRange: (range: string) => void;
   onReset: () => void;
 }) {
+  const { at, timeZone } = useDisplay();
   return (
     <EmptyState
       className="rounded-xl"
       description={
         filtered
           ? "No changes of this type in the selected range."
-          : `No node, scaling or resource changes were observed in the ${rangeNames[range]}.`
+          : `No node, scaling or resource changes were observed in ${rangeText(range, at, timeZone)}.`
       }
       icon={CalendarSearch}
       title="No changes found"
@@ -369,7 +365,7 @@ function NoChanges({
           size="sm"
           variant="outline"
         >
-          Last 6 hours
+          {rangeLabel("6", at, timeZone)}
         </Button>
       )}
       {range !== "24" && (
@@ -379,7 +375,7 @@ function NoChanges({
           size="sm"
           variant="outline"
         >
-          Last day
+          {rangeLabel("24", at, timeZone)}
         </Button>
       )}
     </EmptyState>
@@ -412,7 +408,7 @@ export function EventsPage({
   onRange: (range: string) => void;
   onInspect: Inspect;
 }) {
-  const { timeZone } = useDisplay();
+  const { at, timeZone } = useDisplay();
   const [category, setCategory] = useState<ActivityFilter>("all");
   const [rollouts, setRollouts] = useState(false);
   const entries = useMemo(
@@ -423,12 +419,15 @@ export function EventsPage({
   const visible = filterActivity(entries, category, rollouts);
   const days = groupByDay(visible, timeZone);
   const byCluster = new Map(views.map((view) => [view.cluster.id, view]));
+  // The previous range's changes stay while the new range loads; an empty
+  // previous range says nothing about the new one.
+  const updating = events.isPlaceholderData;
   return (
     <div className="space-y-6">
       <p className="max-w-3xl text-muted-foreground text-sm">
         Node, scaling and resource changes observed in Kubernetes inventory,
-        plus reported automation receipts, in the {rangeNames[range]}. History
-        starts at enrollment; application logs are not collected.
+        plus reported automation receipts, in {rangeText(range, at, timeZone)}.
+        History starts at enrollment; application logs are not collected.
       </p>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <CategoryFilter
@@ -444,7 +443,7 @@ export function EventsPage({
           />
         )}
       </div>
-      {events.isPending && <Loading />}
+      {(events.isPending || (updating && !visible.length)) && <Loading />}
       {events.isError && (
         <div
           className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm"
@@ -461,7 +460,7 @@ export function EventsPage({
           </Button>
         </div>
       )}
-      {events.isSuccess && !visible.length && (
+      {events.isSuccess && !updating && !visible.length && (
         <NoChanges
           filtered={entries.length > 0}
           onRange={onRange}

@@ -22,12 +22,22 @@ import {
 import { getDb } from "../../db";
 import type { ClusterReply } from "../../durable-objects/cluster-state";
 import { clusterState, type Env } from "../../env";
+import {
+  DAY_MS,
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+  rawRetentionMessage,
+} from "../../lib/retention";
 import { hash, token } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
+import { hubBufferStatus } from "../../lib/server/hub-buffer";
+import { newerObservation } from "../../lib/server/observations";
+import { createTiming } from "../../lib/server/server-timing";
 import { compareMetrics } from "../../lib/server/telemetry";
 import { nanoTimestamp, timestampNano } from "../../lib/server/time";
 import {
   type clusterSchema,
+  type clusterStatusSchema,
   defaultProfile,
   type eventsSchema,
   type historySchema,
@@ -35,7 +45,7 @@ import {
   type workspaceSchema,
 } from "../../schemas/clusters";
 import { readArchiveObject } from "../archives";
-import { historicalInventory } from "../archives/inventory";
+import { historicalInventory, type Observation } from "../archives/inventory";
 
 export async function registerWorkspace(
   env: Env,
@@ -170,22 +180,42 @@ export async function alterCredential(
 
 export async function getSnapshot(
   env: Env,
-  input: z.infer<typeof snapshotSchema>
+  input: z.infer<typeof snapshotSchema>,
+  timing = createTiming()
 ): Promise<Snapshot> {
-  const clusters = await listClusters(getDb(env.DB), input.workspace);
+  const clusters = await timing.measure("d1", () =>
+    listClusters(getDb(env.DB), input.workspace)
+  );
   const views: ClusterView[] = [];
   const revisions: [string, number][] = [];
   const at = input.at ? validRangeTime(input.at) : Date.now();
-  if (at > Date.now() + 60_000 || at < Date.now() - 180 * 86_400_000) {
+  if (
+    at > Date.now() + 60_000 ||
+    at < Date.now() - INVENTORY_RETENTION_DAYS * DAY_MS
+  ) {
     throw new HttpError(400, "snapshot outside retention");
   }
   for (const cluster of clusters) {
-    const view = unwrap(
-      await clusterState(env, cluster.id).command(cluster, "snapshot", null)
-    ) as ClusterView & { revision: number };
+    // The outbox is read with the live view, before the archive, and the
+    // writer indexes an observation before it clears its outbox entry, so an
+    // instant names the same observation before and after archival, however
+    // far behind archival is. A Durable Object still on an earlier version
+    // ignores the instant and omits pending; the archive alone then answers.
+    const { pending, ...view } = unwrap(
+      await timing.measure("do", () =>
+        clusterState(env, cluster.id).command(
+          cluster,
+          "snapshot",
+          input.at ? { pendingAt: normalizeTime(input.at) } : null
+        )
+      )
+    ) as ClusterView & { revision: number; pending?: Observation | null };
     revisions.push([cluster.id, view.revision]);
     if (input.at) {
-      const saved = await historicalInventory(env, cluster.id, input.at);
+      const saved = newerObservation(
+        await historicalInventory(env, cluster.id, input.at, timing),
+        pending ?? null
+      );
       const observation = saved ? { data: saved } : null;
       if (observation) {
         view.inventory = observation.data.inventory;
@@ -225,14 +255,18 @@ export async function getSnapshot(
       }
       const points =
         at >= Date.now() - 7 * 86_400_000 + 1000
-          ? await getHistory(env, {
-              workspace: input.workspace,
-              cluster: cluster.id,
-              from: new Date(
-                Math.max(at - 180_000, Date.now() - 7 * 86_400_000 + 1000)
-              ).toISOString(),
-              to: input.at,
-            })
+          ? await getHistory(
+              env,
+              {
+                workspace: input.workspace,
+                cluster: cluster.id,
+                from: new Date(
+                  Math.max(at - 180_000, Date.now() - 7 * 86_400_000 + 1000)
+                ).toISOString(),
+                to: input.at,
+              },
+              timing
+            )
           : [];
       view.metrics = latestObservations(points);
     }
@@ -326,53 +360,62 @@ function mergeHistory(
 
 export async function getHistory(
   env: Env,
-  input: z.infer<typeof historySchema>
+  input: z.infer<typeof historySchema>,
+  timing = createTiming()
 ): Promise<StoredMetric[]> {
-  const cluster = await requireCluster(env, input.cluster, input.workspace);
+  const cluster = await timing.measure("d1", () =>
+    requireCluster(env, input.cluster, input.workspace)
+  );
   const fromMs = validRangeTime(input.from),
     toMs = input.to ? validRangeTime(input.to) : Date.now();
   if (
-    fromMs < Date.now() - 7 * 86_400_000 ||
+    fromMs < Date.now() - RAW_RETENTION_DAYS * DAY_MS ||
     toMs < fromMs ||
     toMs > Date.now() + 60_000
   ) {
-    throw new HttpError(400, "history range must be within 7 days");
+    throw new HttpError(400, rawRetentionMessage);
   }
   const from = normalizeTime(input.from),
     to = normalizeTime(input.to ?? new Date().toISOString());
   const pending = unwrap(
-    await clusterState(env, cluster.id).command(cluster, "history", {
-      from,
-      to,
-      entity: input.entity,
-      name: input.name,
-    })
+    await timing.measure("do", () =>
+      clusterState(env, cluster.id).command(cluster, "history", {
+        from,
+        to,
+        entity: input.entity,
+        name: input.name,
+      })
+    )
   ) as StoredMetric[];
   const rows = new Map<string, StoredMetric>(
     pending.map((row) => [row.key, row])
   );
   for (const kind of ["raw", "diagnostic"]) {
-    const archives = await listArchives(getDb(env.DB), {
-      clusterId: cluster.id,
-      kind,
-      from,
-      to,
-      entityUid: input.entity,
-    });
+    const archives = await timing.measure("d1", () =>
+      listArchives(getDb(env.DB), {
+        clusterId: cluster.id,
+        kind,
+        from,
+        to,
+        entityUid: input.entity,
+      })
+    );
     if (archives.length > 2000) {
       throw new HttpError(413, "query too broad; select an entity and metric");
     }
     for (let offset = 0; offset < archives.length; offset += 8) {
-      const documents = await Promise.all(
-        archives
-          .slice(offset, offset + 8)
-          .map((row) =>
-            readArchiveObject<StoredMetric[]>(
-              env,
-              row.objectKey,
-              row.contentHash
+      const documents = await timing.measure("r2", () =>
+        Promise.all(
+          archives
+            .slice(offset, offset + 8)
+            .map((row) =>
+              readArchiveObject<StoredMetric[]>(
+                env,
+                row.objectKey,
+                row.contentHash
+              )
             )
-          )
+        )
       );
       mergeHistory(documents, rows, from, to, input.name, input.entity);
       if (rows.size > 10_000) {
@@ -391,7 +434,8 @@ export async function getHistory(
 
 export async function getEvents(
   env: Env,
-  input: z.infer<typeof eventsSchema>
+  input: z.infer<typeof eventsSchema>,
+  timing = createTiming()
 ): Promise<Lifecycle[]> {
   const from = normalizeTime(
     input.from ?? new Date(Date.now() - 180 * 86_400_000).toISOString()
@@ -400,23 +444,40 @@ export async function getEvents(
   if (from > to || validRangeTime(to) > Date.now() + 60_000) {
     throw new HttpError(400, "invalid event range");
   }
-  const clusters = input.cluster
-    ? [await requireCluster(env, input.cluster, input.workspace)]
-    : await listClusters(getDb(env.DB), input.workspace);
+  const clusters = await timing.measure("d1", async () =>
+    input.cluster
+      ? [await requireCluster(env, input.cluster, input.workspace)]
+      : await listClusters(getDb(env.DB), input.workspace)
+  );
   const rows: Lifecycle[] = [];
   for (const cluster of clusters) {
     rows.push(
       ...(unwrap(
-        await clusterState(env, cluster.id).command(cluster, "events", {
-          from,
-          to,
-        })
+        await timing.measure("do", () =>
+          clusterState(env, cluster.id).command(cluster, "events", {
+            from,
+            to,
+          })
+        )
       ) as Lifecycle[])
     );
   }
   return rows
     .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
     .slice(0, 300);
+}
+
+// Read-only archival backlog for one cluster. Flushing stays with the writer.
+export async function getClusterStatus(
+  env: Env,
+  input: z.infer<typeof clusterStatusSchema>
+) {
+  const cluster = await requireCluster(env, input.cluster, input.workspace);
+  return hubBufferStatus(
+    unwrap(
+      await clusterState(env, cluster.id).command(cluster, "status", null)
+    ) as Parameters<typeof hubBufferStatus>[0]
+  );
 }
 
 export async function updateProfile(

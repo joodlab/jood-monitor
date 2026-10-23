@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  observationMs,
   resolveTimeZone,
   type TimeZonePreference,
   timeZoneOptions,
@@ -75,12 +76,12 @@ export function DisplayProvider({
     document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
   const value = useMemo<Display>(() => {
-    const parsed = at ? Date.parse(at) : Number.NaN;
+    const parsed = observationMs(at);
     return {
       at,
       frozen: !!at,
       now,
-      referenceTime: Number.isFinite(parsed) ? parsed : now,
+      referenceTime: parsed ?? now,
       theme,
       setTheme: (next) => {
         setThemeState(next);

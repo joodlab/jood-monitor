@@ -53,10 +53,34 @@ export function isSystem(entity: Entity) {
   return isSystemNamespace(entity.namespace);
 }
 
+// The observer appends " / OOM observed" to a pod's status once per container
+// whose last termination was an OOM kill, so the phase is the text before the
+// first suffix.
+const oomSuffix = " / OOM observed";
+export function podPhase(pod: Entity) {
+  const at = pod.status.indexOf(" / ");
+  return at === -1 ? pod.status : pod.status.slice(0, at);
+}
+
+export function oomObserved(pod: Entity) {
+  return pod.status.includes(oomSuffix);
+}
+
 const finishedStatuses = new Set(["Succeeded", "Completed", "Failed"]);
 // Finished pods no longer run, so they are history rather than live usage.
 export function isFinished(pod: Entity) {
-  return finishedStatuses.has(pod.status);
+  return finishedStatuses.has(podPhase(pod));
+}
+
+// Node conditions that make a Ready node a problem: any reported pressure or
+// an unavailable network. Shared by the canvas, Servers and attention model.
+export function nodeConditionProblems(node: Entity) {
+  return (node.conditions ?? []).filter(
+    (condition) =>
+      condition.status === "True" &&
+      (condition.type.endsWith("Pressure") ||
+        condition.type === "NetworkUnavailable")
+  );
 }
 
 export function podReady(pod: Entity): boolean | undefined {
@@ -284,21 +308,31 @@ export function resourceStatus(entity: Entity) {
   return entity.status || "Unknown";
 }
 
-export function hasProblem(entity: Entity) {
+// A finished pod is a problem only as a retained failure. An observed OOM
+// kill keeps a running pod a problem even while it reports ready.
+function podHasProblem(pod: Entity) {
+  if (isFinished(pod)) {
+    return podPhase(pod) === "Failed";
+  }
   return (
-    (entity.kind === "Node" && entity.status !== "True") ||
-    (entity.kind === "Pod" &&
-      !["Succeeded", "Completed"].includes(entity.status) &&
-      (entity.ready === 0 ||
-        !["Running", "Observed", "Unknown"].includes(entity.status))) ||
-    (workloadKinds.has(entity.kind) &&
-      entity.ready != null &&
-      entity.desired != null &&
-      entity.ready < entity.desired) ||
-    entity.conditions?.some(
-      (condition) =>
-        condition.type.endsWith("Pressure") && condition.status === "True"
-    ) === true
+    pod.ready === 0 ||
+    oomObserved(pod) ||
+    !["Running", "Observed", "Unknown"].includes(podPhase(pod))
+  );
+}
+
+export function hasProblem(entity: Entity) {
+  if (entity.kind === "Node") {
+    return entity.status !== "True" || nodeConditionProblems(entity).length > 0;
+  }
+  if (entity.kind === "Pod") {
+    return podHasProblem(entity);
+  }
+  return (
+    workloadKinds.has(entity.kind) &&
+    entity.ready != null &&
+    entity.desired != null &&
+    entity.ready < entity.desired
   );
 }
 

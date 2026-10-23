@@ -4,6 +4,7 @@ import { getDb } from "../../db";
 import type { Env } from "../../env";
 import { hash } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
+import { createTiming } from "../../lib/server/server-timing";
 import { bucketStart, timestampNano } from "../../lib/server/time";
 import { normalizeTime } from "../clusters";
 import {
@@ -182,28 +183,31 @@ function precisionBoundaryIncomplete(
 export async function historicalInventory(
   env: Env,
   clusterId: string,
-  at: string
+  at: string,
+  timing = createTiming()
 ): Promise<Observation | null> {
   const db = getDb(env.DB);
   const instant = normalizeTime(at);
-  const normal = await lastInventory(db, clusterId, instant);
-  const compact = await db.orm.Archive.where({
-    clusterId,
-    kind: "inventory-receipts",
-  })
-    .where((a) => a.sourceStart.lte(instant))
-    .orderBy((a) => a.sourceStart.desc())
-    .limit(65)
-    .all();
+  const normal = await timing.measure("d1", () =>
+    lastInventory(db, clusterId, instant)
+  );
+  const compact = await timing.measure("d1", () =>
+    db.orm.Archive.where({
+      clusterId,
+      kind: "inventory-receipts",
+    })
+      .where((a) => a.sourceStart.lte(instant))
+      .orderBy((a) => a.sourceStart.desc())
+      .limit(65)
+      .all()
+  );
   let best: InventoryReceipt | null = null;
   for (const row of compact) {
     if (best && row.sourceEnd < best.sourceTime) {
       break;
     }
-    const document = await readArchiveObject<InventoryReceipt[]>(
-      env,
-      row.objectKey,
-      row.contentHash
+    const document = await timing.measure("r2", () =>
+      readArchiveObject<InventoryReceipt[]>(env, row.objectKey, row.contentHash)
     );
     for (const receipt of document.data) {
       if (receipt.sourceTime > instant) {
@@ -222,27 +226,29 @@ export async function historicalInventory(
   }
   if (normal && (!best || normal.sourceStart >= best.sourceTime)) {
     return (
-      await readArchiveObject<Observation>(
-        env,
-        normal.objectKey,
-        normal.contentHash
+      await timing.measure("r2", () =>
+        readArchiveObject<Observation>(
+          env,
+          normal.objectKey,
+          normal.contentHash
+        )
       )
     ).data;
   }
   if (!best) {
     return null;
   }
-  const content = await findArchive(
-    db,
-    archiveId(clusterId, "inventory-content", best.contentId, contentEpoch)
+  const content = await timing.measure("d1", () =>
+    findArchive(
+      db,
+      archiveId(clusterId, "inventory-content", best.contentId, contentEpoch)
+    )
   );
   if (!content) {
     throw new Error("referenced inventory content unavailable");
   }
-  const document = await readArchiveObject<Inventory>(
-    env,
-    content.objectKey,
-    content.contentHash
+  const document = await timing.measure("r2", () =>
+    readArchiveObject<Inventory>(env, content.objectKey, content.contentHash)
   );
   const metadata = best.metadata ?? {
     profile: null,

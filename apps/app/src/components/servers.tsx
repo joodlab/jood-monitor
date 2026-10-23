@@ -16,29 +16,36 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useMemo } from "react";
-import { podProblem } from "../lib/attention";
+import { useDisplay } from "../hooks/display";
+import { livePodProblem } from "../lib/attention";
+import { nodeUsageGap, podUsageText } from "../lib/collection-state";
+import { coverageNotes, silentText } from "../lib/coverage";
 import {
   compactCpu,
   compactMemory,
-  isFinished,
-  percent,
   podReady,
   readinessLabel,
 } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
 import {
+  type CoverageGap,
   type EmptyServers,
   emptyServers,
   groupByOwner,
+  nodeRequests,
   placementHint,
+  podFinished,
   podTileLabel,
   type ServerCard,
   type ServerFilter,
   type ServerPlacement,
   serverPlacement,
+  usageLabel,
+  usageShare,
 } from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
 import { EmptyState } from "./page";
+import { RequestBar } from "./request-bar";
 import {
   KindTile,
   MetricBar,
@@ -67,6 +74,9 @@ export function Servers({
   problems?: boolean;
   onRelax?: (patch: Partial<ServerFilter>) => void;
 }) {
+  // A saved observation keeps no heartbeats, so its all clear is judged on
+  // inventory alone, as on the canvas.
+  const { frozen } = useDisplay();
   const filter = useMemo<ServerFilter>(
     () => ({ q: search, namespace, system: showSystem, problems }),
     [search, namespace, showSystem, problems]
@@ -91,7 +101,7 @@ export function Servers({
         {notice}
         <NoServers
           onRelax={onRelax}
-          state={emptyServers(views, filter, hint, referenceTime)}
+          state={emptyServers(views, filter, hint, referenceTime, frozen)}
         />
       </div>
     );
@@ -154,7 +164,8 @@ function PlacementSummary({ placement }: { placement: ServerPlacement }) {
     );
   }
   const pods = placement.servers.reduce(
-    (sum, server) => sum + server.pods.filter((pod) => !isFinished(pod)).length,
+    (sum, server) =>
+      sum + server.pods.filter((pod) => !podFinished(pod)).length,
     0
   );
   return (
@@ -223,9 +234,10 @@ function Legend({
 }
 
 // A server card in the manner of a Railway service card: icon tile, name and
-// role line, usage, pod placement, and a status line at the foot. The name
-// button stretches over the card so the whole card opens the inspector;
-// pod tiles and times sit above that layer and keep their own actions.
+// role line, usage, requests, pod placement, and a status line at the foot.
+// The name button stretches over the card so the whole card opens the
+// inspector; pod tiles and times sit above that layer and keep their own
+// actions.
 function ServerTile({
   server,
   onInspect,
@@ -236,8 +248,6 @@ function ServerTile({
   referenceTime: number;
 }) {
   const { view, node } = server;
-  const cpu = observedUsage(view, node, "cpu", referenceTime);
-  const memory = observedUsage(view, node, "memory", referenceTime);
   const stale = inventoryStale(view, referenceTime);
   const addresses = node.addresses?.join(", ");
   return (
@@ -266,18 +276,8 @@ function ServerTile({
           className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <MetricBar
-          detail={`${compactCpu(cpu)} / ${compactCpu(node.capacityCpu ?? undefined)}`}
-          label="CPU"
-          value={percent(cpu, node.capacityCpu)}
-        />
-        <MetricBar
-          detail={`${compactMemory(memory)} / ${compactMemory(node.capacityMemory ?? undefined)}`}
-          label="Memory"
-          value={percent(memory, node.capacityMemory)}
-        />
-      </div>
+      <Usage node={node} referenceTime={referenceTime} view={view} />
+      <Requests node={node} stale={stale} view={view} />
       <div className="relative z-10 flex-1">
         <Placement
           onInspect={onInspect}
@@ -287,13 +287,99 @@ function ServerTile({
         />
       </div>
       <div className="flex items-center justify-between gap-3 border-t pt-3">
-        <StatusLine entity={node} stale={stale} />
+        <StatusLine entity={node} problem={server.problem} stale={stale} />
         <span
           className="relative z-10 min-w-0 truncate font-mono text-muted-foreground text-xs"
           title={addresses || undefined}
         >
           {addresses || "Address unavailable"}
         </span>
+      </div>
+    </div>
+  );
+}
+
+// Fresh node samples against allocatable. The caption and labels name the
+// basis, where truncation cannot cut it; a bar names capacity only when it
+// stands in for unreported allocatable.
+function Usage({
+  view,
+  node,
+  referenceTime,
+}: {
+  view: ClusterView;
+  node: Entity;
+  referenceTime: number;
+}) {
+  const cpu = observedUsage(view, node, "cpu", referenceTime);
+  const memory = observedUsage(view, node, "memory", referenceTime);
+  const cpuShare = usageShare(node, "cpu", cpu);
+  const memoryShare = usageShare(node, "memory", memory);
+  // Saved observations carry their capture record, which the gap reads.
+  const gap = nodeUsageGap(view, node, referenceTime);
+  const basis =
+    cpuShare.basis === memoryShare.basis
+      ? cpuShare.basis
+      : "allocatable or capacity";
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
+        <span>Used / {basis}</span>
+        <span>measured</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <MetricBar
+          detail={`${compactCpu(cpu)} / ${compactCpu(cpuShare.total)}`}
+          gap={cpu == null ? gap : undefined}
+          label={usageLabel("CPU", cpuShare)}
+          value={cpuShare.percent}
+        />
+        <MetricBar
+          detail={`${compactMemory(memory)} / ${compactMemory(memoryShare.total)}`}
+          gap={memory == null ? gap : undefined}
+          label={usageLabel("Memory", memoryShare)}
+          value={memoryShare.percent}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Requests come from the inventory, every namespace included, so a stale
+// inventory greys them like the pod tiles and says they were last reported.
+function Requests({
+  view,
+  node,
+  stale,
+}: {
+  view: ClusterView;
+  node: Entity;
+  stale: boolean;
+}) {
+  const requests = nodeRequests(view, node);
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap justify-between gap-x-2 text-muted-foreground text-xs">
+        <span>
+          Requested / allocatable · {plural(requests.pods, "pod")}, all
+          namespaces
+          {stale && " · last reported"}
+        </span>
+        <span>configured, not usage</span>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <RequestBar
+          format={compactCpu}
+          label="CPU"
+          share={requests.cpu}
+          stale={stale}
+        />
+        <RequestBar
+          format={compactMemory}
+          label="Memory"
+          share={requests.memory}
+          stale={stale}
+        />
       </div>
     </div>
   );
@@ -320,7 +406,7 @@ function Placement({
   referenceTime: number;
   stale: boolean;
 }) {
-  const active = server.pods.filter((pod) => !isFinished(pod));
+  const active = server.pods.filter((pod) => !podFinished(pod));
   const groups = groupByOwner(server.view, active);
   const note = placementNote(server, server.pods.length - active.length);
   let remaining = TILE_LIMIT;
@@ -387,19 +473,6 @@ function Placement({
   );
 }
 
-function usageText(
-  view: ClusterView,
-  pod: Entity,
-  field: "cpu" | "memory",
-  now: number
-) {
-  const value = observedUsage(view, pod, field, now);
-  if (value == null) {
-    return "no sample";
-  }
-  return field === "cpu" ? compactCpu(value) : compactMemory(value);
-}
-
 function PodTile({
   pod,
   owner,
@@ -418,7 +491,7 @@ function PodTile({
   onInspect: () => void;
 }) {
   const state = tileState(pod);
-  const problem = podProblem(pod, referenceTime);
+  const problem = livePodProblem(pod, referenceTime);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -449,10 +522,7 @@ function PodTile({
           {pod.restarts === 1 ? "" : "s"}
         </p>
         {dimmed && <p>Does not match the current filter</p>}
-        <p className="tabular-nums">
-          CPU {usageText(view, pod, "cpu", referenceTime)} · Memory{" "}
-          {usageText(view, pod, "memory", referenceTime)}
-        </p>
+        <p className="tabular-nums">{podUsageText(view, pod, referenceTime)}</p>
       </TooltipContent>
     </Tooltip>
   );
@@ -462,6 +532,21 @@ interface EmptyCopy {
   description: string;
   icon: LucideIcon;
   title: string;
+}
+
+// Why the clusters in scope cannot vouch for an all clear, in the canvas's
+// words: missing or stale inventory, an observer heartbeat that is not
+// current, and the registered clusters that never reported, by name.
+function gapText(gap: CoverageGap) {
+  return [coverageNotes(gap.coverage, gap.frozen), silentText(gap.silent)]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function gapScope(gap: CoverageGap) {
+  return gap.coverage.aged
+    ? "in the last inventory"
+    : "in the observed clusters";
 }
 
 function emptyCopy(state: EmptyServers): EmptyCopy {
@@ -477,14 +562,17 @@ function emptyCopy(state: EmptyServers): EmptyCopy {
       return {
         icon: TriangleAlert,
         title: "Problems are in system namespaces",
-        description: `${plural(state.hint.count, "problem pod")} in system namespaces ${state.hint.count === 1 ? "is" : "are"} hidden by the current filters. No other pod or server needs attention.`,
+        description: `${plural(state.hint.count, "problem pod")} in system namespaces ${state.hint.count === 1 ? "is" : "are"} hidden by the current filters. ${
+          state.gap
+            ? `${gapText(state.gap)} No other pod or server needs attention ${gapScope(state.gap)}.`
+            : "No other pod or server needs attention."
+        }`,
       };
     case "staleHealthy":
       return {
         icon: Clock,
-        title: "No problems in the last inventory",
-        description:
-          "The inventory is stale, so the current state is unknown. No failing pods or unready servers in the last inventory.",
+        title: `No problems ${gapScope(state)}`,
+        description: `${gapText(state)} No failing pods or unready servers ${gapScope(state)}.`,
       };
     case "healthy":
       return {

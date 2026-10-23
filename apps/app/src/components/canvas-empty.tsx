@@ -1,7 +1,16 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@jood-monitor/ui/dropdown-menu";
+import {
   BookOpen,
+  ChevronDown,
   CircleCheck,
   Clock,
   type LucideIcon,
@@ -9,13 +18,8 @@ import {
   Plus,
   TriangleAlert,
 } from "lucide-react";
-import { observationCoverage } from "../lib/attention";
-import { inventoryFreshness } from "../lib/metrics";
-import {
-  emptyTopology,
-  type InventoryCoverage,
-  type ServiceGraph,
-} from "../lib/service-graph";
+import { type ClusterCoverage, coverageNotes } from "../lib/coverage";
+import { emptyTopology, type ServiceGraph } from "../lib/service-graph";
 import { EmptyState } from "./page";
 
 // Why the canvas is empty, in words that never turn missing or stale
@@ -25,50 +29,25 @@ function counted(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-// What the inventory in scope can vouch for: clusters with none at all, and
-// clusters whose last inventory is no longer fresh.
-export function inventoryCoverage(
-  views: ClusterView[],
-  now: number
-): InventoryCoverage {
-  const coverage = observationCoverage(views, now);
-  const notFresh = views.filter(
-    (view) => inventoryFreshness(view.inventory.sourceTime, now) !== "fresh"
-  ).length;
-  return { ...coverage, aged: notFresh - coverage.missing };
-}
-
 interface EmptyProps {
-  coverage: InventoryCoverage;
+  coverage: ClusterCoverage;
   frozen: boolean;
   graph: ServiceGraph;
   namespace: string;
+  // Opens a cluster's Settings, where its observer is installed or its
+  // enrollment renewed.
+  onCluster?: (view: ClusterView) => void;
   onShowSystem?: () => void;
   problems: boolean;
   search: string;
   showSystem: boolean;
+  // Registered clusters that have never reported (see silentClusters).
+  silent?: ClusterView[];
 }
 interface EmptyCopy {
   description: string;
   icon: LucideIcon;
   title: string;
-}
-
-function coverageNotes({ coverage, frozen }: EmptyProps) {
-  const notes: string[] = [];
-  if (coverage.missing) {
-    notes.push(
-      `${coverage.missing} of ${counted(coverage.total, "cluster")} ${frozen ? "have no saved observation at this time" : "have not reported inventory"}, so their problems cannot be evaluated.`
-    );
-  }
-  if (coverage.aged) {
-    notes.push(
-      coverage.total === 1
-        ? "The inventory is stale, so the current state is unknown."
-        : `${coverage.aged} of ${counted(coverage.total, "cluster")} have stale inventory, so their current state is unknown.`
-    );
-  }
-  return notes.join(" ");
 }
 
 function unobservedText(frozen: boolean) {
@@ -87,18 +66,19 @@ function hiddenCopy(props: EmptyProps): EmptyCopy {
       description: `${counted(count, "system namespace")} with resources ${verb} hidden by the current filters.`,
     };
   }
+  const history = historyText(props.graph.finishedFailed);
   if (props.search) {
     return {
       icon: props.problems ? TriangleAlert : Network,
       title: `No ${props.problems ? "problem resources" : "topology"} match “${props.search}” outside system namespaces`,
-      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.`,
+      description: `${counted(count, "matching resource")} in system namespaces ${verb} hidden by the current filters.${history}`,
     };
   }
-  const notes = coverageNotes(props);
+  const notes = coverageNotes(props.coverage, props.frozen);
   return {
     icon: TriangleAlert,
     title: "Problems are in system namespaces",
-    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}`,
+    description: `${counted(count, "resource")} with problems in system namespaces ${verb} hidden by the current filters.${notes ? ` ${notes}` : ""}${history}`,
   };
 }
 
@@ -106,11 +86,21 @@ function scopeText(namespace: string) {
   return namespace === "all" ? "any namespace" : namespace;
 }
 
+// Finished pods that failed are history, named so the counts add up but
+// never presented as a problem.
+function historyText(finishedFailed = 0) {
+  if (!finishedFailed) {
+    return "";
+  }
+  return ` ${counted(finishedFailed, "finished pod")} with failures ${finishedFailed === 1 ? "is" : "are"} kept as history.`;
+}
+
 function emptyCopy(props: EmptyProps): EmptyCopy {
   const { graph, problems, search, showSystem, frozen } = props;
   const scope = scopeText(props.namespace);
   const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads or unready nodes in ${scope}.`;
+  const problemList = `No failing pods, under-replicated workloads or node problems in ${scope}.`;
+  const history = historyText(graph.finishedFailed);
   switch (emptyTopology(graph, { problems, search }, props.coverage)) {
     case "hiddenSystem":
       return hiddenCopy(props);
@@ -130,7 +120,7 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
           graph.unshown
             ? ` ${graph.unshown} matching volume, EndpointSlice or idle ReplicaSet record${graph.unshown === 1 ? " has" : "s have"} no card; the List view shows them.`
             : " Try a name, kind, namespace or status."
-        }`,
+        }${history}`,
       };
     case "unobserved":
       return {
@@ -142,15 +132,15 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
       return {
         icon: Clock,
         title: props.coverage.aged
-          ? "No problems in the last inventory"
-          : "No problems in the observed clusters",
-        description: `${coverageNotes(props)} ${problemList}`,
+          ? "No live problems in the last inventory"
+          : "No live problems in the observed clusters",
+        description: `${coverageNotes(props.coverage, frozen)} ${problemList}${history}`,
       };
     case "healthy":
       return {
         icon: CircleCheck,
-        title: "No problems observed",
-        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}`,
+        title: "No live problems observed",
+        description: `${problemList}${props.namespace === "all" && !showSystem ? " Hidden system namespaces have none either." : ""}${history}`,
       };
     default:
       return {
@@ -182,7 +172,134 @@ export function TopologyEmpty(props: EmptyProps) {
           Include system resources
         </Button>
       )}
+      {props.onCluster && props.silent?.length ? (
+        <SilentList clusters={props.silent} onCluster={props.onCluster} />
+      ) : null}
     </EmptyState>
+  );
+}
+
+function silentText(view: ClusterView) {
+  return `${view.cluster.name} has not reported since registration`;
+}
+
+function SetUpButton({
+  view,
+  onCluster,
+}: {
+  view: ClusterView;
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <Button
+      aria-label={`Install or renew the observer on ${view.cluster.name}`}
+      className="h-9 shrink-0 focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
+      onClick={() => onCluster(view)}
+      size="sm"
+      variant="outline"
+    >
+      Install or renew
+    </Button>
+  );
+}
+
+// A registered cluster that never reported draws nothing, so the empty
+// canvas names it and offers the way back to its install or enrollment.
+function SilentList({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <ul
+      aria-label="Clusters that have not reported"
+      className="w-full space-y-1.5 text-left"
+    >
+      {clusters.map((view) => (
+        <li
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/40 py-1.5 pr-1.5 pl-3 text-sm"
+          key={view.cluster.id}
+        >
+          <span className="min-w-0 break-words">{silentText(view)}</span>
+          <SetUpButton onCluster={onCluster} view={view} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Several silent clusters share one chip; its menu opens each one's
+// Settings.
+function SetUpMenu({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            aria-label="Install or renew the observer on a cluster that has not reported"
+            className="h-9 shrink-0 focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
+            size="sm"
+            variant="outline"
+          />
+        }
+      >
+        Install or renew
+        <ChevronDown aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-80 max-w-80">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Clusters that have not reported</DropdownMenuLabel>
+          {clusters.map((view) => (
+            <DropdownMenuItem
+              key={view.cluster.id}
+              onClick={() => onCluster(view)}
+            >
+              <span className="min-w-0 break-words">{view.cluster.name}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// Where other clusters fill the canvas, silent ones get a small chip
+// instead. Its text wraps rather than truncates, so the reason stays
+// readable on narrow screens.
+export function SilentClustersChip({
+  clusters,
+  onCluster,
+}: {
+  clusters: ClusterView[];
+  onCluster: (view: ClusterView) => void;
+}) {
+  const [first] = clusters;
+  if (!first) {
+    return null;
+  }
+  const more = clusters.length - 1;
+  return (
+    <p className="pointer-events-auto flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-muted-foreground/50 border-dashed bg-card/95 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur">
+      <Clock aria-hidden="true" className="size-3.5 shrink-0" />
+      <span className="min-w-0 break-words">
+        {more
+          ? `${first.cluster.name} and ${counted(more, "other cluster")} have not reported since registration`
+          : silentText(first)}
+      </span>
+      {more ? (
+        <SetUpMenu clusters={clusters} onCluster={onCluster} />
+      ) : (
+        <SetUpButton onCluster={onCluster} view={first} />
+      )}
+    </p>
   );
 }
 

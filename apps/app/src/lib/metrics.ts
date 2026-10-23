@@ -66,6 +66,24 @@ export function inventoryFreshness(
   return freshness(at, now, INVENTORY_STALE_SECONDS);
 }
 
+// The observer samples node usage every 60 s on Basic and every 30 s
+// otherwise; pods are sampled only off Basic, always every 30 s, so a pod
+// sample left from before a switch to Basic is not stretched to its cadence.
+// A sample stays current for two intervals plus 45 s of Metrics API scrape
+// age and delivery, so one late sample is not a gap. An expired Diagnostic
+// already samples at its return profile's interval.
+export function resourceSampleBudget(
+  profile: ClusterView["profile"],
+  now = Date.now(),
+  kind: "Node" | "Pod" = "Node"
+) {
+  const expired =
+    profile.name === "diagnostic" &&
+    (!profile.expiresAt || Date.parse(profile.expiresAt) <= now);
+  const name = expired ? profile.returnProfile || "basic" : profile.name;
+  return 2 * (kind === "Node" && name === "basic" ? 60 : 30) + 45;
+}
+
 export function nodeProfileOutcome(
   view: ClusterView,
   uid: string,
@@ -112,10 +130,37 @@ export function observedUsage(
     return;
   }
   const metric = latest(view.metrics, entity.uid, usageName(entity, field));
-  return freshness(metric?.sourceTime, now) === "fresh"
+  return freshness(
+    metric?.sourceTime,
+    now,
+    resourceSampleBudget(view.profile, now, entity.kind)
+  ) === "fresh"
     ? value(metric)
     : undefined;
 }
+// What measured usage is judged against: allocatable, the share pods may
+// use. Capacity also counts system reserves, so it stands in only where a
+// node does not report allocatable, and is counted so callers can say so.
+// Absent without a measured node, so it never reads as a total of 0.
+function usageBasis(measured: Entity[], field: "cpu" | "memory") {
+  if (!measured.length) {
+    return;
+  }
+  const basis = { total: 0, capacityStandIns: 0 };
+  for (const node of measured) {
+    const allocatable =
+      field === "cpu" ? node.allocatableCpu : node.allocatableMemory;
+    if (allocatable != null && allocatable > 0) {
+      basis.total += allocatable;
+    } else {
+      basis.total +=
+        (field === "cpu" ? node.capacityCpu : node.capacityMemory) ?? 0;
+      basis.capacityStandIns++;
+    }
+  }
+  return basis;
+}
+
 export function nodeTotals(views: ClusterView[], now = Date.now()) {
   let capacityCpu = 0,
     capacityMemory = 0,
@@ -125,6 +170,8 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
     coveredCpuCapacity = 0,
     coveredMemoryCapacity = 0;
   const nodes: Entity[] = [];
+  // Nodes with fresh CPU and memory samples from one round.
+  const measured: Entity[] = [];
   for (const view of views) {
     const anchor = Math.max(
       0,
@@ -136,6 +183,7 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         )
         .map((metric) => Date.parse(metric.sourceTime))
     );
+    const budget = resourceSampleBudget(view.profile, now);
     for (const node of view.inventory.entities) {
       if (node.kind !== "Node") {
         continue;
@@ -152,8 +200,8 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         node.capacityCpu > 0 &&
         node.capacityMemory != null &&
         node.capacityMemory > 0 &&
-        freshness(cpu.sourceTime, now) === "fresh" &&
-        freshness(mem.sourceTime, now) === "fresh" &&
+        freshness(cpu.sourceTime, now, budget) === "fresh" &&
+        freshness(mem.sourceTime, now, budget) === "fresh" &&
         anchor - Date.parse(cpu.sourceTime) < 30_000 &&
         anchor - Date.parse(mem.sourceTime) < 30_000 &&
         Math.abs(Date.parse(cpu.sourceTime) - Date.parse(mem.sourceTime)) <
@@ -162,6 +210,7 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
         covered++;
         coveredCpuCapacity += node.capacityCpu;
         coveredMemoryCapacity += node.capacityMemory;
+        measured.push(node);
         usedCpu += Number(cpu.value);
         usedMemory += Number(mem.value);
       }
@@ -172,6 +221,9 @@ export function nodeTotals(views: ClusterView[], now = Date.now()) {
     covered,
     coveredCpuCapacity: covered ? coveredCpuCapacity : undefined,
     coveredMemoryCapacity: covered ? coveredMemoryCapacity : undefined,
+    // Allocatable of the measured nodes, capacity standing in where needed.
+    cpuBasis: usageBasis(measured, "cpu"),
+    memoryBasis: usageBasis(measured, "memory"),
     capacityCpu:
       nodes.length && nodes.every((node) => node.capacityCpu != null)
         ? capacityCpu

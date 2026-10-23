@@ -7,7 +7,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@jood-monitor/ui/dialog";
-import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
@@ -20,15 +19,24 @@ import {
 } from "../hooks/api/clusters";
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
-import type { SearchState } from "../schemas/monitor";
+import { type SearchState, scopeReset } from "../schemas/monitor";
 import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
 import { CommandPalette } from "./command-palette";
+import {
+  eventsEnabled,
+  eventsKey,
+  linkedSettingsView,
+  rangeOnlyChange,
+  settingsLink,
+  settingsSection,
+} from "./dashboard-navigation";
 import { EnrollForm } from "./enroll-form";
 import { EventsPage } from "./events-page";
 import { NewWorkspace } from "./new-workspace";
 import { Observability } from "./observability";
 import { PageHeader } from "./page";
+import { PageState, retrySnapshot } from "./page-state";
 import { ProjectBar, projectTabs } from "./project-bar";
 import { RangeSelect } from "./range-select";
 import { ResourceBrowser } from "./resource-browser";
@@ -53,10 +61,6 @@ const pageDescriptions: Record<string, string> = {
     "Observer health, collection profiles, diagnostics and cluster enrollment.",
   workspaces: "Workspaces group clusters and scope what you see.",
 };
-
-// Switching workspace or cluster starts from that scope's whole map, so a
-// namespace or search from the previous scope cannot hide its resources.
-const scopeReset = { namespace: "all", q: "" } satisfies Partial<SearchState>;
 
 // Components written for the previous navigation still ask for its views;
 // translate them to the project tabs.
@@ -98,20 +102,22 @@ function useMonitorData(search: SearchState) {
     queryKey: ["snapshot", scope, search.at ?? "live"],
     queryFn: () => fetchSnapshot(scope, search.at),
     refetchInterval: search.at ? false : refreshInterval,
+    retry: retrySnapshot,
   });
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
   });
+  const key = eventsKey(search);
   const events = useQuery({
-    queryKey: [
-      "events",
-      scope,
-      search.at ?? "live",
-      search.range,
-      search.cluster,
-    ],
+    queryKey: key,
     queryFn: () => fetchEvents(search),
+    enabled: eventsEnabled(search),
+    staleTime: 25_000,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery && rangeOnlyChange(previousQuery.queryKey, key)
+        ? previous
+        : undefined,
     refetchInterval: search.at ? false : refreshInterval,
   });
   const allViews = useMemo(
@@ -170,7 +176,7 @@ function useMonitorData(search: SearchState) {
   };
 }
 
-function useDashboardNavigation() {
+function useDashboardNavigation(scope: string) {
   const navigate = useNavigate({ from: "/" });
   const update = useCallback(
     (next: Partial<SearchState>, replace = false) => {
@@ -179,15 +185,23 @@ function useDashboardNavigation() {
     [navigate]
   );
   const go = useCallback(
-    (view: string, extra: Partial<SearchState> = {}) =>
+    (view: string, extra: Partial<SearchState> = {}) => {
+      const next = settingsSection(view, extra);
       update({
         resource: undefined,
         resourceCluster: undefined,
+        settingsCluster: undefined,
         diagnosticNode: undefined,
-        ...extra,
-        ...routeFor(view, extra),
-      }),
+        ...next,
+        ...routeFor(view, next),
+      });
+    },
     [update]
+  );
+  const openSettings = useCallback(
+    (view: ClusterView, node?: Entity) =>
+      go("settings", settingsLink(scope, view, node)),
+    [go, scope]
   );
   const inspect = useCallback(
     (view: ClusterView, entity: Entity) =>
@@ -219,15 +233,8 @@ function useDashboardNavigation() {
     [go]
   );
   const actions: AttentionActions = useMemo(
-    () => ({
-      onInspect: inspect,
-      onCluster: (view) =>
-        go("settings", {
-          workspace: view.cluster.workspaceId,
-          cluster: view.cluster.id,
-        }),
-    }),
-    [inspect, go]
+    () => ({ onInspect: inspect, onCluster: (view) => openSettings(view) }),
+    [inspect, openSettings]
   );
   return {
     update,
@@ -236,6 +243,7 @@ function useDashboardNavigation() {
     closeInspector,
     openCluster,
     openClusterServers,
+    openSettings,
     actions,
   };
 }
@@ -315,6 +323,11 @@ function PageBody({
     case "settings":
       return (
         <CollectionSettings
+          linked={linkedSettingsView(
+            data.views,
+            data.allViews,
+            search.settingsCluster
+          )}
           onResumeLive={() => update({ at: undefined })}
           search={search}
           views={data.views}
@@ -371,8 +384,9 @@ function DashboardContent() {
   } = data;
   const summary = attentionSummary(attention);
   const [newWorkspace, setNewWorkspace] = useState(false);
-  const dashboardNavigation = useDashboardNavigation();
-  const { update, go, inspect, closeInspector } = dashboardNavigation;
+  const dashboardNavigation = useDashboardNavigation(scope);
+  const { update, go, inspect, closeInspector, openSettings } =
+    dashboardNavigation;
   const openPalette = useCallback(() => setPalette(true), []);
   // The canvas is the landing view: fetch its chunk alongside the snapshot
   // instead of after it.
@@ -389,6 +403,7 @@ function DashboardContent() {
       cluster: undefined,
       resource: undefined,
       resourceCluster: undefined,
+      settingsCluster: undefined,
       diagnosticNode: undefined,
     });
   }
@@ -420,7 +435,9 @@ function DashboardContent() {
         cluster={search.cluster}
         clusters={allViews}
         connection={connection}
-        onCluster={(cluster) => update({ ...scopeReset, cluster })}
+        onCluster={(cluster) =>
+          update({ ...scopeReset, cluster, settingsCluster: undefined })
+        }
         onFreeze={(at) => update({ at })}
         onNavigate={(view) => go(view)}
         onNewWorkspace={() => setNewWorkspace(true)}
@@ -452,10 +469,20 @@ function DashboardContent() {
               <>
                 {(search.view === "observability" ||
                   search.view === "activity") && (
-                  <RangeSelect
-                    onRange={(range) => update({ range }, true)}
-                    range={search.range}
-                  />
+                  <>
+                    {/* The previous range's changes stay on screen while the
+                        new range loads, and this says so. */}
+                    <span
+                      className="text-muted-foreground text-xs"
+                      role="status"
+                    >
+                      {data.events.isPlaceholderData ? "Updating…" : ""}
+                    </span>
+                    <RangeSelect
+                      onRange={(range) => update({ range }, true)}
+                      range={search.range}
+                    />
+                  </>
                 )}
                 {search.view === "settings" && (
                   <Button
@@ -536,15 +563,15 @@ function DashboardContent() {
       <ResourceInspector
         at={search.at}
         connection={connection}
+        hubClock={
+          snapshot.data && {
+            serverTime: snapshot.data.serverTime,
+            receivedAt: snapshot.dataUpdatedAt,
+          }
+        }
         inspected={inspected}
         onClose={closeInspector}
-        onCollection={(view, node) =>
-          go("settings", {
-            workspace: view.cluster.workspaceId,
-            cluster: view.cluster.id,
-            diagnosticNode: node?.uid,
-          })
-        }
+        onCollection={openSettings}
         onInspect={inspect}
         onRange={(range) => update({ range }, true)}
         range={search.range}
@@ -578,48 +605,6 @@ function DashboardContent() {
         </Dialog>
       )}
     </div>
-  );
-}
-
-function PageState({
-  snapshot,
-  loading,
-  onRetry,
-}: {
-  snapshot: { isError: boolean };
-  loading: boolean;
-  onRetry: () => void;
-}) {
-  return (
-    <>
-      {snapshot.isError && (
-        <div
-          className="m-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm"
-          role="alert"
-        >
-          <span>
-            The hub could not be reached. Observations below may be out of date.
-          </span>
-          <Button onClick={onRetry} size="sm" variant="outline">
-            Retry
-          </Button>
-        </div>
-      )}
-      {loading && !snapshot.isError && (
-        <div aria-busy="true" className="space-y-4 p-4">
-          <span className="sr-only" role="status">
-            Loading observations…
-          </span>
-          <Skeleton className="h-28" />
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {[1, 2, 3, 4].map((item) => (
-              <Skeleton className="h-24" key={item} />
-            ))}
-          </div>
-          <Skeleton className="h-40" />
-        </div>
-      )}
-    </>
   );
 }
 

@@ -30,12 +30,20 @@ import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
 import { freshness } from "../lib/metrics";
 import {
+  pruneStaged,
+  stagedBadge,
+  useStagedState,
+} from "../lib/staged-changes";
+import {
   formatDateTime,
+  observationMs,
   type TimeZonePreference,
   timeZoneLabel,
   timeZoneOptions,
 } from "../lib/time";
 import { ObservationTime } from "./observation-time";
+import { StagedPill } from "./settings-rail";
+import { useLiveSnapshot } from "./staged-changes";
 
 // Railway-style project bar: logo / workspace / cluster on the left, project
 // tabs on the right. Workspaces play Railway's "project" role and clusters
@@ -100,6 +108,15 @@ function heartbeatState(view: ClusterView, now: number) {
   return freshness(view.cluster.heartbeatAt, now) === "fresh"
     ? "heartbeat fresh"
     : "heartbeat stale";
+}
+
+// The Settings tab names its staged changes, so they stay in sight from any
+// tab; frozen views only know that some are waiting.
+function settingsLabel(staged: number | "waiting") {
+  if (staged === "waiting") {
+    return "Settings, staged changes waiting";
+  }
+  return `Settings, ${staged} staged change${staged === 1 ? "" : "s"}`;
 }
 
 function clusterDot(view: ClusterView, now: number) {
@@ -261,6 +278,27 @@ export function ProjectBar({
   onSearch: () => void;
 }) {
   const { now, frozen, at, timeZone } = useDisplay();
+  const stagedState = useStagedState();
+  // Only reads the cache: the dashboard's own query loads and refreshes it.
+  const cached = useLiveSnapshot(workspace, false);
+  // Every cluster in the workspace scope, whatever the cluster filter hides.
+  // Frozen, `clusters` hold a past profile, so the live snapshot cached
+  // before freezing judges drafts, by the frozen Apply card's rule.
+  const staged = stagedBadge(
+    stagedState,
+    workspace,
+    frozen ? cached : clusters,
+    now,
+    !frozen
+  );
+  // Drafts whose profile changed are dropped (with the reason Settings shows)
+  // from every tab, not only where the Apply card runs, so neither this badge
+  // nor the unload prompt counts a draft that can no longer apply.
+  useEffect(() => {
+    if (!frozen && now) {
+      pruneStaged(clusters, now);
+    }
+  }, [frozen, now, clusters]);
   const [timeTravel, setTimeTravel] = useState(false);
   const tabs = useRef<HTMLElement>(null);
   // On phones the tab strip scrolls; keep the current tab in sight.
@@ -405,9 +443,13 @@ export function ProjectBar({
       >
         {projectTabs.map((tab) => {
           const active = view === tab.id;
+          const pending = tab.id === "settings" ? staged : undefined;
           return (
             <button
               aria-current={active ? "page" : undefined}
+              aria-label={
+                pending === undefined ? undefined : settingsLabel(pending)
+              }
               className={cn(
                 "relative flex h-10 shrink-0 items-center gap-1.5 px-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 active
@@ -435,6 +477,11 @@ export function ProjectBar({
                     <span aria-hidden>{attention.count}</span>
                   </span>
                 )}
+              {pending !== undefined && (
+                <StagedPill className="tabular-nums">
+                  {pending === "waiting" ? "Staged" : `${pending} staged`}
+                </StagedPill>
+              )}
             </button>
           );
         })}
@@ -445,13 +492,8 @@ export function ProjectBar({
           role="status"
         >
           <span>
-            Viewing the saved observation at{" "}
-            <strong className="font-medium">
-              {formatDateTime(at, timeZone)}{" "}
-              {timeZoneLabel(timeZone, Date.parse(at))}
-            </strong>
-            . Live updates are paused; collection status is not retained
-            historically.
+            <FrozenSubject at={at} timeZone={timeZone} />. Live updates are
+            paused; collection status is not retained historically.
           </span>
           <Button
             className="h-9 text-xs sm:h-8"
@@ -464,5 +506,22 @@ export function ProjectBar({
         </div>
       )}
     </header>
+  );
+}
+
+// The frozen banner's subject. An unreadable link time is said to be one,
+// never shown as a time guessed in some zone.
+function FrozenSubject({ at, timeZone }: { at: string; timeZone: string }) {
+  const time = observationMs(at);
+  if (time == null) {
+    return <>This link's time could not be read</>;
+  }
+  return (
+    <>
+      Viewing the saved observation at{" "}
+      <strong className="font-medium">
+        {formatDateTime(time, timeZone)} {timeZoneLabel(timeZone, time)}
+      </strong>
+    </>
   );
 }

@@ -1,11 +1,19 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { podProblem } from "./attention";
+import { liveNodeProblem, livePodProblem } from "./attention";
+import {
+  type ClusterCoverage,
+  fullyCovered,
+  inventoryCoverage,
+  silentClusters,
+} from "./coverage";
 import {
   findEntity,
-  hasProblem,
+  isFinished,
   isSystem,
   matchesText,
   owningWorkload,
+  percent,
+  percentage,
   readinessLabel,
   relatedPods,
   resourceId,
@@ -13,7 +21,6 @@ import {
 import {
   allNamespacesPatch,
   includesSystem,
-  inventoryStale,
   otherNamespacesLabel,
   type ResourceFilter,
 } from "./resource-table";
@@ -71,7 +78,8 @@ function podMatches(
   return (
     (filter.namespace === "all" || pod.namespace === filter.namespace) &&
     (includesSystem(filter) || !isSystem(pod)) &&
-    (!filter.problems || podProblem(pod, now)) &&
+    // Live problems only, as on the canvas: finished pods are history.
+    (!filter.problems || livePodProblem(pod, now)) &&
     matchesText(pod, filter.q, owningWorkload(view, pod)?.name)
   );
 }
@@ -99,7 +107,9 @@ function card(
             .map((pod) => pod.uid)
         )
       : undefined,
-    problem: hasProblem(node),
+    // The badge's node rule: not ready, a reported condition, or memory near
+    // full on a fresh sample.
+    problem: liveNodeProblem(view, node, now),
   };
 }
 
@@ -263,24 +273,56 @@ export function placementHint(
   }
 }
 
+// Why the clusters in scope cannot vouch for an all clear: the shared
+// coverage rule (inventory missing or stale, or live, an observer heartbeat
+// that is not current) and the registered clusters that never reported.
+export interface CoverageGap {
+  coverage: ClusterCoverage;
+  // A saved observation: missing clusters had nothing archived at its time.
+  frozen: boolean;
+  // Names of registered clusters with no heartbeat and no inventory.
+  silent: string[];
+}
+
 export type EmptyServers =
   // No Node in scope: neither placement nor problems can be evaluated.
   | { kind: "unobserved" }
-  // "Problems only" found problem pods, but only in hidden system namespaces.
-  | { hint: PlacementHint; kind: "hiddenProblems" }
-  // No problems, but in an inventory that is not current.
-  | { kind: "staleHealthy" }
+  // "Problems only" found problem pods, but only in hidden system namespaces;
+  // `gap` says why the rest of the scope cannot be vouched for, if it can't.
+  | { gap?: CoverageGap; hint: PlacementHint; kind: "hiddenProblems" }
+  // No problems in what was observed, but not every cluster is observed and
+  // current, so the attention model may still count a problem: never green.
+  | ({ kind: "staleHealthy" } & CoverageGap)
   | { kind: "healthy" }
   | { hint?: PlacementHint; kind: "noMatch" };
 
+function coverageGap(
+  views: ClusterView[],
+  now: number,
+  frozen: boolean
+): CoverageGap | undefined {
+  const coverage = inventoryCoverage(views, now, frozen);
+  if (fullyCovered(coverage)) {
+    return;
+  }
+  return {
+    coverage,
+    frozen,
+    silent: silentClusters(views, frozen).map((view) => view.cluster.name),
+  };
+}
+
 // What an empty Servers view can truthfully say. "Problems only" without any
 // other pod scope claims health only when servers are observed, every
-// inventory is current and no problem pod is hidden in a system namespace.
+// cluster has current inventory (and, live, a current observer heartbeat),
+// and no problem pod is hidden in a system namespace. Saved observations
+// keep no heartbeats, so a frozen view judges inventory alone.
 export function emptyServers(
   views: ClusterView[],
   filter: ServerFilter,
   hint: PlacementHint | undefined,
-  now: number
+  now: number,
+  frozen = false
 ): EmptyServers {
   const observed = views.some((view) =>
     view.inventory.entities.some((entity) => entity.kind === "Node")
@@ -291,12 +333,11 @@ export function emptyServers(
   if (!(filter.problems && !filter.q && filter.namespace === "all")) {
     return { kind: "noMatch", hint };
   }
+  const gap = coverageGap(views, now, frozen);
   if (hint?.patch.system) {
-    return { kind: "hiddenProblems", hint };
+    return { kind: "hiddenProblems", hint, gap };
   }
-  return views.some((view) => inventoryStale(view, now))
-    ? { kind: "staleHealthy" }
-    : { kind: "healthy" };
+  return gap ? { kind: "staleHealthy", ...gap } : { kind: "healthy" };
 }
 
 // A pod tile's accessible name carries everything its colour, mark and
@@ -314,4 +355,172 @@ export function podTileLabel(
   ]
     .filter(Boolean)
     .join(", ");
+}
+
+export type CapacityField = "cpu" | "memory";
+
+function allocatableOf(node: Entity, field: CapacityField) {
+  return (
+    (field === "cpu" ? node.allocatableCpu : node.allocatableMemory) ??
+    undefined
+  );
+}
+
+// Measured usage against allocatable, the share pods may use. Capacity also
+// counts system reserves, so it is a fallback the caller must label.
+export interface UsageShare {
+  basis: "allocatable" | "capacity";
+  percent?: number;
+  total?: number;
+}
+
+export function usageShare(
+  node: Entity,
+  field: CapacityField,
+  used?: number
+): UsageShare {
+  const allocatable = allocatableOf(node, field);
+  const capacity =
+    (field === "cpu" ? node.capacityCpu : node.capacityMemory) ?? undefined;
+  if (!allocatable && capacity) {
+    return {
+      basis: "capacity",
+      total: capacity,
+      percent: percent(used, capacity),
+    };
+  }
+  return {
+    basis: "allocatable",
+    total: allocatable,
+    percent: percent(used, allocatable),
+  };
+}
+
+// A usage bar's label names capacity when it stands in for allocatable; the
+// label is never truncated, unlike the amounts beneath it.
+export function usageLabel(label: string, share: UsageShare) {
+  return share.basis === "capacity" ? `${label} (capacity)` : label;
+}
+
+// Configured requests against allocatable for one resource: what the
+// scheduler reserves, not usage.
+export interface RequestShare {
+  allocatable?: number;
+  // Requests exceed allocatable, judged in whole millicores or bytes.
+  overcommitted?: boolean;
+  // requested / allocatable × 100, above 100 when the node is overcommitted.
+  // Absent when either side is unknown, so it never reads as 0%.
+  percent?: number;
+  // Sum over the node's active pods; absent when the share is unknown.
+  requested?: number;
+  // Why the share is unknown, when it is.
+  unknown?: string;
+}
+
+export interface NodeRequests {
+  cpu: RequestShare;
+  memory: RequestShare;
+  // Active pods bound to the node, in every namespace.
+  pods: number;
+}
+
+// The scheduler counts CPU in whole millicores and memory in whole bytes, but
+// the observer reports CPU as approximate float cores. Summing in those units
+// keeps a node whose requests exactly fill allocatable at 100%, not a hair
+// over it.
+const unitScale: Record<CapacityField, number> = { cpu: 1000, memory: 1 };
+
+function allocatableGap(units: number | undefined) {
+  if (units == null) {
+    return "Allocatable not reported";
+  }
+  return units > 0 ? "" : "Allocatable reported as 0";
+}
+
+function requestShare(
+  pods: Entity[],
+  node: Entity,
+  field: CapacityField
+): RequestShare {
+  const scale = unitScale[field];
+  const values = pods.map((pod) =>
+    field === "cpu" ? pod.requestedCpu : pod.requestedMemory
+  );
+  // A request of 0 is a reported value (BestEffort); only absence is unknown.
+  const missing = values.filter((value) => value == null).length;
+  const reported = allocatableOf(node, field);
+  const allocatable =
+    reported == null ? undefined : Math.round(reported * scale);
+  if (missing || allocatable == null || allocatable <= 0) {
+    const reasons = [
+      missing
+        ? `Request unknown for ${missing} of ${pods.length} pod${pods.length === 1 ? "" : "s"}`
+        : "",
+      allocatableGap(allocatable),
+    ];
+    return {
+      allocatable: reported,
+      unknown: reasons.filter(Boolean).join(" · "),
+    };
+  }
+  const requested = values.reduce<number>(
+    (sum, value) => sum + Math.round((value ?? 0) * scale),
+    0
+  );
+  return {
+    requested: requested / scale,
+    allocatable: allocatable / scale,
+    percent: (requested / allocatable) * 100,
+    overcommitted: requested > allocatable,
+  };
+}
+
+// The observer appends " / OOM observed" to a pod's phase for each container
+// it saw OOM-killed, so the phase is the part before the first " / ".
+export function podFinished(pod: Entity) {
+  return isFinished({ ...pod, status: pod.status.split(" / ")[0] });
+}
+
+// Requests of every active pod bound to the node, whatever its namespace or
+// the view's filters, as the scheduler counts them. Finished pods reserve
+// nothing.
+export function nodeRequests(view: ClusterView, node: Entity): NodeRequests {
+  const pods = relatedPods(view, node).filter((pod) => !podFinished(pod));
+  return {
+    pods: pods.length,
+    cpu: requestShare(pods, node, "cpu"),
+    memory: requestShare(pods, node, "memory"),
+  };
+}
+
+export type RequestTone = "full" | "normal" | "overcommitted" | "unknown";
+
+// What a request bar states. Unknown reads as a dash with its reason, never
+// 0%; overcommit is named, whatever the rounded percentage shows.
+interface RequestReading {
+  text: string;
+  tone: RequestTone;
+  value: string;
+}
+
+export function requestReading(
+  share: RequestShare,
+  format: (value?: number) => string
+): RequestReading {
+  if (share.percent == null) {
+    return { value: "—", text: share.unknown ?? "Unknown", tone: "unknown" };
+  }
+  const amounts = `${format(share.requested)} / ${format(share.allocatable)}`;
+  if (share.overcommitted) {
+    return {
+      value: percentage(share.percent),
+      text: `Overcommitted · ${amounts}`,
+      tone: "overcommitted",
+    };
+  }
+  return {
+    value: percentage(share.percent),
+    text: amounts,
+    tone: share.percent >= 90 ? "full" : "normal",
+  };
 }

@@ -1,4 +1,4 @@
-import { requireCluster } from "../src/actions/clusters";
+import { getClusterStatus, requireCluster } from "../src/actions/clusters";
 import { getDb } from "../src/db";
 import { ClusterStorage } from "../src/db/cluster-storage";
 import { ClusterState } from "../src/durable-objects/cluster-state";
@@ -7,6 +7,7 @@ import { apiError, dispatchApi } from "../src/lib/server/api";
 import { machineApi } from "../src/lib/server/api-machine";
 import { requireOperator } from "../src/lib/server/auth";
 import { nanoTimestamp } from "../src/lib/server/time";
+import { clusterStatusSchema } from "../src/schemas/clusters";
 import { archiveCost } from "./archive-cost";
 import { inventoryCost } from "./inventory-cost";
 import { storageCost } from "./storage-cost";
@@ -138,6 +139,15 @@ async function dispatchTest(request: Request, env: Env, url: URL) {
   }
   if (url.pathname === "/__test/inventory-cost") {
     return Response.json(await inventoryCost(env));
+  }
+  // The action behind getClusterStatusFn, which needs the Start runtime.
+  if (url.pathname === "/__test/hub-buffer") {
+    return Response.json(
+      await getClusterStatus(
+        env,
+        clusterStatusSchema.parse(Object.fromEntries(url.searchParams))
+      )
+    );
   }
   const cluster = await requireCluster(
     env,

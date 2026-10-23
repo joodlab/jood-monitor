@@ -55,25 +55,26 @@ import { updateProfileFn } from "../functions/clusters";
 import { fetchSnapshot } from "../hooks/api/clusters";
 import { useDisplay } from "../hooks/display";
 import {
-  applyStagedCluster,
+  applyStagedClusters,
   discardStaged,
   dismissRequests,
-  markApplying,
+  type Elsewhere,
   pausingClusters,
   pruneStaged,
   type RecentRequest,
-  recentRequests,
   revertField,
   type StagedCluster,
   type StagedRow,
-  type StagedState,
+  type StagedScope,
   settleRequests,
+  shownClusterIds,
   stageDraft,
-  stagedClusters,
   stagedCount,
-  stagedInScope,
+  stagedScope,
+  stagedWaiting,
   useStagedState,
 } from "../lib/staged-changes";
+import { scopeReset } from "../schemas/monitor";
 import type { AckRequest, DraftField } from "./collection-model";
 import {
   ackPatienceMs,
@@ -110,14 +111,23 @@ const headingFocus = cn("rounded-sm outline-none", focusRing);
 
 const noViews: ClusterView[] = [];
 
+const noScope: StagedScope = {
+  clusters: [],
+  discard: [],
+  elsewhere: { staged: 0, unconfirmed: 0 },
+  recent: [],
+};
+
 // The live snapshot the dashboard already keeps fresh. This reader adds no
-// schedule of its own; it fetches only when nothing is cached yet. While
-// frozen the query is disabled but keeps what it cached.
-function useLiveSnapshot(scope: string, frozen: boolean) {
+// schedule of its own; with `load` it fetches only when nothing is cached
+// yet. Without it (frozen views, or a reader mounted beside the dashboard's
+// own query, whose retry policy must decide the first fetch) it only reads,
+// keeping what was cached.
+export function useLiveSnapshot(scope: string, load: boolean) {
   const snapshot = useQuery({
     queryKey: ["snapshot", scope, "live"],
     queryFn: () => fetchSnapshot(scope),
-    enabled: !frozen,
+    enabled: load,
     refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
@@ -163,7 +173,7 @@ function useAcknowledgmentPolling(
   }, [client, scope, since]);
 }
 
-type ProfileSend = Parameters<typeof applyStagedCluster>[1];
+type ProfileSend = Parameters<typeof applyStagedClusters>[1];
 
 const sendProfile: ProfileSend = (clusterId, profile) =>
   updateProfileFn({
@@ -178,19 +188,13 @@ const sendProfile: ProfileSend = (clusterId, profile) =>
 function useApplyStaged() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (targets: StagedCluster[]) => {
-      markApplying(targets.map((target) => target.view.cluster.id));
-      await Promise.all(
-        targets.map(async (target) => {
-          if (await applyStagedCluster(target, sendProfile)) {
-            client.invalidateQueries(
-              { queryKey: ["snapshot"] },
-              { cancelRefetch: false }
-            );
-          }
-        })
-      );
-    },
+    mutationFn: (targets: StagedCluster[]) =>
+      applyStagedClusters(targets, sendProfile, () =>
+        client.invalidateQueries(
+          { queryKey: ["snapshot"] },
+          { cancelRefetch: false }
+        )
+      ),
     onSettled: () =>
       client.invalidateQueries(
         { queryKey: ["snapshot"] },
@@ -552,24 +556,89 @@ function StagedStatus({ clusters }: { clusters: StagedCluster[] }) {
 
 type HeadingRef = RefObject<HTMLParagraphElement | null>;
 
+function hasElsewhere(elsewhere: Elsewhere) {
+  return elsewhere.staged > 0 || elsewhere.unconfirmed > 0;
+}
+
+function elsewhereText({ staged, unconfirmed }: Elsewhere) {
+  const parts = [
+    staged > 0 && `${plural(staged, "change")} staged`,
+    unconfirmed > 0 &&
+      `${unconfirmed} unconfirmed change${unconfirmed === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return `${parts.join(" and ")} for other clusters`;
+}
+
+// Drafts and unconfirmed requests the top bar's cluster filter hides. The
+// card never applies, discards or drops them out of sight, so it says they
+// exist and offers the way back. Without a card of its own to head, the line
+// takes focus as the heading.
+function OtherClusters({
+  elsewhere,
+  heading,
+  onShowAll,
+}: {
+  elsewhere: Elsewhere;
+  heading?: HeadingRef;
+  onShowAll: () => void;
+}) {
+  if (!hasElsewhere(elsewhere)) {
+    return null;
+  }
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-x-2 gap-y-1",
+        !heading && "mt-2 border-t pt-2"
+      )}
+    >
+      <p
+        className={cn("text-muted-foreground text-xs", heading && headingFocus)}
+        ref={heading}
+        tabIndex={heading ? -1 : undefined}
+      >
+        {elsewhereText(elsewhere)}
+      </p>
+      <Button
+        className={focusRing}
+        onClick={onShowAll}
+        size="sm"
+        variant="ghost"
+      >
+        Show all clusters
+      </Button>
+    </div>
+  );
+}
+
 function StagedCard({
   className,
   clusters,
   applying,
+  elsewhere,
   heading,
   onApply,
   onDetails,
   onDiscardAll,
+  onShowAll,
 }: {
   className?: string;
   clusters: StagedCluster[];
   applying: boolean;
+  elsewhere: Elsewhere;
   heading: HeadingRef;
   onApply: () => void;
   onDetails: () => void;
   onDiscardAll: () => void;
+  onShowAll: () => void;
 }) {
   const count = stagedCount(clusters);
+  // Discarding never reaches the hidden clusters, so the menu names the ones
+  // it does: the filtered cluster, and on Settings one a link opened.
+  const shownOnly =
+    elsewhere.staged > 0
+      ? clusters.map((cluster) => cluster.view.cluster.name).join(" and ")
+      : undefined;
   return (
     <section
       aria-label="Staged changes"
@@ -623,11 +692,37 @@ function StagedCard({
               variant="destructive"
             >
               <Trash2 />
-              Discard all changes
+              {shownOnly
+                ? `Discard changes for ${shownOnly}`
+                : "Discard all changes"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      <OtherClusters elsewhere={elsewhere} onShowAll={onShowAll} />
+    </section>
+  );
+}
+
+// Nothing staged or settling for the filtered cluster, but others have some.
+function ElsewhereCard({
+  className,
+  elsewhere,
+  heading,
+  onShowAll,
+}: {
+  className?: string;
+  elsewhere: Elsewhere;
+  heading: HeadingRef;
+  onShowAll: () => void;
+}) {
+  return (
+    <section aria-label="Staged changes" className={cn(cardBase, className)}>
+      <OtherClusters
+        elsewhere={elsewhere}
+        heading={heading}
+        onShowAll={onShowAll}
+      />
     </section>
   );
 }
@@ -671,14 +766,18 @@ function recentSummary(item: RecentRequest) {
 
 function ProgressCard({
   className,
+  elsewhere,
   recent,
   heading,
   onSettings,
+  onShowAll,
 }: {
   className?: string;
+  elsewhere: Elsewhere;
   recent: RecentRequest[];
   heading: HeadingRef;
   onSettings?: (clusterId?: string) => void;
+  onShowAll: () => void;
 }) {
   const { Icon, tone, text } = progressHeading(recent);
   const timedOut = recent.filter((item) => item.timedOut);
@@ -748,6 +847,7 @@ function ProgressCard({
           )}
         </div>
       )}
+      <OtherClusters elsewhere={elsewhere} onShowAll={onShowAll} />
     </section>
   );
 }
@@ -775,7 +875,7 @@ function FrozenCard({
       </p>
       <p className="text-muted-foreground text-xs">
         Reviewing and applying collection changes is only available live. They
-        stay staged for this browser session.
+        stay staged in this tab until you reload or close it.
       </p>
       <div className="pt-2">
         <Button
@@ -791,27 +891,14 @@ function FrozenCard({
   );
 }
 
-type BarKind = "frozen" | "staged" | "progress" | "none";
-
-// Whether frozen views have staged drafts waiting in this scope. A cached
-// live snapshot also drops drafts whose profile changed since; without one
-// the workspace recorded at staging decides.
-function frozenWaiting(
-  staged: StagedState,
-  scope: string,
-  cached: ClusterView[] | undefined,
-  now: number
-) {
-  return cached && now
-    ? stagedClusters(staged, cached, now).length > 0
-    : stagedInScope(staged, scope);
-}
+type BarKind = "frozen" | "staged" | "progress" | "elsewhere" | "none";
 
 function barKind(
   frozen: boolean,
   waiting: boolean,
   clusters: StagedCluster[],
-  recent: RecentRequest[]
+  recent: RecentRequest[],
+  elsewhere: Elsewhere
 ): BarKind {
   if (frozen) {
     return waiting ? "frozen" : "none";
@@ -819,7 +906,10 @@ function barKind(
   if (clusters.length > 0) {
     return "staged";
   }
-  return recent.length > 0 ? "progress" : "none";
+  if (recent.length > 0) {
+    return "progress";
+  }
+  return hasElsewhere(elsewhere) ? "elsewhere" : "none";
 }
 
 // One short summary for the bar's single live region. It exists before any
@@ -829,6 +919,7 @@ function announcement(
   kind: BarKind,
   clusters: StagedCluster[],
   recent: RecentRequest[],
+  elsewhere: Elsewhere,
   emptied: boolean
 ) {
   if (kind === "staged") {
@@ -840,40 +931,88 @@ function announcement(
   if (kind === "progress") {
     return progressHeading(recent).text;
   }
+  if (kind === "elsewhere") {
+    return elsewhereText(elsewhere);
+  }
   return kind === "none" && emptied
     ? "No staged changes left. Nothing waiting to apply."
     : "";
 }
 
+// Moves focus to `target` on the next frame, unless it already landed
+// somewhere real.
+function recoverFocus(target: () => HTMLElement | null, done?: () => void) {
+  const frame = requestAnimationFrame(() => {
+    done?.();
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      target()?.focus();
+    }
+  });
+  return () => cancelAnimationFrame(frame);
+}
+
 // When the card holding focus unmounts (its last change discarded or
 // applied, a progress card dismissed, frozen view resumed), its buttons, menu
-// and dialogs go with it and focus would drop to the page body. Moves focus
-// to `target` then, unless it already landed somewhere real. Also reports
-// whether the bar just emptied after staged changes.
-function useFocusRecovery(kind: BarKind, target: () => HTMLElement | null) {
-  const last = useRef(kind);
+// and dialogs go with it and focus would drop to the page body; so does the
+// line about other clusters, with its button, when it goes. Moves focus to
+// `target` then. Also reports whether the bar just emptied after staged
+// changes.
+function useFocusRecovery(
+  kind: BarKind,
+  others: boolean,
+  target: () => HTMLElement | null
+) {
+  const last = useRef({ kind, others });
   const latestTarget = useRef(target);
   latestTarget.current = target;
   const [emptied, setEmptied] = useState(false);
   useEffect(() => {
     const was = last.current;
-    last.current = kind;
-    if (was === kind) {
+    last.current = { kind, others };
+    if (was.kind === kind) {
+      return was.others && !others
+        ? recoverFocus(() => latestTarget.current())
+        : undefined;
+    }
+    setEmptied(kind === "none" && was.kind === "staged");
+    if (was.kind === "none") {
       return;
     }
-    setEmptied(kind === "none" && was === "staged");
-    if (was === "none") {
-      return;
-    }
-    const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      if (!active || active === document.body) {
-        latestTarget.current()?.focus();
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [kind]);
+    return recoverFocus(() => latestTarget.current());
+  }, [kind, others]);
   return emptied;
+}
+
+// Show all clusters removes the button it was pressed on, and on the canvas
+// the bar remounts with the new scope (the canvas is keyed by it), so the
+// request to focus the card heading outlives the bar that made it.
+let headingWanted = false;
+
+// Clears the cluster filter as choosing All clusters in the top bar does,
+// then focuses the card heading.
+function useShowAll(target: () => HTMLElement | null) {
+  const navigate = useNavigate({ from: "/" });
+  const { cluster } = useSearch({ from: "/" });
+  const latestTarget = useRef(target);
+  latestTarget.current = target;
+  useEffect(() => {
+    if (cluster !== undefined || !headingWanted) {
+      return;
+    }
+    return recoverFocus(
+      () => latestTarget.current(),
+      () => {
+        headingWanted = false;
+      }
+    );
+  }, [cluster]);
+  return () => {
+    headingWanted = true;
+    navigate({
+      search: (old) => ({ ...old, ...scopeReset, cluster: undefined }),
+    });
+  };
 }
 
 function focusable(element: HTMLElement | null): element is HTMLElement {
@@ -957,8 +1096,10 @@ function useBarState() {
   const { frozen, now } = useDisplay();
   const staged = useStagedState();
   const live = !frozen;
-  const cached = useLiveSnapshot(search.workspace, frozen);
+  const cached = useLiveSnapshot(search.workspace, live);
   const views = live ? (cached ?? noViews) : noViews;
+  // Polling, pruning and settling keep every cluster in the workspace scope
+  // current; only what the card shows and acts on follows the cluster filter.
   useAcknowledgmentPolling(views, staged.requests, search.workspace, live);
   useEffect(() => {
     if (live && now) {
@@ -966,29 +1107,37 @@ function useBarState() {
       settleRequests(views, now);
     }
   }, [live, now, views]);
-  const clusters = useMemo(
-    () => (now ? stagedClusters(staged, views, now) : []),
-    [staged, views, now]
+  // The filtered cluster, plus on Settings one a link opened that the filter
+  // hides (Settings edits it there too).
+  const { cluster, settingsCluster, view } = search;
+  const shown = useMemo(
+    () => shownClusterIds(views, { cluster, settingsCluster, view }),
+    [views, cluster, settingsCluster, view]
   );
-  const recent = useMemo(
-    () => (now ? recentRequests(staged, views, now) : []),
-    [staged, views, now]
+  const scope = useMemo(
+    () => (now ? stagedScope(staged, views, shown, now) : noScope),
+    [staged, views, shown, now]
   );
   const waiting =
-    frozen && frozenWaiting(staged, search.workspace, cached, now);
+    frozen && stagedWaiting(staged, search.workspace, cached, now);
   return {
-    clusters,
-    kind: barKind(frozen, waiting, clusters, recent),
-    recent,
-    views,
+    ...scope,
+    kind: barKind(
+      frozen,
+      waiting,
+      scope.clusters,
+      scope.recent,
+      scope.elsewhere
+    ),
   };
 }
 
 // The floating "Apply N changes" card. Shows staged changes for the clusters
-// in the current workspace scope, then acknowledgment progress once applied.
-// `focusFallback` names a visible element to focus when the card goes away
-// with focus inside it; otherwise a visually hidden note in the bar's place
-// takes it.
+// in the current workspace scope (only the filtered cluster when the top bar
+// picks one, plus on Settings a cluster a link opened), then acknowledgment
+// progress once applied. `focusFallback` names a visible element to focus
+// when the card goes away with focus inside it; otherwise a visually hidden
+// note in the bar's place takes it.
 export function StagedChangesBar({
   className,
   focusFallback,
@@ -998,13 +1147,14 @@ export function StagedChangesBar({
 }) {
   const search = useSearch({ from: "/" });
   const navigate = useNavigate({ from: "/" });
-  const { clusters, kind, recent, views } = useBarState();
+  const { clusters, discard, elsewhere, kind, recent } = useBarState();
   const heading = useRef<HTMLParagraphElement>(null);
   const anchor = useRef<HTMLParagraphElement>(null);
   const focusTarget = () =>
     heading.current ?? focusFallback?.() ?? anchor.current;
   const controls = useStagedControls(clusters, focusTarget);
-  const emptied = useFocusRecovery(kind, focusTarget);
+  const emptied = useFocusRecovery(kind, hasElsewhere(elsewhere), focusTarget);
+  const showAll = useShowAll(focusTarget);
   const onSettings =
     search.view === "settings"
       ? undefined
@@ -1013,7 +1163,8 @@ export function StagedChangesBar({
             search: (old) => ({
               ...old,
               view: "settings",
-              cluster: cluster ?? old.cluster,
+              // Names the section to open; the cluster filter stays.
+              settingsCluster: cluster,
               resource: undefined,
               resourceCluster: undefined,
               diagnosticNode: undefined,
@@ -1022,7 +1173,7 @@ export function StagedChangesBar({
   return (
     <>
       <p aria-atomic="true" className="sr-only" role="status">
-        {announcement(kind, clusters, recent, emptied)}
+        {announcement(kind, clusters, recent, elsewhere, emptied)}
       </p>
       {kind === "none" && (
         <p
@@ -1050,20 +1201,30 @@ export function StagedChangesBar({
           applying={controls.applying}
           className={className}
           clusters={clusters}
+          elsewhere={elsewhere}
           heading={heading}
           onApply={controls.start}
           onDetails={controls.openDetails}
-          onDiscardAll={() =>
-            discardStaged(views.map((view) => view.cluster.id))
-          }
+          onDiscardAll={() => discardStaged(discard)}
+          onShowAll={showAll}
         />
       )}
       {kind === "progress" && (
         <ProgressCard
           className={className}
+          elsewhere={elsewhere}
           heading={heading}
           onSettings={onSettings}
+          onShowAll={showAll}
           recent={recent}
+        />
+      )}
+      {kind === "elsewhere" && (
+        <ElsewhereCard
+          className={className}
+          elsewhere={elsewhere}
+          heading={heading}
+          onShowAll={showAll}
         />
       )}
       <StagedDetails

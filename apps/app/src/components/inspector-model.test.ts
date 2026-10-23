@@ -6,6 +6,7 @@ import {
   type Crumb,
   conditionAbnormal,
   conditionGroups,
+  coverageText,
   exposure,
   historyRefetchInterval,
   inspectorTabs,
@@ -318,6 +319,37 @@ describe("panel links", () => {
   });
 });
 
+describe("coverage note", () => {
+  it("does not call nothing measured partial", () => {
+    expect(
+      coverageText(
+        { active: 5, finished: 0, measured: 0, gap: "namespace-excluded" },
+        "Standard"
+      )
+    ).toEqual({
+      partial: true,
+      text: "No active pod has a fresh CPU and memory sample (0 of 5 measured). Pod metrics are collected only in the selected namespaces, and this namespace is not one of them. Collection profile: Standard.",
+    });
+    expect(coverageText({ active: 1, finished: 2, measured: 0 })?.text).toBe(
+      "No active pod has a fresh CPU and memory sample (0 of 1 measured). 2 finished pods are excluded."
+    );
+  });
+  it("counts partial coverage and finished history", () => {
+    expect(
+      coverageText({ active: 3, finished: 1, measured: 2 }, "Diagnostic")?.text
+    ).toBe(
+      "Partial coverage: 2 of 3 active pods have a fresh CPU and memory sample; 1 has none, so totals are not summed. 1 finished pod is excluded. Collection profile: Diagnostic."
+    );
+    expect(coverageText({ active: 2, finished: 0, measured: 2 })).toBe(
+      undefined
+    );
+    expect(coverageText({ active: 0, finished: 3, measured: 0 })).toEqual({
+      partial: false,
+      text: "3 finished pods are excluded; finished pods are not expected to report usage.",
+    });
+  });
+});
+
 describe("usage readings", () => {
   const summary = (fields: Partial<ResourceSummary>): ResourceSummary => ({
     active: 0,
@@ -381,6 +413,36 @@ describe("usage readings", () => {
       detail: "partial · 2 of 3 pods",
       missing: false,
     });
+  });
+  it("names the known reason in place of a missing value", () => {
+    expect(
+      usageReading("cpu", pod, summary({ active: 1 }), {
+        active: 1,
+        finished: 0,
+        measured: 0,
+        gap: "not-collected-basic",
+      })
+    ).toEqual({ value: "Not collected (Basic)", missing: true });
+    expect(
+      usageReading("memory", deployment, summary({ active: 4 }), {
+        active: 4,
+        finished: 1,
+        measured: 0,
+        gap: "namespace-excluded",
+      })
+    ).toEqual({
+      value: "Namespace not selected for pod metrics",
+      missing: true,
+    });
+    // A measured value is never replaced by the reason.
+    expect(
+      usageReading("cpu", pod, summary({ cpu: 0.25 }), {
+        active: 1,
+        finished: 0,
+        measured: 1,
+        gap: "paused",
+      }).value
+    ).toBe("250m");
   });
   it("reports readiness as known counts or unknown", () => {
     expect(readyText(summary({}))).toBe("Unknown");

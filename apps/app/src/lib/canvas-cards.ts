@@ -1,9 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { livePodProblem, podProblem } from "./attention";
+import { livePodProblem, nodeProblem, podProblem } from "./attention";
+import { gapLabel, gapReason, type UsageGap } from "./collection-state";
 import {
   compactCpu,
   compactMemory,
   isFinished,
+  nodeConditionProblems,
+  oomObserved,
+  podPhase,
   type ResourceSummary,
   resourceStatus,
   workloadKinds,
@@ -32,6 +36,8 @@ export interface CardContext {
   // Source time of the inventory the card was drawn from.
   sourceTime?: string;
   stale: boolean;
+  // The card's cluster, for problems judged on its metrics (node memory).
+  view?: ClusterView;
 }
 
 function plural(count: number, noun: string) {
@@ -60,7 +66,9 @@ function neutral(entity: Entity) {
     ["Unknown", "Observed"].includes(status) ||
     ["Service", "Ingress", "Namespace"].includes(entity.kind) ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
-    starting(entity)
+    starting(entity) ||
+    // Finished pods are history: neither healthy nor a live problem.
+    (entity.kind === "Pod" && isFinished(entity))
   );
 }
 
@@ -109,19 +117,21 @@ const pressureNames: Record<string, string> = {
   NetworkUnavailable: "Network unavailable",
 };
 
-function nodeProblemText(node: Entity) {
+// A node's status, or why it is a problem: not ready, a reported condition,
+// else the attention model's reason, such as memory near full.
+export function nodeStatusText(
+  node: Entity,
+  view: ClusterView | undefined,
+  now: number
+) {
   if (node.status !== "True") {
     return resourceStatus(node);
   }
-  const pressure = (node.conditions ?? []).find(
-    (condition) =>
-      condition.status === "True" &&
-      (condition.type.endsWith("Pressure") ||
-        condition.type === "NetworkUnavailable")
-  );
-  return pressure
-    ? (pressureNames[pressure.type] ?? pressure.type)
-    : resourceStatus(node);
+  const [condition] = nodeConditionProblems(node);
+  if (condition) {
+    return pressureNames[condition.type] ?? condition.type;
+  }
+  return (view && nodeProblem(view, node, now)?.title) || resourceStatus(node);
 }
 
 // The most common status among failing pods, such as CrashLoopBackOff.
@@ -150,21 +160,42 @@ function shortfall(entity: Entity) {
   );
 }
 
-function problemText(entity: Entity, summary: ResourceSummary, now: number) {
+// Retained failed member pods, worded as on namespace cards: history named
+// so the counts add up, never a live failure.
+function historyText(pods: Entity[]) {
+  const count = pods.filter(
+    (pod) => isFinished(pod) && podPhase(pod) === "Failed"
+  ).length;
+  return count ? ` · ${count} finished with failures` : "";
+}
+
+// Live failing pods out of the active ones: "CrashLoopBackOff · 1 of 3 pods".
+function failingText(failing: Entity[], active: number) {
+  return `${leadingStatus(failing)} · ${failing.length} of ${plural(active, "pod")}`;
+}
+
+function problemText(
+  entity: Entity,
+  summary: ResourceSummary,
+  context: CardContext
+) {
+  const { now } = context;
   if (entity.kind === "Node") {
-    return nodeProblemText(entity);
+    return nodeStatusText(entity, context.view, now);
   }
   if (entity.kind === "Pod") {
     return resourceStatus(entity);
   }
-  const failing = summary.pods.filter((pod) => podProblem(pod, now));
+  // Only live failures lead; a retained failure never becomes the headline.
+  const failing = summary.pods.filter((pod) => livePodProblem(pod, now));
+  const history = historyText(summary.pods);
   if (failing.length) {
-    return `${leadingStatus(failing)} · ${failing.length} of ${plural(summary.pods.length, "pod")}`;
+    return `${failingText(failing, summary.active)}${history}`;
   }
   if (shortfall(entity)) {
-    return `Not ready · ${entity.ready}/${entity.desired} ready`;
+    return `Not ready · ${entity.ready}/${entity.desired} ready${history}`;
   }
-  return resourceStatus(entity);
+  return `${resourceStatus(entity)}${history}`;
 }
 
 // Without EndpointSlice access a Service's pods are matched by its selector:
@@ -186,7 +217,13 @@ function serviceText(summary: ResourceSummary, selectorOnly = false) {
   return `${summary.ready}/${plural(summary.active, noun)} ready`;
 }
 
-function workloadText(entity: Entity, pods: Entity[], failing: Entity[]) {
+// `failing` (see failingMembers) keeps the card from reading healthy; only
+// its live pods are named as failing, retained failures as history.
+function workloadText(
+  entity: Entity,
+  summary: ResourceSummary,
+  failing: Entity[]
+) {
   if (entity.ready == null || entity.desired == null) {
     return "Readiness not reported";
   }
@@ -194,10 +231,12 @@ function workloadText(entity: Entity, pods: Entity[], failing: Entity[]) {
     return "Scaled to zero";
   }
   const readiness = `${entity.ready}/${entity.desired} ready`;
-  if (failing.length) {
-    return `${readiness} · ${leadingStatus(failing)} · ${failing.length} of ${plural(pods.length, "pod")}`;
+  const live = failing.filter((pod) => !isFinished(pod));
+  const history = historyText(summary.pods);
+  if (live.length) {
+    return `${readiness} · ${failingText(live, summary.active)}${history}`;
   }
-  return `Healthy · ${readiness}`;
+  return failing.length ? `${readiness}${history}` : `Healthy · ${readiness}`;
 }
 
 function steadyText(
@@ -213,7 +252,7 @@ function steadyText(
     return serviceText(summary, context.selectorOnly);
   }
   if (workloadKinds.has(entity.kind)) {
-    return workloadText(entity, summary.pods, failing);
+    return workloadText(entity, summary, failing);
   }
   const status = resourceStatus(entity);
   return status === "Unknown" ? "Status unknown" : status;
@@ -229,7 +268,7 @@ export function cardStatus(
   const failing = failingMembers(entity, summary.pods, context.now);
   const tone = toneOf(entity, context.problem, context.stale, failing.length);
   if (context.problem) {
-    const text = problemText(entity, summary, context.now);
+    const text = problemText(entity, summary, context);
     return { tone, text: context.stale ? `${text} · stale` : text };
   }
   if (context.stale) {
@@ -262,11 +301,13 @@ export interface UsageValue {
 }
 
 // Usage totals need a fresh sample from every running pod; anything less is
-// labelled partial, and nothing measured stays a dash, never a zero.
+// labelled partial, and nothing measured stays missing, never a zero: a dash,
+// or the reason when the collection settings or the observer explain it.
 export function usageValue(
   entity: Entity,
   summary: ResourceSummary,
-  field: "cpu" | "memory"
+  field: "cpu" | "memory",
+  gap?: UsageGap
 ): UsageValue {
   const value = summary[field];
   const name = field === "cpu" ? "CPU" : "memory";
@@ -284,7 +325,46 @@ export function usageValue(
       title: `Fresh ${name} for ${Math.min(summary.measured, active)} of ${active} running pods; a total needs every pod`,
     };
   }
+  if (gap) {
+    return {
+      value: gapLabel(gap, entity.kind !== "Pod" && entity.kind !== "Node"),
+      title: `No fresh ${name} measurement. ${gapReason(gap)}`,
+    };
+  }
   return { value: "—", title: `No fresh ${name} measurement` };
+}
+
+interface UsageLineField extends UsageValue {
+  label: string;
+  // The reason in words, for assistive technology; `title` is hover only.
+  reason?: string;
+}
+
+// A card's usage line. Both values missing for the same known reason say it
+// once, in the short form, so the reason fits the card instead of being cut
+// off twice.
+export function usageFields(
+  entity: Entity,
+  summary: ResourceSummary,
+  gap?: UsageGap
+): UsageLineField[] {
+  const cpu = usageValue(entity, summary, "cpu", gap);
+  const memory = usageValue(entity, summary, "memory", gap);
+  if (gap && summary.cpu == null && summary.memory == null && !cpu.partial) {
+    const reason = gapReason(gap);
+    return [
+      {
+        label: "CPU · Mem",
+        value: gapLabel(gap),
+        title: `No fresh CPU or memory measurement. ${reason}`,
+        reason,
+      },
+    ];
+  }
+  return [
+    { label: "CPU", ...cpu },
+    { label: "Mem", ...memory },
+  ];
 }
 
 // The attached pods sub-card: "3 pods", "2 endpoint pods" (or "2
@@ -305,7 +385,18 @@ export function podsLabel(
   return plural(count, "pod");
 }
 
+// "Running · 1/1 ready · 0 restarts", or "Finished · Failed · OOM observed
+// · 3 restarts" for history, where readiness no longer applies.
 export function podDetail(pod: Entity) {
+  if (isFinished(pod)) {
+    return [
+      `Finished · ${podPhase(pod)}`,
+      oomObserved(pod) && "OOM observed",
+      plural(pod.restarts ?? 0, "restart"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
   const ready =
     pod.ready == null
       ? "readiness unknown"
@@ -358,7 +449,7 @@ function countPods(pods: Entity[], now: number) {
     pods: pods.length,
     activePods: active.length,
     failing: pods.filter((pod) => livePodProblem(pod, now)).length,
-    finishedFailed: pods.filter((pod) => pod.status === "Failed").length,
+    finishedFailed: pods.filter((pod) => podPhase(pod) === "Failed").length,
     ready: known
       ? active.filter((pod) => (pod.ready ?? 0) > 0).length
       : undefined,

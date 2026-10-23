@@ -1,3 +1,5 @@
+import { observationMs } from "../../lib/time";
+
 const topologyLayouts = ["graph", "list"] as const;
 type TopologyLayout = (typeof topologyLayouts)[number];
 
@@ -20,11 +22,21 @@ export interface SearchState {
   range: string;
   resource?: string;
   resourceCluster?: string;
+  // The cluster section a Settings link opens. Separate from `cluster` so a
+  // link never narrows the dashboard's cluster filter.
+  settingsCluster?: string;
   system: boolean;
   tab: string;
   view: string;
   workspace: string;
 }
+
+// Switching workspace or cluster starts from that scope's whole map, so a
+// namespace or search from the previous scope cannot hide its resources.
+export const scopeReset = {
+  namespace: "all",
+  q: "",
+} satisfies Partial<SearchState>;
 
 export const pageSizes = [25, 50, 100] as const;
 export const defaultPageSize = pageSizes[0];
@@ -126,15 +138,34 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+// Digits finer than milliseconds, which a Date cannot hold.
+const subMillisecond = /\.\d{4,9}(?:Z|[+-])/;
+
+// The saved-observation time. A readable time becomes canonical UTC, except
+// that digits finer than milliseconds stay as written so the hub keeps them.
+// An unreadable one (no zone, 30 February) is kept as written, so the page
+// explains that the link's time could not be read instead of silently
+// showing live data.
+function observationTime(value: unknown) {
+  if (typeof value === "number") {
+    return observationTime(String(value));
+  }
+  if (typeof value !== "string" || !value) {
+    return;
+  }
+  const time = observationMs(value);
+  if (time == null || subMillisecond.test(value)) {
+    return value;
+  }
+  return new Date(time).toISOString();
+}
+
 export function validateMonitorSearch(
   raw: Record<string, unknown>
 ): SearchState {
   const view = viewFor(raw);
   const tab = resourceTab(raw);
-  const at =
-    typeof raw.at === "string" && Number.isFinite(Date.parse(raw.at))
-      ? raw.at
-      : undefined;
+  const at = observationTime(raw.at);
   return {
     workspace: typeof raw.workspace === "string" ? raw.workspace : "global",
     view,
@@ -154,6 +185,7 @@ export function validateMonitorSearch(
     cluster: optionalString(raw.cluster),
     resource: optionalString(raw.resource),
     resourceCluster: optionalString(raw.resourceCluster),
+    settingsCluster: optionalString(raw.settingsCluster),
     diagnosticNode: optionalString(raw.diagnosticNode),
   };
 }

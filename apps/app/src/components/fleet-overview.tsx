@@ -8,7 +8,7 @@ import {
   attentionSummary,
   clusterStatus,
 } from "../lib/attention";
-import { percent } from "../lib/infrastructure";
+import { collectionState } from "../lib/collection-state";
 import { nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
 import { MetricBar } from "./resource-status";
@@ -18,6 +18,8 @@ import { Widget } from "./widget-card";
 import {
   clusterCurrent,
   fleetTiles,
+  fleetUsage,
+  fleetUsageLabel,
   nodeCounts,
   podCounts,
   type StatTile,
@@ -199,8 +201,13 @@ function ClusterRow({
   const { referenceTime, frozen } = useDisplay();
   const summary = attentionSummary(attention);
   const totals = nodeTotals([view], referenceTime);
+  // Against allocatable, as on the server cards; the label names capacity
+  // wherever it stands in.
+  const cpu = fleetUsage(totals, "cpu");
+  const memory = fleetUsage(totals, "memory");
   const status = clusterStatus(view, summary, referenceTime, frozen);
   const current = clusterCurrent(view, referenceTime, frozen);
+  const collection = collectionState(view, referenceTime);
   return (
     <li className="grid gap-4 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] lg:items-center">
       <div className="flex min-w-0 gap-3">
@@ -232,7 +239,8 @@ function ClusterRow({
           </p>
           <p className="mt-0.5 truncate text-muted-foreground text-xs">
             {workspaceName} · {view.cluster.environment}
-            {!frozen && ` · ${view.profile.name} collection`}
+            {!frozen &&
+              ` · ${collection.label} collection${collection.paused ? " · paused" : ""}`}
           </p>
           <Freshness current={current} view={view} />
         </div>
@@ -252,13 +260,10 @@ function ClusterRow({
         </div>
       </dl>
       <div className="grid grid-cols-2 gap-3">
+        <MetricBar label={fleetUsageLabel("CPU", cpu)} value={cpu.percent} />
         <MetricBar
-          label="CPU"
-          value={percent(totals.usedCpu, totals.coveredCpuCapacity)}
-        />
-        <MetricBar
-          label="Memory"
-          value={percent(totals.usedMemory, totals.coveredMemoryCapacity)}
+          label={fleetUsageLabel("Memory", memory)}
+          value={memory.percent}
         />
       </div>
       <div className="flex gap-2 lg:flex-col">
@@ -305,7 +310,7 @@ export function ClustersWidget({
   return (
     <Widget
       className={className}
-      description="Observer and inventory freshness, readiness and measured usage per cluster."
+      description="Observer and inventory freshness, readiness and measured usage per cluster. Usage is against allocatable unless marked capacity."
       title={
         <>
           Clusters

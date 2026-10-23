@@ -30,7 +30,7 @@ export function focusedOutside<T>(
 }
 
 // Where focus goes when the panel closes. When focus is in the panel, or was
-// dropped to the body (React Flow blurs a card on Escape), it returns to the
+// dropped to the body (as when a focused card unmounts), it returns to the
 // element that opened or last switched the panel; `true` falls back to Base
 // UI's default. Focus the operator moved elsewhere, such as the canvas
 // search, stays there.

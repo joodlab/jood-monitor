@@ -47,8 +47,9 @@ import {
   type StatusLine,
   type Tone,
   toneOf,
-  usageValue,
+  usageFields,
 } from "../lib/canvas-cards";
+import { type UsageGap, usageGap } from "../lib/collection-state";
 import {
   findEntity,
   type ResourceSummary,
@@ -249,15 +250,18 @@ function context(data: CardData): CardContext {
     selectorOnly: selectorOnly(data.item.view),
     stale: data.stale,
     sourceTime: data.item.view.inventory.sourceTime,
+    view: data.item.view,
   };
 }
 
 function UsageLine({
   entity,
   summary,
+  gap,
 }: {
   entity: Entity;
   summary: ResourceSummary;
+  gap?: UsageGap;
 }) {
   if (entity.kind === "Ingress") {
     return (
@@ -266,10 +270,7 @@ function UsageLine({
       </p>
     );
   }
-  const fields = [
-    { label: "CPU", ...usageValue(entity, summary, "cpu") },
-    { label: "Mem", ...usageValue(entity, summary, "memory") },
-  ];
+  const fields = usageFields(entity, summary, gap);
   return (
     <p className="flex min-w-0 items-center gap-3 text-muted-foreground text-xs tabular-nums">
       {fields.map((field) => (
@@ -283,6 +284,7 @@ function UsageLine({
           >
             {field.value}
           </span>
+          {field.reason && <span className="sr-only">. {field.reason}</span>}
         </span>
       ))}
       {!!summary.restarts && (
@@ -432,7 +434,11 @@ function FullBody({
           </p>
         </div>
       </div>
-      <UsageLine entity={entity} summary={summary} />
+      <UsageLine
+        entity={entity}
+        gap={usageGap(item.view, entity, summary.pods, data.now)}
+        summary={summary}
+      />
       <StatusRow className="text-[13px]" status={status}>
         {autoscalers.length > 0 && (
           <Badge

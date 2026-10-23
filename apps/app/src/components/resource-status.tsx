@@ -17,7 +17,14 @@ import {
   Server,
   TriangleAlert,
 } from "lucide-react";
-import { hasProblem, percentage, resourceStatus } from "../lib/infrastructure";
+import { gapLabel, gapReason, type UsageGap } from "../lib/collection-state";
+import {
+  hasProblem,
+  isFinished,
+  nodeConditionProblems,
+  percentage,
+  resourceStatus,
+} from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import { staleViews, type UsageDisplay } from "../lib/resource-table";
 import { TimeText } from "./time";
@@ -34,9 +41,13 @@ function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
     problem === false &&
     entity.kind === "Pod" &&
     entity.ready === 0 &&
-    !["Succeeded", "Completed", "Failed"].includes(entity.status);
+    !isFinished(entity);
+  // A finished pod is history everywhere, failed or not; a caller can still
+  // mark one a problem explicitly.
+  const history = entity.kind === "Pod" && isFinished(entity) && !problem;
   if (
     starting ||
+    history ||
     (entity.kind === "Pod" && entity.ready == null && status === "Running") ||
     ["Unknown", "Observed"].includes(status) ||
     entity.kind === "Service" ||
@@ -178,49 +189,52 @@ export function KindTile({
   );
 }
 
-// A Ready node under pressure says which pressure, so a warning badge never
-// reads "Ready" without the reason.
+// A Ready node under pressure or without network says which, so a warning
+// badge never reads "Ready" without the reason.
 function statusLabel(entity: Entity) {
   const status = resourceStatus(entity);
   if (entity.kind !== "Node") {
     return status;
   }
-  const pressures = (entity.conditions ?? [])
-    .filter(
-      (condition) =>
-        condition.type.endsWith("Pressure") && condition.status === "True"
-    )
-    .map((condition) =>
-      condition.type.replace("Pressure", " pressure").toLowerCase()
-    );
-  return pressures.length ? `${status} · ${pressures.join(", ")}` : status;
+  const reasons = nodeConditionProblems(entity).map((condition) =>
+    condition.type === "NetworkUnavailable"
+      ? "network unavailable"
+      : condition.type.replace("Pressure", " pressure").toLowerCase()
+  );
+  return reasons.length ? `${status} · ${reasons.join(", ")}` : status;
 }
 
-// A utilisation bar. A missing value draws an empty dashed track and says so
-// instead of a zero-width bar that would read as 0%.
+// A utilisation bar. A missing value draws an empty dashed track and says so,
+// with the reason when the hub knows it, instead of a zero-width bar that
+// would read as 0%.
 export function MetricBar({
   label,
   value,
   detail,
+  gap,
   className,
 }: {
   label?: string;
   value?: number;
   detail?: string;
+  // Why the sample is missing; shown only while `value` is.
+  gap?: UsageGap;
   className?: string;
 }) {
   const missing = value == null;
+  const reason = missing ? gap : undefined;
   return (
     <div className={cn("min-w-0 space-y-1.5", className)}>
       <div className="flex items-center justify-between gap-3 text-xs">
         {label && <span className="text-muted-foreground">{label}</span>}
         <span
           className={cn(
-            "tabular-nums",
+            "text-right tabular-nums",
             missing ? "text-muted-foreground" : "font-medium"
           )}
+          title={reason && gapReason(reason)}
         >
-          {missing ? "No sample" : percentage(value)}
+          {barText(value, reason)}
         </span>
       </div>
       <div
@@ -246,6 +260,13 @@ export function MetricBar({
       )}
     </div>
   );
+}
+
+function barText(value?: number, gap?: UsageGap) {
+  if (value != null) {
+    return percentage(value);
+  }
+  return gap ? gapLabel(gap) : "No sample";
 }
 
 function barTone(value: number) {

@@ -7,6 +7,7 @@ import {
   hiddenRolloutSteps,
   hiddenStepsText,
   liveAttention,
+  quietAttention,
   quietChangesText,
   subjectName,
 } from "./canvas-activity";
@@ -121,6 +122,37 @@ describe("activity panel", () => {
       event("3", "node_join", null, { uid: "n", kind: "Node", name: "n" })
     );
     expect(changeDetail(joined)).toBeUndefined();
+  });
+
+  it("is green only when every cluster in scope was evaluated", () => {
+    expect(quietAttention({ observed: 2, missing: 0 })).toEqual({
+      covered: true,
+      text: "No live problems in the observed clusters",
+    });
+    expect(quietAttention({ observed: 1, missing: 0 }).text).toBe(
+      "No live problems in the observed cluster"
+    );
+  });
+
+  it("names the clusters not reporting beside the evaluated ones", () => {
+    // One cluster without inventory must not hide that the others were
+    // evaluated, nor make them look all clear.
+    expect(quietAttention({ observed: 2, missing: 1 })).toEqual({
+      covered: false,
+      text: "No live problems in the 2 observed clusters; 1 not reporting",
+    });
+    expect(quietAttention({ observed: 1, missing: 3 }).text).toBe(
+      "No live problems in the 1 observed cluster; 3 not reporting"
+    );
+  });
+
+  it("evaluates nothing until some inventory arrives", () => {
+    for (const missing of [0, 2]) {
+      expect(quietAttention({ observed: 0, missing })).toEqual({
+        covered: false,
+        text: "Nothing to evaluate until inventory arrives",
+      });
+    }
   });
 
   it("keeps finished pods out of the live problems", () => {

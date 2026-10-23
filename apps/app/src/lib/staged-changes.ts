@@ -8,6 +8,7 @@ import {
   continuesDiagnostic,
   type DraftField,
   diagnosticMinutes,
+  diagnosticNodes,
   draftFieldChanges,
   draftFromProfile,
   draftNamespaces,
@@ -24,21 +25,26 @@ import {
   validationText,
 } from "../components/collection-model";
 import { profileSchema } from "../schemas/clusters";
+import type { SearchState } from "../schemas/monitor";
 import { minutesLeft } from "./install-enrollment";
 import { requestError } from "./install-errors";
 
 // Railway-style staged changes for collection settings. Edits wait here, per
 // cluster, until the operator applies or discards them. The store lives in
 // this tab's memory only: it survives switching project tabs, is never
-// written to storage, and is gone on reload. The hub profile stays the
-// source of truth; a staged draft only counts while the profile it was
-// staged against is still the one in effect.
+// written to storage, and is gone on reload, so the browser asks before the
+// tab unloads with drafts. The hub profile stays the source of truth; a
+// staged draft only counts while the profile it was staged against is still
+// the one in effect.
 
 type Profile = ClusterView["profile"];
 
 export interface StagedEntry {
   // Revision and effective profile the draft was staged against.
   base: string;
+  // The draft requests a change. A choice still being built (such as an
+  // empty namespace selection) is kept for the form but has nothing to lose.
+  changed: boolean;
   draft: ProfileDraft;
   // The cluster's workspace, so views without a live snapshot (frozen) can
   // tell which drafts are in their scope.
@@ -112,6 +118,63 @@ export function useStagedState() {
   );
 }
 
+// Unloading the tab now would lose a staged change or cut off an apply on
+// its way to the hub. Drafts whose profile changed are pruned on every tab,
+// so they stop counting once a live view sees them.
+function unloadLoses(current: StagedState) {
+  return (
+    Object.values(current.entries).some((entry) => entry.changed) ||
+    Object.keys(current.applying).length > 0
+  );
+}
+
+function confirmUnload(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  // Older Chromium shows the prompt only when returnValue is set too.
+  event.returnValue = true;
+}
+
+type UnloadListener = (event: BeforeUnloadEvent) => void;
+
+interface UnloadTarget {
+  addEventListener(type: "beforeunload", listener: UnloadListener): void;
+  removeEventListener(type: "beforeunload", listener: UnloadListener): void;
+}
+
+// Keeps a beforeunload prompt on `target` only while something would be
+// lost, so a tab with nothing staged unloads without asking (and stays
+// eligible for the back/forward cache). Returns a function that stops it.
+export function guardUnload(target: UnloadTarget) {
+  let armed = false;
+  const sync = () => {
+    const needed = unloadLoses(state);
+    if (needed === armed) {
+      return;
+    }
+    armed = needed;
+    if (armed) {
+      target.addEventListener("beforeunload", confirmUnload);
+    } else {
+      target.removeEventListener("beforeunload", confirmUnload);
+    }
+  };
+  const unsubscribe = subscribeStaged(sync);
+  sync();
+  return () => {
+    unsubscribe();
+    if (armed) {
+      armed = false;
+      target.removeEventListener("beforeunload", confirmUnload);
+    }
+  };
+}
+
+// Guarded from module load rather than by the Apply card, which only the
+// canvas and Settings mount. The server has no window and nothing staged.
+if (typeof window !== "undefined") {
+  guardUnload(window);
+}
+
 // The profile state a draft is staged against. A new revision or an ended
 // diagnostic changes it, so a draft touched before either cannot silently
 // re-arm a diagnostic or undo another operator's change.
@@ -150,6 +213,8 @@ export function stageDraft(
       ...state.entries,
       [id]: {
         base: profileBase(view.profile, now),
+        changed:
+          draftFieldChanges(draft, view.profile, undefined, now).length > 0,
         draft,
         workspaceId: view.cluster.workspaceId,
       },
@@ -206,6 +271,11 @@ const endedNotice =
 
 type ProfileInput = ReturnType<typeof profileSchema.parse>;
 
+type ProfileSend = (
+  clusterId: string,
+  profile: ProfileInput
+) => Promise<{ revision: number }>;
+
 // Sends one cluster's staged profile through `send`. Validity is checked
 // again on the real clock, with the same `now` the request is built from:
 // the display clock ticks every 15 s, so a diagnostic can end between the
@@ -213,10 +283,7 @@ type ProfileInput = ReturnType<typeof profileSchema.parse>;
 // Resolves true when the hub accepted the request.
 export async function applyStagedCluster(
   target: { draft: ProfileDraft; view: ClusterView },
-  send: (
-    clusterId: string,
-    profile: ProfileInput
-  ) => Promise<{ revision: number }>,
+  send: ProfileSend,
   clock: () => number = Date.now
 ) {
   const { view, draft } = target;
@@ -247,6 +314,26 @@ export async function applyStagedCluster(
     applyFailed(id, requestError(error).message);
     return false;
   }
+}
+
+// Sends the targets' staged profiles side by side. Only the targets are
+// marked applying or sent; drafts for other clusters stay staged. A failure
+// keeps that cluster staged with the reason while the others still apply,
+// and `accepted` runs as each request is accepted.
+export async function applyStagedClusters(
+  targets: { draft: ProfileDraft; view: ClusterView }[],
+  send: ProfileSend,
+  accepted: () => void = () => undefined,
+  clock: () => number = Date.now
+) {
+  markApplying(targets.map((target) => target.view.cluster.id));
+  await Promise.all(
+    targets.map(async (target) => {
+      if (await applyStagedCluster(target, send, clock)) {
+        accepted();
+      }
+    })
+  );
 }
 
 // Records when each request is first seen fully acknowledged, so compact
@@ -297,14 +384,17 @@ export function awaitingSnapshot(current: StagedState, view: ClusterView) {
   );
 }
 
+function baseRevision(entry: StagedEntry) {
+  return Number(entry.base.split(":")[0]);
+}
+
 function clearedReason(
   current: StagedState,
   view: ClusterView,
   entry: StagedEntry
 ) {
-  const [revision] = entry.base.split(":");
   const latest = view.profile.revision;
-  if (Number(revision) === latest) {
+  if (baseRevision(entry) === latest) {
     return "The diagnostic ended after you staged these changes, so they were discarded rather than starting it again. Review the current settings and stage them again.";
   }
   if (current.requests[view.cluster.id]?.revision === latest) {
@@ -315,13 +405,15 @@ function clearedReason(
 
 // Drops drafts whose profile changed underneath them and says why. Requests
 // in flight, or accepted but not in the snapshot yet, are left alone: their
-// own revision lands first.
+// own revision lands first. So is a snapshot older than the draft (a cached
+// scope still refreshing), which cannot judge it.
 export function pruneStaged(views: ClusterView[], now: number) {
   const stale = views.filter((view) => {
     const entry = state.entries[view.cluster.id];
     return (
       entry &&
       !awaitingSnapshot(state, view) &&
+      baseRevision(entry) <= view.profile.revision &&
       entry.base !== profileBase(view.profile, now)
     );
   });
@@ -361,12 +453,29 @@ export function stagedDraftFor(
     : undefined;
 }
 
-// Whether any draft is staged for a cluster in a workspace scope ("global"
+// Whether any change is staged for a cluster in a workspace scope ("global"
 // is every workspace). For views without a live snapshot to check drafts.
 export function stagedInScope(current: StagedState, scope: string) {
   return Object.values(current.entries).some(
-    (entry) => scope === "global" || entry.workspaceId === scope
+    (entry) =>
+      entry.changed && (scope === "global" || entry.workspaceId === scope)
   );
+}
+
+// Whether a frozen view, which shows a past profile, has drafts waiting in a
+// workspace scope. The live snapshot cached before freezing still drops
+// drafts whose profile changed since, as the Apply card would; only with
+// none cached does the workspace recorded at staging decide. The Settings
+// tab badge and the frozen Apply card share this rule so they never disagree.
+export function stagedWaiting(
+  current: StagedState,
+  scope: string,
+  cached: ClusterView[] | undefined,
+  now: number
+) {
+  return cached && now
+    ? stagedClusters(current, cached, now).length > 0
+    : stagedInScope(current, scope);
 }
 
 // What the settings form shows: the staged draft, else the profile. A node
@@ -441,7 +550,8 @@ function nextProfileValue(
   if (draft.name !== "diagnostic") {
     return profileChoices[draft.name].label;
   }
-  const node = draft.node ? nodeName(draft.node) : "a node";
+  const node =
+    diagnosticNodes(draft, profile, now).map(nodeName).join(", ") || "a node";
   const returnTo = profileChoices[returnProfile(profile)].label;
   const restart = continuesDiagnostic(draft, profile, now) ? "restarted " : "";
   return `Diagnostic on ${node}, ${restart}for ${diagnosticMinutes} min after applying, then ${returnTo}`;
@@ -533,12 +643,13 @@ function diagnosticNote(
   if (draft.name !== "diagnostic") {
     return;
   }
-  const node = draft.node ? nodeNamer(view)(draft.node) : "the node";
+  const nodes = diagnosticNodes(draft, view.profile, now).map(nodeNamer(view));
+  const node = nodes.join(", ") || "the node";
   const returnTo = profileChoices[returnProfile(view.profile)].label;
   if (continuesDiagnostic(draft, view.profile, now) && !draft.extend) {
     return `The diagnostic on ${node} keeps its current end time, then returns to ${returnTo}.`;
   }
-  return `The diagnostic on ${node} expires ${diagnosticMinutes} minutes after applying, then returns to ${returnTo}. The node enforces the expiry itself.`;
+  return `The diagnostic on ${node} expires ${diagnosticMinutes} minutes after applying, then returns to ${returnTo}. Each node enforces the expiry itself.`;
 }
 
 // What applying the draft will do beyond the values themselves.
@@ -607,6 +718,88 @@ export function stagedClusters(
 
 export function stagedCount(clusters: StagedCluster[]) {
   return clusters.reduce((total, cluster) => total + cluster.rows.length, 0);
+}
+
+// What the cluster filter hides from the Apply card.
+export interface Elsewhere {
+  // Changes staged for the hidden clusters.
+  staged: number;
+  // Hidden clusters' requests not every node confirmed in time.
+  unconfirmed: number;
+}
+
+export interface StagedScope {
+  // Staged clusters the card lists, and the targets Apply sends.
+  clusters: StagedCluster[];
+  // Clusters whose drafts Discard all removes: every cluster the card covers.
+  discard: string[];
+  elsewhere: Elsewhere;
+  // Requests the card follows.
+  recent: RecentRequest[];
+}
+
+// The clusters the Apply card covers, by id: every cluster in scope, or with
+// a cluster filter only the filtered one. On Settings it also covers a
+// cluster a link opened while the filter hides it: Settings lists and edits
+// that cluster beside the filtered one, so its drafts must be applyable
+// there. Any other view counts the linked cluster's drafts as hidden.
+export function shownClusterIds(
+  views: ClusterView[],
+  search: Pick<SearchState, "cluster" | "settingsCluster" | "view">
+) {
+  const filter = search.cluster;
+  const linked =
+    search.view === "settings" ? search.settingsCluster : undefined;
+  return views
+    .map((view) => view.cluster.id)
+    .filter((id) => !filter || id === filter || id === linked);
+}
+
+// What the Apply card covers. It lists, applies, discards and follows the
+// `shown` clusters only (see shownClusterIds); the others' drafts and
+// unconfirmed requests are counted, never applied, discarded or dropped out
+// of sight.
+export function stagedScope(
+  current: StagedState,
+  views: ClusterView[],
+  shown: readonly string[],
+  now: number
+): StagedScope {
+  const covered = new Set(shown);
+  const listed = views.filter((view) => covered.has(view.cluster.id));
+  const hidden = views.filter((view) => !covered.has(view.cluster.id));
+  return {
+    clusters: stagedClusters(current, listed, now),
+    discard: listed.map((view) => view.cluster.id),
+    elsewhere: {
+      staged: stagedCount(stagedClusters(current, hidden, now)),
+      unconfirmed: recentRequests(current, hidden, now).filter(
+        (item) => item.timedOut
+      ).length,
+    },
+    recent: recentRequests(current, listed, now),
+  };
+}
+
+// The Settings tab badge for a workspace scope ("global" is every
+// workspace): the number of staged changes, counted as the Apply card counts
+// them. `views` are the live snapshot's clusters; while frozen, the ones
+// cached before freezing, if any. A frozen dashboard shows a past profile
+// that drafts cannot be compared with, so it only says drafts are waiting,
+// never a guessed count, by the frozen Apply card's rule (stagedWaiting).
+export function stagedBadge(
+  current: StagedState,
+  scope: string,
+  views: ClusterView[] | undefined,
+  now: number,
+  live: boolean
+): number | "waiting" | undefined {
+  if (!live) {
+    return stagedWaiting(current, scope, views, now) ? "waiting" : undefined;
+  }
+  const count =
+    views && now ? stagedCount(stagedClusters(current, views, now)) : 0;
+  return count > 0 ? count : undefined;
 }
 
 // Clusters the apply would pause, which needs explicit confirmation.

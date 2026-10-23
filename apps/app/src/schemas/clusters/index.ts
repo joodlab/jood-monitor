@@ -46,6 +46,10 @@ export const historySchema = snapshotSchema.extend({
   entity: z.string().max(128).optional(),
   name: z.string().max(128).optional(),
 });
+export const clusterStatusSchema = z.strictObject({
+  workspace: z.union([idSchema, z.literal("global")]),
+  cluster: idSchema,
+});
 export const eventsSchema = snapshotSchema.extend({
   cluster: idSchema.optional(),
   from: z.string().optional(),

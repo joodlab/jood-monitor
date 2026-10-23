@@ -10,6 +10,7 @@ import {
   observationCoverage,
   type Severity,
 } from "../lib/attention";
+import { rowsNoun } from "../lib/attention-noun";
 import { type AttentionActions, AttentionList } from "./attention-list";
 import { SeverityIcon } from "./severity";
 import { Widget } from "./widget-card";
@@ -30,10 +31,13 @@ const filters: { id: Severity | "all"; label: string }[] = [
 type Coverage = ReturnType<typeof observationCoverage>;
 
 // Problems are reported before coverage: a heartbeat without inventory is
-// still an observation that needs attention.
-function heading(coverage: Coverage, problems: number) {
-  if (problems) {
+// still an observation that needs attention. Info rows alone are notes.
+function heading(coverage: Coverage, actionable: number, live: number) {
+  if (actionable) {
     return "Needs attention";
+  }
+  if (live) {
+    return "Notes";
   }
   return coverage.observed
     ? "No problems observed"
@@ -85,7 +89,7 @@ function SeverityFilter({
   return (
     // biome-ignore lint/a11y/useSemanticElements: a labelled group of toggle buttons, not a form fieldset.
     <div
-      aria-label="Filter problems by severity"
+      aria-label="Filter by severity"
       className="flex flex-wrap gap-1"
       role="group"
     >
@@ -191,6 +195,8 @@ export function AttentionWidget({
     (item) => severity === "all" || item.severity === severity
   );
   const shown = expanded ? visible : visible.slice(0, PREVIEW);
+  // The visible rows are notes, problems or a mix of both (items).
+  const noun = rowsNoun(visible);
   const counts: Record<string, number> = {
     all: live.length,
     critical: summary.critical,
@@ -224,7 +230,7 @@ export function AttentionWidget({
             decorative
             severity={summary.worst}
           />
-          {heading(coverage, live.length)}
+          {heading(coverage, summary.actionable, live.length)}
           {live.length > 0 && (
             <span className="font-normal text-muted-foreground text-sm">
               {severityText(summary)}
@@ -252,8 +258,8 @@ export function AttentionWidget({
             variant="ghost"
           >
             {expanded
-              ? "Show fewer problems"
-              : `Show all ${visible.length} problems`}
+              ? `Show fewer ${noun}`
+              : `Show all ${visible.length} ${noun}`}
             <ChevronDown
               aria-hidden
               className={cn(

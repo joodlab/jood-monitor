@@ -20,12 +20,19 @@ import { closingFocus, escapeConsumed, focusedOutside } from "./panel-focus";
 // search clearing its text, leaves it open. On phones the panel is a
 // full-screen modal sheet.
 
-const DOCKED = "(min-width: 768px)";
+export const dockedQuery = "(min-width: 768px)";
 // Space between the project bar and the panel's rounded top edge.
 const DOCK_GAP = 8;
 
+// The docked panel's width in pixels for a viewport width: 60vw, at least
+// 560 px and at most 1000 px (min-width wins over max-width), as its classes
+// below set it. The canvas keeps its cards clear of this much.
+export function dockedInspectorWidth(viewportWidth: number) {
+  return Math.max(560, Math.min(0.6 * viewportWidth, 1000));
+}
+
 function subscribe(onChange: () => void) {
-  const query = window.matchMedia(DOCKED);
+  const query = window.matchMedia(dockedQuery);
   query.addEventListener("change", onChange);
   return () => query.removeEventListener("change", onChange);
 }
@@ -33,7 +40,7 @@ function subscribe(onChange: () => void) {
 function useDocked() {
   return useSyncExternalStore(
     subscribe,
-    () => window.matchMedia(DOCKED).matches,
+    () => window.matchMedia(dockedQuery).matches,
     () => false
   );
 }

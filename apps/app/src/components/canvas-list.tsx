@@ -6,10 +6,13 @@ import {
   failingMembers,
   namespaceStatus,
   namespaceSummary,
+  nodeStatusText,
+  podDetail,
   staleText,
   type Tone,
   toneOf,
 } from "../lib/canvas-cards";
+import { problemsFirst } from "../lib/canvas-list";
 import { findEntity, relatedPods, resourceStatus } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
@@ -22,28 +25,33 @@ import {
 import { type Inspect, KindTile, StatusIcon } from "./canvas-cards";
 
 // The canvas read as an indented tree (Ingress › Service › workload › pods)
-// for phones, keyboard and screen-reader users. Same data as the graph.
+// for phones, keyboard and screen-reader users. Same data as the graph,
+// with problem rows first.
 
 function staleView(item: GraphItem, now: number) {
   return inventoryFreshness(item.view.inventory.sourceTime, now) !== "fresh";
 }
 
-function rowMeta(item: GraphItem, now: number) {
+// Pods and nodes read as their canvas cards do: a finished pod as history
+// with no readiness ("Finished · Failed · 0 restarts"), a node with the
+// reason it needs attention.
+export function rowMeta(item: GraphItem, now: number) {
   const { view, entity } = item;
   const parts = [cardSubtitle(entity, item.replicaSets?.length)];
   if (entity.kind === "Ingress") {
     parts.push(entity.hosts?.join(", ") || "no host rule");
-  } else {
-    parts.push(resourceStatus(entity));
-  }
-  if (entity.ready != null && entity.desired != null) {
-    parts.push(`${entity.ready}/${entity.desired} ready`);
-  }
-  if (entity.kind === "Pod") {
-    parts.push(`${entity.restarts ?? 0} restarts`);
+  } else if (entity.kind === "Pod") {
+    parts.push(podDetail(entity));
     const node = findEntity(view, entity.nodeUid)?.name;
     if (node) {
       parts.push(`on ${node}`);
+    }
+  } else if (entity.kind === "Node") {
+    parts.push(nodeStatusText(entity, view, now));
+  } else {
+    parts.push(resourceStatus(entity));
+    if (entity.ready != null && entity.desired != null) {
+      parts.push(`${entity.ready}/${entity.desired} ready`);
     }
   }
   if (item.autoscalers?.length) {
@@ -55,13 +63,14 @@ function rowMeta(item: GraphItem, now: number) {
   return parts.join(" · ");
 }
 
+interface RowStatus {
+  meta: string;
+  tone: Tone;
+}
+
 // A row's status icon and detail line. Namespaces read as their canvas card
 // does ("Healthy · 3/3 pods ready"), so phones get the same answer.
-function rowStatus(
-  item: GraphItem,
-  problem: boolean,
-  now: number
-): { meta: string; tone: Tone } {
+function rowStatus(item: GraphItem, problem: boolean, now: number): RowStatus {
   const { view, entity } = item;
   const stale = staleView(item, now);
   if (entity.kind === "Namespace") {
@@ -97,14 +106,17 @@ interface ListProps {
   onNamespace: (namespace: string) => void;
 }
 
-function TreeRow({ entry, ...props }: ListProps & { entry: TreeEntry }) {
+interface RowProps extends ListProps {
+  // Each row's status, worked out once for both its order and its line.
+  statuses: Map<string, RowStatus>;
+}
+
+function TreeRow({ entry, ...props }: RowProps & { entry: TreeEntry }) {
   const { item } = entry;
   const { view, entity } = item;
-  const { meta, tone } = rowStatus(
-    item,
-    itemProblem(item, props.now),
-    props.now
-  );
+  const { meta, tone } =
+    props.statuses.get(item.id) ??
+    rowStatus(item, itemProblem(item, props.now), props.now);
   const pods = ["Pod", "Namespace"].includes(entity.kind)
     ? 0
     : relatedPods(view, entity).length;
@@ -165,14 +177,32 @@ export function TopologyList({
   graph,
   ...props
 }: ListProps & { graph: ServiceGraph }) {
-  const tree = useMemo(() => topologyTree(graph), [graph]);
+  const { now } = props;
+  const statuses = useMemo(
+    () =>
+      new Map(
+        graph.items.map((item) => [
+          item.id,
+          rowStatus(item, itemProblem(item, now), now),
+        ])
+      ),
+    [graph, now]
+  );
+  const tree = useMemo(
+    () =>
+      problemsFirst(
+        topologyTree(graph),
+        (item) => statuses.get(item.id)?.tone ?? "neutral"
+      ),
+    [graph, statuses]
+  );
   return (
     <ul
       aria-label="Service topology list"
       className="mx-auto max-w-4xl space-y-0.5 rounded-xl border bg-card p-1.5 sm:p-2"
     >
       {tree.map((entry) => (
-        <TreeRow entry={entry} key={entry.key} {...props} />
+        <TreeRow entry={entry} key={entry.key} statuses={statuses} {...props} />
       ))}
     </ul>
   );

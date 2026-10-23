@@ -113,9 +113,11 @@ function ClusterEntry({ view, staged }: { view: ClusterView; staged: number }) {
 function SectionList({
   views,
   clusterFilter,
+  linked,
 }: {
   views: ClusterView[];
   clusterFilter?: string;
+  linked?: ClusterView;
 }) {
   const { now } = useDisplay();
   const staged = useStagedState();
@@ -168,10 +170,12 @@ function SectionList({
           </span>
         </TabsTrigger>
       </TabsList>
-      {clusterFilter && (
+      {(clusterFilter || linked) && (
         <p className="px-2.5 text-muted-foreground text-xs">
-          Showing the cluster chosen in the top bar. Choose All clusters there
-          to list every cluster in this workspace.
+          {linked
+            ? `Showing the cluster chosen in the top bar, and ${linked.cluster.name}, opened from a link.`
+            : "Showing the cluster chosen in the top bar."}{" "}
+          Choose All clusters there to list every cluster in this workspace.
         </p>
       )}
     </div>
@@ -365,8 +369,14 @@ function WorkspacePanel({
   );
 }
 
+// A Settings link's cluster wins over the top bar's cluster filter.
+function requestedCluster(search: SearchState) {
+  return search.settingsCluster ?? search.cluster;
+}
+
 function initialSection(search: SearchState, sections: string[]) {
-  const requested = search.cluster && clusterSection(search.cluster);
+  const cluster = requestedCluster(search);
+  const requested = cluster && clusterSection(cluster);
   if (requested && sections.includes(requested)) {
     return requested;
   }
@@ -405,33 +415,40 @@ function FrozenSettings({ onResumeLive }: { onResumeLive: () => void }) {
 export function CollectionSettings({
   search,
   views,
+  linked,
   onResumeLive,
 }: {
   search: SearchState;
   views: ClusterView[];
+  // A cluster a Settings link opened that the top bar's filter hides.
+  linked?: ClusterView;
   onResumeLive: () => void;
 }) {
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
   });
+  // The linked cluster gets a section; the workspace summary still counts
+  // only the clusters the filter shows.
+  const listed = linked ? [...views, linked] : views;
   const sections = [
-    ...views.map((view) => clusterSection(view.cluster.id)),
+    ...listed.map((view) => clusterSection(view.cluster.id)),
     workspaceSection,
   ];
   const [selected, setSelected] = useState(() =>
     initialSection(search, sections)
   );
   // Links that name a cluster (attention items, the inspector) open it.
+  const requested = requestedCluster(search);
   useEffect(() => {
-    if (search.cluster) {
-      setSelected(clusterSection(search.cluster));
+    if (requested) {
+      setSelected(clusterSection(requested));
     }
-  }, [search.cluster]);
+  }, [requested]);
   if (search.at) {
     return <FrozenSettings onResumeLive={onResumeLive} />;
   }
-  if (!views.length) {
+  if (!listed.length) {
     return (
       <EmptyState
         description={
@@ -454,7 +471,7 @@ export function CollectionSettings({
     search.workspace === "global"
       ? "All workspaces"
       : (names[search.workspace] ?? search.workspace);
-  const clusters = views.map((view) => view.cluster);
+  const clusters = listed.map((view) => view.cluster);
   return (
     <Tabs
       className="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-start"
@@ -465,9 +482,13 @@ export function CollectionSettings({
       orientation="vertical"
       value={active}
     >
-      <SectionList clusterFilter={search.cluster} views={views} />
+      <SectionList
+        clusterFilter={search.cluster}
+        linked={linked}
+        views={listed}
+      />
       <div className="min-w-0 max-w-5xl space-y-4 max-lg:pb-36">
-        {views.map((view) => (
+        {listed.map((view) => (
           <TabsContent
             key={view.cluster.id}
             value={clusterSection(view.cluster.id)}
@@ -475,7 +496,7 @@ export function CollectionSettings({
             <ClusterSettings
               clusters={clusters}
               initialNodeUid={
-                search.cluster === view.cluster.id
+                requested === view.cluster.id
                   ? search.diagnosticNode
                   : undefined
               }

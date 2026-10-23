@@ -119,13 +119,55 @@ function problemsTile(
   };
 }
 
-function usageTile(
-  id: "cpu" | "memory",
-  used: number | undefined,
-  capacity: number | undefined,
-  totals: ReturnType<typeof nodeTotals>
-): StatTile {
+type NodeTotals = ReturnType<typeof nodeTotals>;
+
+// Measured usage of the measured servers against what pods may use there,
+// as the server cards judge it: allocatable, capacity where a server does
+// not report allocatable, "mixed" where only some servers fall back.
+interface FleetUsage {
+  basis: "allocatable" | "capacity" | "mixed";
+  // Absent without a fresh sample, so it reads as a gap, never 0%.
+  percent?: number;
+  total?: number;
+  used?: number;
+}
+
+export function fleetUsage(
+  totals: NodeTotals,
+  field: "cpu" | "memory"
+): FleetUsage {
+  const base = field === "cpu" ? totals.cpuBasis : totals.memoryBasis;
+  const used = field === "cpu" ? totals.usedCpu : totals.usedMemory;
+  let basis: FleetUsage["basis"] = "allocatable";
+  if (base?.capacityStandIns) {
+    basis = base.capacityStandIns < totals.covered ? "mixed" : "capacity";
+  }
+  return {
+    basis,
+    used,
+    total: base?.total,
+    percent: percent(used, base?.total),
+  };
+}
+
+const basisWords: Record<FleetUsage["basis"], string> = {
+  allocatable: "allocatable",
+  capacity: "capacity",
+  mixed: "allocatable or capacity",
+};
+
+// A usage bar's label names capacity whenever it stands in, as a server
+// card's does; allocatable is the default the widget legend states.
+export function fleetUsageLabel(label: string, usage: FleetUsage) {
+  if (usage.basis === "allocatable") {
+    return label;
+  }
+  return `${label} (${usage.basis === "capacity" ? "capacity" : "part capacity"})`;
+}
+
+function usageTile(id: "cpu" | "memory", totals: NodeTotals): StatTile {
   const format = id === "cpu" ? compactCpu : compactMemory;
+  const usage = fleetUsage(totals, id);
   const partial =
     totals.covered < totals.nodes
       ? ` · ${totals.covered} of ${totals.nodes} servers`
@@ -133,11 +175,11 @@ function usageTile(
   return {
     id,
     label: id === "cpu" ? "CPU used" : "Memory used",
-    value: percentage(percent(used, capacity)),
+    value: percentage(usage.percent),
     detail:
-      used == null
+      usage.used == null
         ? "No fresh measurements"
-        : `${format(used)} of ${format(capacity)}${partial}`,
+        : `${format(usage.used)} of ${format(usage.total)} ${basisWords[usage.basis]}${partial}`,
   };
 }
 
@@ -208,13 +250,8 @@ export function fleetTiles(
       ),
       tone: readinessKnown && pods.ready < pods.total ? "warning" : undefined,
     },
-    usageTile("cpu", totals.usedCpu, totals.coveredCpuCapacity, totals),
-    usageTile(
-      "memory",
-      totals.usedMemory,
-      totals.coveredMemoryCapacity,
-      totals
-    ),
+    usageTile("cpu", totals),
+    usageTile("memory", totals),
     clustersTile(views, now, frozen),
     problemsTile(views, attention, now),
   ];

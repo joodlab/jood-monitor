@@ -279,6 +279,10 @@ function Connected({
             ? " Node collectors acknowledge the collection profile separately."
             : " Inventory usually follows within a minute."}
         </p>
+        <p className="text-muted-foreground text-xs">
+          New clusters start on Basic: node CPU/memory only. Pod CPU/memory
+          needs Standard.
+        </p>
         {!inventory && <InventoryProgress checks={checks} />}
       </Notice>
       <div className="flex flex-wrap items-center justify-end gap-2">

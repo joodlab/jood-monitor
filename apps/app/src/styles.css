@@ -141,7 +141,7 @@
   border-color: var(--border);
   opacity: 0;
 }
-/* Beats React Flow's own `.react-flow__node.selectable:focus-visible` reset. */
+/* Cards are not React Flow selectable, so draw their keyboard focus ring here. */
 .react-flow__node.react-flow__node-resource:focus-visible,
 .react-flow__node.react-flow__node-namespace:focus-visible,
 .react-flow__node.react-flow__node-pod:focus-visible {

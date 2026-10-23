@@ -85,8 +85,9 @@ function node(uid, name, options) {
         status: options.ready === false ? "False" : "True",
         reason: options.ready === false ? "KubeletNotReady" : "KubeletReady",
       },
-      ...(options.pressure
-        ? [{ type: options.pressure, status: "True", reason: "Synthetic" }]
+      // A pressure or NetworkUnavailable condition reported True.
+      ...(options.condition
+        ? [{ type: options.condition, status: "True", reason: "Synthetic" }]
         : []),
     ],
   };
@@ -200,6 +201,7 @@ function fleet(cluster, scale) {
         memory: 16,
         address: "10.20.0.12",
         zone: "synthetic-zone-2",
+        condition: "NetworkUnavailable",
       }),
     ];
     const parts = [
@@ -244,7 +246,7 @@ function fleet(cluster, scale) {
       memory: 16,
       address: "10.10.0.13",
       zone: "synthetic-zone-2",
-      pressure: "DiskPressure",
+      condition: "DiskPressure",
     }),
     node(n("d"), "synthetic-node-d", {
       cpu: 4,
@@ -332,10 +334,13 @@ function fleet(cluster, scale) {
     }),
   ];
   // Finished batch pods: their Job owners are outside the supported inventory.
+  // Two carry the observer's OOM suffix and stay history, never live problems.
   const batch = [
     ["nightly-report-29361440-7fq2c", "Succeeded", 60 * 20],
     ["nightly-report-29362880-k9d4w", "Succeeded", 60 * 4],
     ["nightly-report-29358560-p3x8z", "Failed", 60 * 24 * 9],
+    ["nightly-report-29364320-w8n5d", "Succeeded / OOM observed", 60 * 2],
+    ["nightly-import-29363600-h6c3s", "Failed / OOM observed", 60 * 9],
   ].map(([name, status, age]) => ({
     uid: `${cluster}-batch-${name}`,
     kind: "Pod",
@@ -345,12 +350,27 @@ function fleet(cluster, scale) {
     status,
     desired: 1,
     ready: 0,
-    restarts: 0,
+    restarts: status.includes("OOM") ? 1 : 0,
     createdAt: minutesAgo(age),
   }));
+  // A bare pod with no controller and no Service, drawn on its own on the
+  // shop canvas as finished history.
+  const standalone = {
+    uid: `${cluster}-shop-smoke-check`,
+    kind: "Pod",
+    name: "smoke-check-q4m8z",
+    namespace: "shop",
+    nodeUid: n("a"),
+    status: "Failed",
+    desired: 1,
+    ready: 0,
+    restarts: 0,
+    createdAt: minutesAgo(60 * 3),
+  };
+  const finished = [...batch, standalone];
   parts.push({
-    entities: batch,
-    edges: batch.map((pod) => [pod.uid, pod.nodeUid, "scheduled_on"]),
+    entities: finished,
+    edges: finished.map((pod) => [pod.uid, pod.nodeUid, "scheduled_on"]),
   });
   return assemble(
     nodes,
@@ -387,6 +407,8 @@ const clusters = [
     id: "synthetic-cluster",
     name: "Synthetic production",
     environment: "synthetic fixture",
+    // Pod CPU/memory needs Standard; the edge cluster stays on Basic.
+    profile: "standard",
   },
   {
     id: "synthetic-edge",
@@ -420,6 +442,11 @@ async function credentialFor(cluster) {
     enrollmentToken
   );
   writeFileSync(file, JSON.stringify({ credential }), { mode: 0o600 });
+  if (cluster.profile) {
+    await request(`/api/v1/clusters/${cluster.id}/profile`, {
+      name: cluster.profile,
+    });
+  }
   return credential;
 }
 
@@ -449,12 +476,29 @@ function usage(entity, step) {
   };
 }
 
-function samplesFor(clusterId, entities, steps, now) {
-  const measured = entities.filter(
-    (entity) =>
-      (entity.kind === "Node" && entity.status === "True") ||
-      (entity.kind === "Pod" && entity.status.startsWith("Running"))
-  );
+// Samples follow the collection profile as a real observer does: nothing
+// while paused, pod CPU/memory only outside Basic and only in the selected
+// namespaces when Standard names some.
+function samplesFor(clusterId, entities, steps, now, profile) {
+  const name =
+    profile.name === "diagnostic" &&
+    profile.expiresAt &&
+    Date.parse(profile.expiresAt) <= now
+      ? profile.returnProfile || "basic"
+      : profile.name;
+  const podSampled = (entity) =>
+    name !== "basic" &&
+    (!profile.namespaces.length ||
+      profile.namespaces.includes(entity.namespace));
+  const measured = profile.paused
+    ? []
+    : entities.filter(
+        (entity) =>
+          (entity.kind === "Node" && entity.status === "True") ||
+          (entity.kind === "Pod" &&
+            entity.status.startsWith("Running") &&
+            podSampled(entity))
+      );
   const samples = [];
   for (let step = 0; step < steps; step++) {
     const nano = BigInt(now - (steps - 1 - step) * 15_000) * 1_000_000n;
@@ -560,7 +604,7 @@ async function send(cluster, credential, { steps, scale }) {
     "POST",
     credential
   );
-  const samples = samplesFor(cluster.id, entities, steps, now);
+  const samples = samplesFor(cluster.id, entities, steps, now, profile);
   for (let index = 0; index < samples.length; index += 8000) {
     const response = await fetch(`${origin}/v1/metrics`, {
       method: "POST",

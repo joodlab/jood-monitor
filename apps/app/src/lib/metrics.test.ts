@@ -1,4 +1,4 @@
-import type { ClusterView } from "@jood-monitor/api-client";
+import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import {
   bytes,
@@ -6,7 +6,140 @@ import {
   inventoryFreshness,
   nodeProfileOutcome,
   nodeTotals,
+  observedUsage,
+  resourceSampleBudget,
 } from "./metrics";
+
+describe("resource sample budget", () => {
+  const sampled = Date.parse("2026-10-22T12:00:00.000Z");
+  const node: Entity = {
+    uid: "n1",
+    name: "node-a",
+    kind: "Node",
+    status: "True",
+    capacityCpu: 4,
+    capacityMemory: 8 * 1024 ** 3,
+  };
+  function view(profile: Partial<ClusterView["profile"]>): ClusterView {
+    const at = new Date(sampled).toISOString();
+    const sample = (field: string, value: string) => ({
+      attributes: "",
+      clusterId: "synthetic",
+      diagnostic: false,
+      entityUid: "n1",
+      id: field.length,
+      integer: false,
+      kind: "gauge",
+      monotonic: false,
+      name: `k8s.node.${field}.usage`,
+      receivedAt: at,
+      resource: "",
+      scope: "",
+      sourceTime: at,
+      startTimeUnixNano: "0",
+      temporality: 0,
+      timeUnixNano: String(BigInt(sampled) * 1_000_000n),
+      unit: field === "cpu" ? "{cpu}" : "By",
+      value,
+    });
+    return {
+      cluster: {
+        id: "synthetic",
+        name: "synthetic",
+        environment: "fixture",
+        workspaceId: "synthetic",
+        revoked: false,
+        heartbeatAt: at,
+        inventoryTime: at,
+        receivedAt: at,
+      },
+      inventory: {
+        entities: [node],
+        edges: [],
+        sourceTime: at,
+        capabilities: [],
+      },
+      metrics: [sample("cpu", "1.5"), sample("memory", "1073741824")],
+      profile: {
+        name: "standard",
+        revision: 1,
+        appliedRevision: 1,
+        nodeUids: [],
+        namespaces: [],
+        paused: false,
+        ...profile,
+      },
+      heartbeat: {
+        version: "fixture",
+        appliedRevision: 1,
+        queueBytes: 0,
+        dropped: 0,
+        rejectedPoints: 0,
+        outcome: "observer applied",
+        capabilities: [],
+      },
+    };
+  }
+  it("allows two sampling intervals plus delivery", () => {
+    const basic = view({ name: "basic" }).profile;
+    expect(resourceSampleBudget(basic, sampled)).toBe(165);
+    expect(resourceSampleBudget(view({}).profile, sampled)).toBe(105);
+    const diagnostic = {
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      expiresAt: new Date(sampled + 60_000).toISOString(),
+    };
+    expect(resourceSampleBudget(view(diagnostic).profile, sampled)).toBe(105);
+    // Expired, it samples at its return profile's interval.
+    expect(
+      resourceSampleBudget(view(diagnostic).profile, sampled + 60_000)
+    ).toBe(165);
+    expect(
+      resourceSampleBudget(
+        view({ ...diagnostic, returnProfile: "standard" }).profile,
+        sampled + 60_000
+      )
+    ).toBe(105);
+  });
+  it("keeps a Basic sample current past the heartbeat budget", () => {
+    const basic = view({ name: "basic" });
+    expect(observedUsage(basic, node, "cpu", sampled + 164_000)).toBe(1.5);
+    expect(
+      observedUsage(basic, node, "cpu", sampled + 166_000)
+    ).toBeUndefined();
+    expect(nodeTotals([basic], sampled + 164_000).usedCpu).toBe(1.5);
+    expect(nodeTotals([basic], sampled + 166_000).usedCpu).toBeUndefined();
+  });
+  it("never stretches a pod sample to the Basic node cadence", () => {
+    const pod: Entity = {
+      uid: "p1",
+      name: "shop-api-1",
+      kind: "Pod",
+      namespace: "shop",
+      status: "Running",
+    };
+    const basic = view({ name: "basic" });
+    expect(resourceSampleBudget(basic.profile, sampled, "Pod")).toBe(105);
+    basic.metrics = basic.metrics.map((metric) => ({
+      ...metric,
+      entityUid: "p1",
+      name: metric.name.replace("k8s.node.", "k8s.pod."),
+    }));
+    expect(observedUsage(basic, pod, "cpu", sampled + 104_000)).toBe(1.5);
+    expect(observedUsage(basic, pod, "cpu", sampled + 106_000)).toBeUndefined();
+  });
+  it("expires a Standard sample after its shorter budget", () => {
+    const standard = view({});
+    expect(observedUsage(standard, node, "memory", sampled + 104_000)).toBe(
+      1024 ** 3
+    );
+    expect(
+      observedUsage(standard, node, "memory", sampled + 106_000)
+    ).toBeUndefined();
+    expect(nodeTotals([standard], sampled + 104_000).covered).toBe(1);
+    expect(nodeTotals([standard], sampled + 106_000).covered).toBe(0);
+  });
+});
 
 describe("honest resource presentation", () => {
   it("keeps unavailable values unknown", () => {

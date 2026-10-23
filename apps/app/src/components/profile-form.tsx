@@ -19,6 +19,7 @@ import {
   activeDiagnostic,
   continuesDiagnostic,
   diagnosticMinutes,
+  diagnosticNodeOptions,
   effectiveProfileName,
   type ProfileName,
   profileChoices,
@@ -167,23 +168,50 @@ function RestartField({
   );
 }
 
+function expiryText(
+  node: string,
+  extend: boolean,
+  nodes: Entity[],
+  profile: Profile,
+  now: number,
+  timeZone: string
+) {
+  const returnTo = profileChoices[returnProfile(profile)].label;
+  const running = continuesDiagnostic(
+    { name: "diagnostic", node },
+    profile,
+    now
+  )
+    ? activeDiagnostic(profile, now)
+    : undefined;
+  if (!running) {
+    return `Expires ${diagnosticMinutes} minutes after you apply, then returns to ${returnTo}.`;
+  }
+  // Every node the running diagnostic covers, not only the one selected
+  // above: applying keeps them all.
+  const names = running.nodeUids
+    .map((uid) => nodes.find((item) => item.uid === uid)?.name ?? uid)
+    .join(", ");
+  if (extend) {
+    return `Restarts on ${names} for ${diagnosticMinutes} minutes from when you apply, then returns to ${returnTo}.`;
+  }
+  return `Keeps running on ${names} until its current end time, ${formatClock(running.expiresAt, timeZone)} ${timeZoneLabel(timeZone, running.expiresAt)} (${minutesLeft(running.expiresAt, now)} left), then returns to ${returnTo}.`;
+}
+
 function ExpiryNote({
   id,
   node,
   extend,
+  nodes,
   profile,
 }: {
   id: string;
   node: string;
   extend: boolean;
+  nodes: Entity[];
   profile: Profile;
 }) {
   const { now, timeZone } = useDisplay();
-  const returnTo = profileChoices[returnProfile(profile)].label;
-  const kept =
-    !extend && continuesDiagnostic({ name: "diagnostic", node }, profile, now)
-      ? activeDiagnostic(profile, now)
-      : undefined;
   return (
     <p
       className="flex items-start gap-1.5 text-muted-foreground text-xs"
@@ -191,11 +219,10 @@ function ExpiryNote({
     >
       <Timer aria-hidden className="mt-px size-3.5 shrink-0 text-info-text" />
       <span>
-        {kept
-          ? `Keeps its current end time, ${formatClock(kept.expiresAt, timeZone)} ${timeZoneLabel(timeZone, kept.expiresAt)} (${minutesLeft(kept.expiresAt, now)} left), then returns to ${returnTo}.`
-          : `Expires ${diagnosticMinutes} minutes after you apply, then returns to ${returnTo}.`}{" "}
-        The node enforces the expiry itself, even if the hub is unreachable.
-        Diagnostic samples stay queryable for 24 hours.
+        {expiryText(node, extend, nodes, profile, now, timeZone)} Each node
+        enforces the expiry itself, even if the hub is unreachable. Diagnostic
+        host samples are stored and available through the history API for 24
+        hours but are not yet charted in the dashboard.
       </span>
     </p>
   );
@@ -227,6 +254,11 @@ export function DiagnosticOptions({
     profile,
     now
   );
+  const options = diagnosticNodeOptions(nodes, profile, now);
+  // Any node of the running diagnostic selects its one choice.
+  const selected = continuing
+    ? (activeDiagnostic(profile, now)?.nodeUids[0] ?? value)
+    : value;
   return (
     <fieldset
       className={cn(
@@ -243,9 +275,11 @@ export function DiagnosticOptions({
       {nodes.length > 0 ? (
         <Select
           disabled={disabled}
-          items={Object.fromEntries(nodes.map((node) => [node.uid, node.name]))}
+          items={Object.fromEntries(
+            options.map((option) => [option.value, option.label])
+          )}
           onValueChange={(next) => onChange(next ?? "")}
-          value={value}
+          value={selected}
         >
           <SelectTrigger
             aria-describedby={`${uid}-note`}
@@ -255,9 +289,9 @@ export function DiagnosticOptions({
             <SelectValue placeholder="Choose a node" />
           </SelectTrigger>
           <SelectContent>
-            {nodes.map((node) => (
-              <SelectItem key={node.uid} value={node.uid}>
-                <span className="font-mono text-xs">{node.name}</span>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                <span className="font-mono text-xs">{option.label}</span>
               </SelectItem>
             ))}
           </SelectContent>
@@ -271,6 +305,7 @@ export function DiagnosticOptions({
         extend={extend}
         id={`${uid}-note`}
         node={value}
+        nodes={nodes}
         profile={profile}
       />
       {continuing && (

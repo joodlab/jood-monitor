@@ -25,6 +25,9 @@ export function connectedSearch<T extends object>(
     at: undefined,
     resource: undefined,
     resourceCluster: undefined,
+    // A Settings section opened by an earlier link would outrank the new
+    // cluster.
+    settingsCluster: undefined,
     diagnosticNode: undefined,
   };
 }

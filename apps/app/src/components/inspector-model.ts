@@ -1,6 +1,7 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { podProblem } from "../lib/attention";
 import { formatUsage, percentOf, type UsageField } from "../lib/chart-scale";
+import { gapLabel, gapReason, type UsageGap } from "../lib/collection-state";
 import {
   isFinished,
   type ResourceSummary,
@@ -112,18 +113,60 @@ export interface Coverage {
   // Active (not finished) member pods.
   active: number;
   finished: number;
+  // Why the hub expects no sample: the Pod's or Node's own reason, or the
+  // one every active member pod shares (see usageGap).
+  gap?: UsageGap;
   // Active pods with a fresh CPU and memory sample.
   measured: number;
 }
 
 // Finished pods are not expected to report and do not count against
 // coverage; the summary already counts measurements over active pods only.
-export function podCoverage(summary: ResourceSummary): Coverage {
+export function podCoverage(
+  summary: ResourceSummary,
+  gap?: UsageGap
+): Coverage {
   return {
     active: summary.active,
     finished: summary.pods.length - summary.active,
     measured: Math.min(summary.measured, summary.active),
+    ...(gap ? { gap } : {}),
   };
+}
+
+function excluded(finished: number) {
+  return `${finished} finished pod${finished === 1 ? " is" : "s are"} excluded`;
+}
+
+// The note beside a cohort's usage: why totals are not summed, the reason
+// the hub knows, and the profile in effect. Nothing to say when every active
+// pod is measured and none has finished.
+export function coverageText(coverage: Coverage, profile?: string) {
+  const { active, measured, finished, gap } = coverage;
+  if (!active || measured >= active) {
+    return finished
+      ? {
+          partial: false,
+          text: `${excluded(finished)}; finished pods are not expected to report usage.`,
+        }
+      : undefined;
+  }
+  const missing = active - measured;
+  const parts = [
+    measured
+      ? `Partial coverage: ${measured} of ${active} active pods have a fresh CPU and memory sample; ${missing} ${missing === 1 ? "has" : "have"} none, so totals are not summed.`
+      : `No active pod has a fresh CPU and memory sample (0 of ${active} measured).`,
+  ];
+  if (gap) {
+    parts.push(gapReason(gap));
+  }
+  if (finished) {
+    parts.push(`${excluded(finished)}.`);
+  }
+  if (profile) {
+    parts.push(`Collection profile: ${profile}.`);
+  }
+  return { partial: true, text: parts.join(" ") };
 }
 
 // Problems first, then running pods, then finished history; by name within.
@@ -202,15 +245,19 @@ export function usageReading(
       missing: false,
     };
   }
+  const { gap } = coverage;
   if (entity.kind === "Pod" || entity.kind === "Node") {
-    return { value: "No fresh sample", missing: true };
+    return { value: gap ? gapLabel(gap) : "No fresh sample", missing: true };
   }
   if (!coverage.active) {
     return { value: "No active pods", missing: true };
   }
   const partial = summary.usage?.[field];
   if (partial?.observed == null) {
-    return { value: "No fresh samples", missing: true };
+    return {
+      value: gap ? gapLabel(gap, true) : "No fresh samples",
+      missing: true,
+    };
   }
   return {
     value: `≥ ${formatUsage(field, partial.observed)}`,

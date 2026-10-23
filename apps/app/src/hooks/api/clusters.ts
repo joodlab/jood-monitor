@@ -1,6 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
+  getClusterStatusFn,
   getEventsFn,
   getSnapshotFn,
   getWorkspacesFn,
@@ -22,6 +23,16 @@ export function fetchEvents(search: SearchState) {
       from: new Date(end - Number(search.range) * 3_600_000).toISOString(),
       to: search.at,
     },
+  });
+}
+
+// The hub's archival backlog changes with each five-minute flush, so polling
+// once a minute keeps it current without the stream.
+export function useHubBuffer(workspace: string, cluster: string) {
+  return useQuery({
+    queryKey: ["buffer", workspace, cluster],
+    queryFn: () => getClusterStatusFn({ data: { workspace, cluster } }),
+    refetchInterval: 60_000,
   });
 }
 

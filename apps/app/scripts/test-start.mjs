@@ -206,6 +206,60 @@ try {
   );
   assert.ok(snapshot.result && typeof snapshot.result === "object");
   assert.equal("context" in snapshot, false);
+  const cluster = {
+    workspace: "synthetic-start",
+    cluster: "synthetic-start-cluster",
+  };
+  const registered = await rpc(
+    hub,
+    origin,
+    "registerClusterFn",
+    {
+      id: cluster.cluster,
+      workspaceId: cluster.workspace,
+      name: "Start verification cluster — synthetic data",
+      environment: "synthetic",
+    },
+    "POST"
+  );
+  assert.equal(registered.status, 200);
+  assert.equal((await deserialize(registered)).error, undefined);
+  // Middleware order and the response header are only observable here.
+  for (const name of ["getSnapshotFn", "getEventsFn"]) {
+    const timed = await rpc(hub, origin, name, {
+      workspace: cluster.workspace,
+    });
+    assert.equal(timed.status, 200);
+    const stages = timed.headers.get("Server-Timing") ?? "";
+    for (const stage of ["d1", "do", "total"]) {
+      assert.match(
+        stages,
+        new RegExp(`(?:^|, )${stage};dur=\\d+\\.\\d;`),
+        `${name} must report ${stage} in Server-Timing`
+      );
+    }
+  }
+  assert.equal(
+    (await rpc(hub, origin, "getClusterStatusFn", cluster, "GET", {})).status,
+    401
+  );
+  const buffer = await deserialize(
+    await rpc(hub, origin, "getClusterStatusFn", cluster)
+  );
+  assert.deepEqual(Object.keys(buffer.result).sort(), [
+    "archiveError",
+    "bytes",
+    "dirtyPartitions",
+    "pendingInventories",
+    "quotaBytes",
+  ]);
+  const foreign = await deserialize(
+    await rpc(hub, origin, "getClusterStatusFn", {
+      ...cluster,
+      workspace: "synthetic-other",
+    })
+  );
+  assert.equal(foreign.error.message, "workspace mismatch");
   const expired = await deserialize(
     await rpc(hub, origin, "getSnapshotFn", {
       workspace: "global",

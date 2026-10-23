@@ -7,7 +7,10 @@ import {
   activeDiagnostic,
   awaitingAcknowledgment,
   capabilityLabel,
+  continuesDiagnostic,
   deliveryHealth,
+  diagnosticNodeOptions,
+  diagnosticNodes,
   draftChanges,
   draftFieldChanges,
   draftFieldProblems,
@@ -22,6 +25,7 @@ import {
   nodeAcknowledgments,
   nodeNamer,
   observationFreshness,
+  profileChoices,
   profileRequest,
   progressSummary,
   progressText,
@@ -176,6 +180,17 @@ describe("profile drafts", () => {
     expect(basic.nodeUids).toEqual([]);
     expect(basic.namespaces).toEqual([]);
   });
+
+  it("never promises pod metrics or host charts a profile does not give", () => {
+    expect(profileChoices.basic.detail).toContain(
+      "No pod or container CPU/memory"
+    );
+    for (const name of ["standard", "diagnostic"] as const) {
+      expect(profileChoices[name].detail).toContain(
+        "available through the history API but not yet charted in the dashboard"
+      );
+    }
+  });
 });
 
 describe("diagnostics", () => {
@@ -240,6 +255,129 @@ describe("diagnostics", () => {
       "ends in under 30 seconds"
     );
     expect(draftProblems(restarted, nodes, view.profile, ending)).toEqual([]);
+  });
+
+  it("keeps every node of a running two-node diagnostic", () => {
+    const view = fixture();
+    view.inventory = {
+      ...view.inventory,
+      entities: [
+        ...view.inventory.entities,
+        { uid: "n3", name: "node-c", kind: "Node", status: "Ready" },
+      ],
+    };
+    const expiresAt = new Date(now + 5 * 60_000).toISOString();
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1", "n2"],
+      returnProfile: "standard",
+      expiresAt,
+    };
+    // Any node it runs on continues it, not only the first.
+    expect(
+      continuesDiagnostic({ name: "diagnostic", node: "n2" }, view.profile, now)
+    ).toBe(true);
+    expect(
+      continuesDiagnostic({ name: "diagnostic", node: "n3" }, view.profile, now)
+    ).toBe(false);
+    expect(
+      diagnosticNodes({ name: "diagnostic", node: "n2" }, view.profile, now)
+    ).toEqual(["n1", "n2"]);
+    // A namespace edit applied during the diagnostic keeps both nodes and
+    // the end time.
+    const draft = draftFromProfile(view.profile, undefined, now);
+    const edited = { ...draft, scope: "all" as const };
+    expect(draftChanges(edited, view.profile, undefined, now)).toEqual([
+      "Collect pod metrics in all namespaces instead of 1 selected namespace",
+    ]);
+    const kept = profileSchema.parse(profileRequest(edited, view.profile, now));
+    expect(kept.nodeUids).toEqual(["n1", "n2"]);
+    expect(kept.expiresAt).toBe(expiresAt);
+    const second = profileRequest({ ...edited, node: "n2" }, view.profile, now);
+    expect(second.nodeUids).toEqual(["n1", "n2"]);
+    // Restarting the window keeps both nodes too, and names them.
+    const restarted = { ...edited, extend: true };
+    expect(profileRequest(restarted, view.profile, now).nodeUids).toEqual([
+      "n1",
+      "n2",
+    ]);
+    expect(
+      draftChanges(restarted, view.profile, nodeNamer(view), now)[0]
+    ).toContain("Restart the diagnostic on node-b, node-a");
+    // A node outside it moves the diagnostic to that node alone.
+    const moved = profileRequest({ ...draft, node: "n3" }, view.profile, now);
+    expect(moved.nodeUids).toEqual(["n3"]);
+    expect(Date.parse(moved.expiresAt ?? "") - now).toBe(9 * 60_000);
+  });
+
+  it("offers a running two-node diagnostic as one node choice", () => {
+    const view = fixture();
+    view.inventory = {
+      ...view.inventory,
+      entities: [
+        ...view.inventory.entities,
+        { uid: "n3", name: "node-c", kind: "Node", status: "Ready" },
+      ],
+    };
+    const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
+    expect(diagnosticNodeOptions(nodes, view.profile, now)).toEqual([
+      { value: "n1", label: "node-b" },
+      { value: "n2", label: "node-a" },
+      { value: "n3", label: "node-c" },
+    ]);
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1", "n2"],
+      returnProfile: "standard",
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+    };
+    // Picking either running node would keep both, so they are one choice.
+    expect(diagnosticNodeOptions(nodes, view.profile, now)).toEqual([
+      { value: "n1", label: "node-b, node-a (running)" },
+      { value: "n3", label: "node-c" },
+    ]);
+    // Once it ends, every node is a choice of its own again.
+    expect(
+      diagnosticNodeOptions(nodes, view.profile, now + 6 * 60_000)
+    ).toHaveLength(3);
+  });
+
+  it("blocks keeping a diagnostic on a node that left the inventory", () => {
+    const view = fixture();
+    view.profile = {
+      ...view.profile,
+      name: "diagnostic",
+      nodeUids: ["n1", "gone"],
+      returnProfile: "standard",
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+    };
+    const nodes = view.inventory.entities.filter((e) => e.kind === "Node");
+    const draft = draftFromProfile(view.profile, undefined, now);
+    const edited = { ...draft, scope: "all" as const };
+    // The hub would refuse the request for the departed node, so the draft
+    // names it instead of blaming the node the operator chose.
+    const [problem] = draftProblems(edited, nodes, view.profile, now);
+    expect(problem).toContain("gone left the cluster inventory");
+    expect(problem).toContain("return to Standard");
+    expect(
+      draftProblems({ ...edited, extend: true }, nodes, view.profile, now)[0]
+    ).toBe(problem);
+    // Moving it to a node it does not run on is still possible.
+    expect(
+      draftProblems({ ...edited, node: "n2" }, nodes, view.profile, now)
+    ).toEqual([]);
+    // A departed first node is named too, not only "choose the node".
+    view.profile = { ...view.profile, nodeUids: ["gone", "n1"] };
+    expect(
+      draftProblems(
+        draftFromProfile(view.profile, undefined, now),
+        nodes,
+        view.profile,
+        now
+      )[0]
+    ).toContain("gone left the cluster inventory");
   });
 
   it("treats an expired diagnostic as already returned", () => {

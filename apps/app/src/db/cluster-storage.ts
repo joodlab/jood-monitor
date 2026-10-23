@@ -4,6 +4,7 @@ import type {
   StoredMetric,
 } from "../contracts/types";
 import { HttpError } from "../lib/server/http";
+import { newestPendingStamp } from "../lib/server/observations";
 import { compareMetrics } from "../lib/server/telemetry";
 import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
 import { compress, decompress, PackedMetrics } from "./packed-metrics";
@@ -551,6 +552,27 @@ export class ClusterStorage {
         "SELECT stamp,source FROM inventory_outbox ORDER BY source LIMIT 12"
       )
       .toArray();
+  }
+  // Read-only: only the archival writer completes outbox entries, and a read
+  // must not pin a large pending inventory in this object's memory.
+  pendingInventory<T>(at: string) {
+    const stamp = newestPendingStamp(
+      this.storage.sql
+        .exec<{ stamp: string }>("SELECT stamp FROM inventory_outbox")
+        .toArray()
+        .map((row) => row.stamp),
+      at
+    );
+    if (!stamp) {
+      return null;
+    }
+    const name = `inventory:${stamp}`;
+    const cached = this.documents.has(name);
+    const value = this.get<T>(name);
+    if (!cached) {
+      this.documents.delete(name);
+    }
+    return value;
   }
   completeInventory(stamp: string) {
     this.transaction(() => {

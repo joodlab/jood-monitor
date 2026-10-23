@@ -30,13 +30,15 @@ const node = { uid: "n", kind: "Node", name: "node-a" };
 
 function query(
   state: "success" | "error",
-  data: Lifecycle[] | undefined
+  data: Lifecycle[] | undefined,
+  placeholder = false
 ): UseQueryResult<Lifecycle[], Error> {
   return {
     data,
     isPending: false,
     isError: state === "error",
     isSuccess: state === "success",
+    isPlaceholderData: placeholder,
     refetch: () => Promise.resolve(),
   } as unknown as UseQueryResult<Lifecycle[], Error>;
 }
@@ -110,5 +112,10 @@ describe("Recent activity widget", () => {
   });
   it("says the range was quiet only after a successful empty load", () => {
     expect(render(query("success", []))).toContain(quiet);
+  });
+  it("reads an empty previous range as loading while a new range loads", () => {
+    const html = render(query("success", [], true));
+    expect(html).not.toContain(quiet);
+    expect(html).toContain("Loading activity…");
   });
 });

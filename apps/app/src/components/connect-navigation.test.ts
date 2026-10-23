@@ -55,4 +55,15 @@ describe("connected cluster navigation", () => {
     expect(next).toMatchObject({ view: "settings", cluster: "cl-new" });
     expect(next.resource).toBeUndefined();
   });
+  it("opens the new cluster even after a Settings link named another", () => {
+    const old = from({
+      view: "settings",
+      settingsCluster: "cl-linked",
+      diagnosticNode: "node-uid",
+    });
+    const next = from(connectedSearch(old, cluster, { view: "settings" }));
+    expect(next).toMatchObject({ view: "settings", cluster: "cl-new" });
+    expect(next.settingsCluster).toBeUndefined();
+    expect(next.diagnosticNode).toBeUndefined();
+  });
 });

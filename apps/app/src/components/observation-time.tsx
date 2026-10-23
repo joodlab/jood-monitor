@@ -12,7 +12,17 @@ import { useForm } from "@tanstack/react-form";
 import { CalendarClock } from "lucide-react";
 import { useState } from "react";
 import { useDisplay } from "../hooks/display";
-import { fromZonedInput, timeZoneLabel, toZonedInput } from "../lib/time";
+import {
+  DAY_MS,
+  INVENTORY_RETENTION_DAYS,
+  RAW_RETENTION_DAYS,
+} from "../lib/retention";
+import {
+  fromZonedInput,
+  observationMs,
+  timeZoneLabel,
+  toZonedInput,
+} from "../lib/time";
 
 const presets = [
   { label: "15 min ago", minutes: 15 },
@@ -90,9 +100,21 @@ function ObservationForm({
   onSelect: (at: string) => void;
 }) {
   const zone = timeZoneLabel(timeZone);
+  // The dialog opens fresh each time, so its bounds start from that moment.
+  // The picker works in whole minutes; the earliest is rounded up so the
+  // earliest minute it offers also passes validation.
+  const [opened] = useState(Date.now);
+  const earliest =
+    Math.ceil((opened - INVENTORY_RETENTION_DAYS * DAY_MS) / 60_000) * 60_000;
+  const saved = observationMs(at);
   const form = useForm({
     defaultValues: {
-      time: toZonedInput(at ? Date.parse(at) : Date.now(), timeZone),
+      // A link time that is unreadable or outside retention starts the
+      // picker at now instead.
+      time: toZonedInput(
+        saved != null && saved >= earliest && saved <= opened ? saved : opened,
+        timeZone
+      ),
     },
     onSubmit: ({ value }) => {
       const time = fromZonedInput(value.time, timeZone);
@@ -101,9 +123,17 @@ function ObservationForm({
       }
     },
   });
-  const validTime = (value: string) => {
+  const timeProblem = (value: string) => {
     const time = fromZonedInput(value, timeZone);
-    return time != null && time <= Date.now() && time > 0;
+    if (time == null) {
+      return "Enter a date and time.";
+    }
+    if (time > Date.now()) {
+      return "Choose a time in the past.";
+    }
+    if (time < earliest) {
+      return `Saved observations are kept for ${INVENTORY_RETENTION_DAYS} days; choose a later time.`;
+    }
   };
   return (
     <div className="space-y-5">
@@ -135,23 +165,29 @@ function ObservationForm({
       >
         <form.Field
           name="time"
-          validators={{
-            onChange: ({ value }) =>
-              validTime(value) ? undefined : "Choose a valid time in the past.",
-          }}
+          validators={{ onChange: ({ value }) => timeProblem(value) }}
         >
           {(field) => (
             <div className="space-y-2">
               <Label htmlFor="observation-time">Exact time · {zone}</Label>
               <Input
-                aria-describedby="observation-time-error"
+                aria-describedby="observation-time-hint observation-time-error"
                 aria-invalid={field.state.meta.errors.length > 0}
                 id="observation-time"
+                max={toZonedInput(opened, timeZone)}
+                min={toZonedInput(earliest, timeZone)}
                 onChange={(event) => field.handleChange(event.target.value)}
                 required
                 type="datetime-local"
                 value={field.state.value}
               />
+              <p
+                className="text-muted-foreground text-xs"
+                id="observation-time-hint"
+              >
+                Inventory and events: {INVENTORY_RETENTION_DAYS} days. Raw
+                CPU/memory samples: {RAW_RETENTION_DAYS} days.
+              </p>
               <p
                 className="min-h-4 text-destructive-text text-xs"
                 id="observation-time-error"

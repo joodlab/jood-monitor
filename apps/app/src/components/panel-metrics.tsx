@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChartLine, History } from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
 import { getHistoryFn } from "../functions/clusters";
+import { useDisplay } from "../hooks/display";
 import { podProblem } from "../lib/attention";
 import {
   GAP_MS,
@@ -13,14 +14,25 @@ import {
   type UsageField,
 } from "../lib/chart-scale";
 import type { ResourceSummary } from "../lib/infrastructure";
-import { observedUsage, usageName } from "../lib/metrics";
+import { historyError } from "../lib/install-errors";
+import { usageName } from "../lib/metrics";
+import { RAW_RETENTION_DAYS, rawRetentionMessage } from "../lib/retention";
+import {
+  formatDateTime,
+  type HubClock,
+  hubNow,
+  observationMs,
+  rangeLabel,
+  rawWindow,
+  timeZoneLabel,
+} from "../lib/time";
 import {
   type Coverage,
   historyRefetchInterval,
   podGroups,
 } from "./inspector-model";
 import { CoverageNote } from "./inspector-sections";
-import { UsageCell } from "./panel-pods";
+import { PodUsage, podUsage } from "./panel-pods";
 import { RangeSelect } from "./range-select";
 import { StatusBadge } from "./resource-status";
 
@@ -49,17 +61,20 @@ type Inspected = { view: ClusterView; entity: Entity } | null;
 interface HistoryWindow {
   at?: string;
   connection?: string;
+  // The snapshot's hub time; the 7-day raw boundary is measured from it.
+  hubClock?: HubClock;
   range: string;
   referenceTime: number;
   scope?: string;
 }
 
 // Raw history is kept per Pod and Node. The chart's time axis is exactly
-// the queried window, ending at the saved observation when frozen.
+// the queried window, ending at the saved observation when frozen and
+// starting no earlier than the hub's raw retention.
 export function useHistory(
   inspected: Inspected,
   field: UsageField,
-  { at, connection, scope, range, referenceTime }: HistoryWindow
+  { at, connection, hubClock, scope, range, referenceTime }: HistoryWindow
 ) {
   const workspace = inspected?.view.cluster.workspaceId;
   return useQuery({
@@ -81,30 +96,42 @@ export function useHistory(
       ["Node", "Pod"].includes(inspected.entity.kind) &&
       referenceTime > 0,
     refetchInterval: historyRefetchInterval(at, connection),
+    retry: (failures, error) =>
+      failures < 1 && historyError(error, !!at).retryable,
     queryFn: async () => {
-      const to = at ? Date.parse(at) : Date.now();
-      const from = to - Number(range) * 3_600_000;
+      const hubTime = hubNow(hubClock, Date.now());
+      // Live, the hub ends the window at its own now, so the start is
+      // measured from the hub's clock too: a browser clock running ahead
+      // would otherwise ask for a window that has not begun.
+      const to = at ? observationMs(at) : (hubTime ?? Date.now());
+      if (to == null) {
+        throw new Error("invalid timestamp");
+      }
+      const bounds = rawWindow(to, Number(range), hubTime);
+      // A request the hub would refuse is not sent; it fails the same way.
+      if (bounds.outside) {
+        throw new Error(rawRetentionMessage);
+      }
       const samples = await getHistoryFn({
         data: {
           workspace: workspace ?? "",
           cluster: inspected?.view.cluster.id ?? "",
           entity: inspected?.entity.uid,
           name: usageName(inspected?.entity, field),
-          from: new Date(from).toISOString(),
+          from: new Date(bounds.from).toISOString(),
           to: at,
         },
       });
-      return { samples, from, to };
+      return { samples, ...bounds };
     },
   });
 }
 export type HistoryQuery = ReturnType<typeof useHistory>;
 
-const rangeLabels: Record<string, string> = {
-  "1": "Last hour",
-  "6": "Last 6 hours",
-  "24": "Last day",
-};
+// The window start when the 7-day raw boundary cut it short.
+function clampedFrom(...queries: HistoryQuery[]) {
+  return queries.find((query) => query.data?.clamped)?.data?.from;
+}
 
 export function MetricsTab({
   view,
@@ -117,6 +144,7 @@ export function MetricsTab({
   onRange,
   now,
   stale,
+  frozen = false,
   profile,
   onShowPods,
   onPodHistory,
@@ -132,11 +160,15 @@ export function MetricsTab({
   onRange?: (range: string) => void;
   now: number;
   stale: boolean;
+  // A saved observation, whose collection settings may not be retained.
+  frozen?: boolean;
   profile?: string;
   onShowPods: () => void;
   onPodHistory: (pod: Entity) => void;
 }) {
+  const { at, timeZone } = useDisplay();
   if (entity.kind === "Pod" || entity.kind === "Node") {
+    const clamped = clampedFrom(cpu, memory);
     return (
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -149,10 +181,17 @@ export function MetricsTab({
           ) : (
             <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
               <History aria-hidden className="size-3.5" />
-              {rangeLabels[range] ?? `Last ${range} h`}
+              {rangeLabel(range, at, timeZone)}
             </span>
           )}
         </div>
+        {clamped != null && (
+          <p className="text-muted-foreground text-xs" role="note">
+            History before {formatDateTime(clamped, timeZone)}{" "}
+            {timeZoneLabel(timeZone, clamped)} is outside the{" "}
+            {RAW_RETENTION_DAYS}-day raw window.
+          </p>
+        )}
         {charts.map((chart) => (
           <div
             className="rounded-lg border bg-background/40 p-4"
@@ -174,6 +213,7 @@ export function MetricsTab({
       <CoverageNote coverage={coverage} profile={profile} />
       <MemberHistoryHint onShowPods={onShowPods} pods={summary.pods.length} />
       <MemberUsage
+        frozen={frozen}
         now={now}
         onPodHistory={onPodHistory}
         pods={summary.pods}
@@ -219,12 +259,14 @@ function MemberUsage({
   pods,
   now,
   stale,
+  frozen,
   onPodHistory,
 }: {
   view: ClusterView;
   pods: readonly Entity[];
   now: number;
   stale: boolean;
+  frozen: boolean;
   onPodHistory: (pod: Entity) => void;
 }) {
   const groups = podGroups(pods, now);
@@ -253,18 +295,7 @@ function MemberUsage({
                 {pod.name}
               </span>
             </span>
-            <span className="grid shrink-0 grid-cols-[auto_auto] gap-x-4 text-right text-xs tabular-nums">
-              <UsageCell
-                field="cpu"
-                label="CPU"
-                value={observedUsage(view, pod, "cpu", now)}
-              />
-              <UsageCell
-                field="memory"
-                label="Memory"
-                value={observedUsage(view, pod, "memory", now)}
-              />
-            </span>
+            <PodUsage usage={podUsage(view, pod, now, frozen)} />
             <Button
               aria-label={`CPU and memory history for pod ${pod.name}`}
               className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
@@ -333,6 +364,7 @@ function HistoryPlot({
   title: string;
   query: HistoryQuery;
 }) {
+  const { frozen } = useDisplay();
   const { refs, percentBase } = useMemo(
     () => chartReferences(entity, field),
     [entity, field]
@@ -341,14 +373,17 @@ function HistoryPlot({
     return <ChartSkeleton title={title} />;
   }
   if (query.isError) {
+    const problem = historyError(query.error, frozen);
     return (
       <div className="space-y-2">
         <h3 className="font-medium text-sm">{title}</h3>
         <p className="rounded-md border p-3 text-sm" role="alert">
-          History unavailable.{" "}
-          <Button onClick={() => query.refetch()} size="sm" variant="link">
-            Retry
-          </Button>
+          {problem.title}.{problem.detail && ` ${problem.detail}`}{" "}
+          {problem.retryable && (
+            <Button onClick={() => query.refetch()} size="sm" variant="link">
+              Retry
+            </Button>
+          )}
         </p>
       </div>
     );

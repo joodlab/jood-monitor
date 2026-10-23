@@ -1,19 +1,34 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { useDisplay } from "../hooks/display";
-import { hasProblem, percent } from "../lib/infrastructure";
+import { liveNodeProblem } from "../lib/attention";
+import { nodeUsageGap } from "../lib/collection-state";
+import { compactCpu, compactMemory } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
+import {
+  type CapacityField,
+  nodeRequests,
+  type RequestShare,
+  usageLabel,
+  usageShare,
+} from "../lib/resource-servers";
 import { inventoryStale } from "../lib/resource-table";
 import type { AttentionActions } from "./attention-list";
+import { RequestBar } from "./request-bar";
 import { MetricBar, StatusBadge } from "./resource-status";
 import { Widget, WidgetLink } from "./widget-card";
 
 // Compact server list: status, CPU and memory per node, problems first.
-// Usage bars use only fresh node samples; a missing sample says so.
+// Usage bars use only fresh node samples against allocatable; a missing
+// sample says so, and why when the hub knows. Request bars are configured requests, not usage.
 
 const PREVIEW = 6;
+// Shown with any number of servers, so no bar reads as something it is not.
+const LEGEND =
+  "Usage is against allocatable unless marked capacity. Requested bars are configured requests, not usage.";
 
 interface ServerRow {
   node: Entity;
+  // The badge's node rule, so memory near full sorts first and warns here.
   problem: boolean;
   stale: boolean;
   view: ClusterView;
@@ -25,7 +40,12 @@ function serverRows(views: ClusterView[], now: number): ServerRow[] {
       const stale = inventoryStale(view, now);
       return view.inventory.entities
         .filter((entity) => entity.kind === "Node")
-        .map((node) => ({ view, node, stale, problem: hasProblem(node) }));
+        .map((node) => ({
+          view,
+          node,
+          stale,
+          problem: liveNodeProblem(view, node, now),
+        }));
     })
     .sort(
       (a, b) =>
@@ -33,6 +53,44 @@ function serverRows(views: ClusterView[], now: number): ServerRow[] {
         Number(b.stale) - Number(a.stale) ||
         a.node.name.localeCompare(b.node.name)
     );
+}
+
+// Measured usage over configured requests for one resource. Capacity is
+// named only when it stands in for unreported allocatable.
+function Resource({
+  row,
+  field,
+  label,
+  format,
+  requests,
+}: {
+  row: ServerRow;
+  field: CapacityField;
+  label: string;
+  format: (value?: number) => string;
+  requests: RequestShare;
+}) {
+  const { referenceTime } = useDisplay();
+  const used = observedUsage(row.view, row.node, field, referenceTime);
+  const usage = usageShare(row.node, field, used);
+  const gap =
+    used == null ? nodeUsageGap(row.view, row.node, referenceTime) : undefined;
+  return (
+    <span className="grid min-w-0 gap-2">
+      <MetricBar
+        gap={gap}
+        label={usageLabel(label, usage)}
+        value={usage.percent}
+      />
+      <RequestBar
+        compact
+        format={format}
+        label="Requested"
+        share={requests}
+        stale={row.stale}
+      />
+    </span>
+  );
 }
 
 function Row({
@@ -44,12 +102,12 @@ function Row({
   showCluster: boolean;
   onInspect: AttentionActions["onInspect"];
 }) {
-  const { referenceTime } = useDisplay();
   const { view, node } = row;
+  const requests = nodeRequests(view, node);
   return (
     <li>
       <button
-        className="grid w-full gap-x-4 gap-y-2 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:items-center sm:px-5"
+        className="grid w-full gap-x-4 gap-y-2 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:grid-cols-[minmax(0,1fr)_8rem_8rem] sm:items-center sm:px-5"
         onClick={() => onInspect(view, node)}
         type="button"
       >
@@ -58,25 +116,29 @@ function Row({
             {node.name}
           </span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-            <StatusBadge entity={node} stale={row.stale} />
+            <StatusBadge
+              entity={node}
+              problem={row.problem}
+              stale={row.stale}
+            />
             {showCluster && (
               <span className="truncate">{view.cluster.name}</span>
             )}
           </span>
         </span>
-        <MetricBar
+        <Resource
+          field="cpu"
+          format={compactCpu}
           label="CPU"
-          value={percent(
-            observedUsage(view, node, "cpu", referenceTime),
-            node.capacityCpu
-          )}
+          requests={requests.cpu}
+          row={row}
         />
-        <MetricBar
+        <Resource
+          field="memory"
+          format={compactMemory}
           label="Memory"
-          value={percent(
-            observedUsage(view, node, "memory", referenceTime),
-            node.capacityMemory
-          )}
+          requests={requests.memory}
+          row={row}
         />
       </button>
     </li>
@@ -109,8 +171,8 @@ export function ServersWidget({
       className={className}
       description={
         rows.length > PREVIEW
-          ? `Problems first · ${PREVIEW} of ${rows.length} servers`
-          : "Kubernetes Ready condition and fresh node measurements."
+          ? `Problems first · ${PREVIEW} of ${rows.length} servers. ${LEGEND}`
+          : `Ready condition and fresh node samples. ${LEGEND}`
       }
       title={
         <>

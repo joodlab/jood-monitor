@@ -1,8 +1,12 @@
 // Display helpers for source and receipt times. Values stay ISO strings until
 // presentation; the display zone is an operator preference, never data.
 
+import { DAY_MS, RAW_RETENTION_DAYS } from "./retention";
+
 export const timeZoneOptions = ["local", "UTC", "Asia/Riyadh"] as const;
 export type TimeZonePreference = (typeof timeZoneOptions)[number];
+
+const HOUR_MS = 3_600_000;
 
 export function resolveTimeZone(preference: TimeZonePreference) {
   if (preference !== "local") {
@@ -53,6 +57,33 @@ export function knownTime(value: string | number | null | undefined) {
   return Number.isFinite(time) && time >= 0 ? time : undefined;
 }
 const valid = knownTime;
+
+const zonedTimestamp =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+// A saved-observation time in epoch milliseconds, read as the hub reads it:
+// RFC3339 with a zone, and fields that survive the round trip (Date.parse
+// rolls 30 February over to March). Anything else is unreadable, never a
+// guess in the browser's zone, so every view and the hub agree on it.
+export function observationMs(value: string | undefined) {
+  const match = zonedTimestamp.exec(value ?? "");
+  if (!match) {
+    return;
+  }
+  const [written, fields, sign, hours, minutes] = match;
+  if (sign && (Number(hours) > 23 || Number(minutes) > 59)) {
+    return;
+  }
+  const time = Date.parse(written);
+  if (!Number.isFinite(time)) {
+    return;
+  }
+  const offset = sign
+    ? (sign === "-" ? -1 : 1) * (Number(hours) * 60 + Number(minutes)) * 60_000
+    : 0;
+  const wall = new Date(time + offset).toISOString().slice(0, 19);
+  return wall === fields ? time : undefined;
+}
 
 export function formatClock(
   value: string | number | null | undefined,
@@ -179,4 +210,94 @@ export function fromZonedInput(value: string, timeZone: string) {
   let time = wall - zoneOffset(wall, timeZone);
   time = wall - zoneOffset(time, timeZone);
   return time;
+}
+
+const rangeSpans: Record<string, string> = {
+  "1": "hour",
+  "6": "6 hours",
+  "24": "day",
+};
+
+// The events and history window in words. Live it ends now; frozen it ends
+// at the saved observation, so the words name that time and its zone.
+export function rangeSpan(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  const span = rangeSpans[range] ?? `${range} hours`;
+  if (!at) {
+    return `last ${span}`;
+  }
+  const time = observationMs(at);
+  if (time == null) {
+    return `${span} before the selected time`;
+  }
+  return `${span} before ${formatDateTime(time, timeZone)} ${timeZoneLabel(timeZone, time)}`;
+}
+
+// "the last hour", "the hour before Oct 22, 12:00:00 UTC".
+export function rangeText(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  return `the ${rangeSpan(range, at, timeZone)}`;
+}
+
+// "Last hour", "Hour before Oct 22, 12:00:00 UTC".
+export function rangeLabel(
+  range: string,
+  at: string | undefined,
+  timeZone: string
+) {
+  const span = rangeSpan(range, at, timeZone);
+  return span.charAt(0).toUpperCase() + span.slice(1);
+}
+
+// The hub's time in a response and the browser time it arrived.
+export interface HubClock {
+  receivedAt: number;
+  serverTime: string;
+}
+
+// The hub's clock now: its last response's time advanced by the browser
+// time elapsed since, so browser clock skew never moves a hub boundary.
+export function hubNow(clock: HubClock | undefined, now: number) {
+  const server = knownTime(clock?.serverTime);
+  if (!clock || server == null) {
+    return;
+  }
+  return server + Math.max(0, now - clock.receivedAt);
+}
+
+// Requests travel and the hub clock keeps moving after the estimate; the
+// raw-window boundary keeps this slack so the hub does not refuse a request.
+const RAW_BOUNDARY_MARGIN_MS = 60_000;
+
+export type RawWindow =
+  | { outside: true }
+  | { outside: false; from: number; to: number; clamped: boolean };
+
+// The raw-sample window a history chart requests: `hours` ending at `to`,
+// clamped to the hub's 7-day raw retention. A window ending before that
+// boundary is outside it. Without the hub's time the window is left as
+// asked and the hub decides.
+export function rawWindow(
+  to: number,
+  hours: number,
+  hubTime: number | undefined
+): RawWindow {
+  const from = to - hours * HOUR_MS;
+  if (hubTime == null) {
+    return { outside: false, from, to, clamped: false };
+  }
+  const boundary =
+    hubTime - RAW_RETENTION_DAYS * DAY_MS + RAW_BOUNDARY_MARGIN_MS;
+  if (to <= boundary) {
+    return { outside: true };
+  }
+  return from < boundary
+    ? { outside: false, from: boundary, to, clamped: true }
+    : { outside: false, from, to, clamped: false };
 }
