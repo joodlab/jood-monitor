@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { type RefObject, useEffect, useRef } from "react";
 import {
+  captureTime,
   collectionState,
   diagnosticText,
   gapReason,
@@ -423,9 +424,31 @@ function TabBadges({
   );
 }
 
+// The Diagnostic running on this Node at `time`, if any.
+function diagnosticOn(view: ClusterView, entity: Entity, time: number) {
+  if (entity.kind !== "Node") {
+    return;
+  }
+  const running = collectionState(view, time).diagnostic;
+  return running?.nodeUids.includes(entity.uid) ? running : undefined;
+}
+
+// Whether a saved observation's captured settings show a Diagnostic running
+// on this Node when its inventory was captured. Judged at the capture, never
+// the selected time or the clock; without captured settings, no claim.
+export function capturedDiagnostic(view: ClusterView, entity: Entity) {
+  const capture = captureTime(view);
+  return (
+    profileKnown(view, true) &&
+    capture != null &&
+    !!diagnosticOn(view, entity, capture)
+  );
+}
+
 // Why usage is missing when the hub knows, with a way to the collection
-// settings when they cause it, and a Diagnostic running on this Node. The
-// display clock is zero until hydration, so the countdown waits for it.
+// settings when they cause it, and a Diagnostic running on this Node: live,
+// with its countdown; saved, as its captured settings show it. The display
+// clock is zero until hydration, so the countdown waits for it.
 function CollectionNotice({
   view,
   entity,
@@ -441,14 +464,10 @@ function CollectionNotice({
   now: number;
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
-  const running =
-    !frozen && now > 0 && entity.kind === "Node"
-      ? collectionState(view, now).diagnostic
-      : undefined;
-  const diagnostic = running?.nodeUids.includes(entity.uid)
-    ? running
-    : undefined;
-  if (!(gap || diagnostic)) {
+  const diagnostic =
+    !frozen && now > 0 ? diagnosticOn(view, entity, now) : undefined;
+  const captured = frozen && capturedDiagnostic(view, entity);
+  if (!(gap || diagnostic || captured)) {
     return null;
   }
   const node =
@@ -473,6 +492,16 @@ function CollectionNotice({
                 className="mt-px size-3.5 shrink-0 text-info-text"
               />
               {diagnosticText(diagnostic, now)}.
+            </li>
+          )}
+          {captured && (
+            <li className="flex items-start gap-2">
+              <Timer
+                aria-hidden
+                className="mt-px size-3.5 shrink-0 text-info-text"
+              />
+              The settings captured with this inventory show a Diagnostic
+              running on this node when it was captured.
             </li>
           )}
         </ul>
