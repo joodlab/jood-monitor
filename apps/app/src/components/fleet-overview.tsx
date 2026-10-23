@@ -8,7 +8,11 @@ import {
   attentionSummary,
   clusterStatus,
 } from "../lib/attention";
-import { collectionState } from "../lib/collection-state";
+import {
+  captureTime,
+  collectionState,
+  profileKnown,
+} from "../lib/collection-state";
 import { nodeTotals } from "../lib/metrics";
 import type { SearchState } from "../schemas/monitor";
 import { MetricBar } from "./resource-status";
@@ -185,6 +189,20 @@ function Freshness({ view, current }: { view: ClusterView; current: boolean }) {
   );
 }
 
+// The row's collection clause. Frozen it is the profile captured with the
+// saved observation, as of the hub's receipt of its inventory, if any.
+function collectionText(view: ClusterView, now: number, frozen: boolean) {
+  if (frozen && !profileKnown(view, true)) {
+    return " · collection settings not captured";
+  }
+  const collection = collectionState(
+    view,
+    frozen ? (captureTime(view) ?? now) : now
+  );
+  const text = `${collection.label} collection${collection.paused ? " · paused" : ""}`;
+  return frozen ? ` · ${text} (captured)` : ` · ${text}`;
+}
+
 function ClusterRow({
   view,
   attention,
@@ -207,7 +225,6 @@ function ClusterRow({
   const memory = fleetUsage(totals, "memory");
   const status = clusterStatus(view, summary, referenceTime, frozen);
   const current = clusterCurrent(view, referenceTime, frozen);
-  const collection = collectionState(view, referenceTime);
   return (
     <li className="grid gap-4 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)_minmax(0,1.2fr)_auto] lg:items-center">
       <div className="flex min-w-0 gap-3">
@@ -239,8 +256,7 @@ function ClusterRow({
           </p>
           <p className="mt-0.5 truncate text-muted-foreground text-xs">
             {workspaceName} · {view.cluster.environment}
-            {!frozen &&
-              ` · ${collection.label} collection${collection.paused ? " · paused" : ""}`}
+            {collectionText(view, referenceTime, frozen)}
           </p>
           <Freshness current={current} view={view} />
         </div>

@@ -26,9 +26,11 @@ import {
   Sun,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useDeliveryWatch } from "../hooks/delivery";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
-import { freshness } from "../lib/metrics";
+import { type CrumbTone, clusterCrumb } from "../lib/collection-state";
+import { DAY_MS, INVENTORY_RETENTION_DAYS } from "../lib/retention";
 import {
   pruneStaged,
   stagedBadge,
@@ -36,6 +38,7 @@ import {
 } from "../lib/staged-changes";
 import {
   formatDateTime,
+  knownTime,
   observationMs,
   type TimeZonePreference,
   timeZoneLabel,
@@ -100,15 +103,14 @@ function Crumb({
   );
 }
 
-// Heartbeat state in words, so it never depends on the dot's colour.
-function heartbeatState(view: ClusterView, now: number) {
-  if (!view.cluster.heartbeatAt) {
-    return "no heartbeat yet";
-  }
-  return freshness(view.cluster.heartbeatAt, now) === "fresh"
-    ? "heartbeat fresh"
-    : "heartbeat stale";
-}
+// The crumb states each cluster in words (clusterCrumb), so it never depends
+// on the dot's colour.
+const crumbDots: Record<CrumbTone, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  info: "bg-info",
+  muted: "bg-muted-foreground",
+};
 
 // The Settings tab names its staged changes, so they stay in sight from any
 // tab; frozen views only know that some are waiting.
@@ -117,15 +119,6 @@ function settingsLabel(staged: number | "waiting") {
     return "Settings, staged changes waiting";
   }
   return `Settings, ${staged} staged change${staged === 1 ? "" : "s"}`;
-}
-
-function clusterDot(view: ClusterView, now: number) {
-  if (!view.cluster.heartbeatAt) {
-    return "bg-muted-foreground";
-  }
-  return freshness(view.cluster.heartbeatAt, now) === "fresh"
-    ? "bg-success"
-    : "bg-warning";
 }
 
 function PreferencesMenu({ onTimeTravel }: { onTimeTravel: () => void }) {
@@ -277,7 +270,10 @@ export function ProjectBar({
   onFreeze: (at?: string) => void;
   onSearch: () => void;
 }) {
-  const { now, frozen, at, timeZone } = useDisplay();
+  const { now, frozen, at, referenceTime, timeZone } = useDisplay();
+  // The bar is on every tab, so it keeps this page's delivery watch current
+  // for Settings and Observability; frozen views are never recorded.
+  useDeliveryWatch(clusters);
   const stagedState = useStagedState();
   // Only reads the cache: the dashboard's own query loads and refreshes it.
   const cached = useLiveSnapshot(workspace, false);
@@ -384,29 +380,37 @@ export function ProjectBar({
                 <DropdownMenuRadioItem closeOnClick value="all">
                   All clusters
                 </DropdownMenuRadioItem>
-                {clusters.map((item) => (
-                  <DropdownMenuRadioItem
-                    closeOnClick
-                    key={item.cluster.id}
-                    value={item.cluster.id}
-                  >
-                    <span
-                      aria-hidden
-                      className={cn(
-                        "size-2 shrink-0 rounded-full",
-                        clusterDot(item, now)
-                      )}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">
-                        {item.cluster.name}
+                {clusters.map((item) => {
+                  const crumb = clusterCrumb(
+                    item,
+                    referenceTime,
+                    frozen,
+                    timeZone
+                  );
+                  return (
+                    <DropdownMenuRadioItem
+                      closeOnClick
+                      key={item.cluster.id}
+                      value={item.cluster.id}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          crumbDots[crumb.tone]
+                        )}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">
+                          {item.cluster.name}
+                        </span>
+                        <span className="block truncate text-muted-foreground text-xs">
+                          {crumb.text}
+                        </span>
                       </span>
-                      <span className="block truncate text-muted-foreground text-xs">
-                        {item.cluster.environment} · {heartbeatState(item, now)}
-                      </span>
-                    </span>
-                  </DropdownMenuRadioItem>
-                ))}
+                    </DropdownMenuRadioItem>
+                  );
+                })}
               </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
           </Crumb>
@@ -492,8 +496,12 @@ export function ProjectBar({
           role="status"
         >
           <span>
-            <FrozenSubject at={at} timeZone={timeZone} />. Live updates are
-            paused; collection status is not retained historically.
+            <FrozenSubject
+              at={at}
+              clusters={clusters}
+              now={now}
+              timeZone={timeZone}
+            />
           </span>
           <Button
             className="h-9 text-xs sm:h-8"
@@ -509,19 +517,77 @@ export function ProjectBar({
   );
 }
 
-// The frozen banner's subject. An unreadable link time is said to be one,
-// never shown as a time guessed in some zone.
-function FrozenSubject({ at, timeZone }: { at: string; timeZone: string }) {
+// How far ahead of the display clock a selected time may be: the hub allows
+// a minute for clock differences.
+const AHEAD_MS = 60_000;
+
+type FrozenState = "frozen" | "retention" | "ahead" | "empty";
+
+// What the selected time can show. Outside retention or ahead of the clock
+// the hub keeps nothing to show; with every cluster loaded and none saved,
+// nothing was archived at or before it. The clock is zero until hydration.
+function frozenState(
+  time: number,
+  clusters: ClusterView[],
+  now: number
+): FrozenState {
+  if (now && time < now - INVENTORY_RETENTION_DAYS * DAY_MS) {
+    return "retention";
+  }
+  if (now && time > now + AHEAD_MS) {
+    return "ahead";
+  }
+  const nothingSaved =
+    clusters.length > 0 &&
+    clusters.every((view) => knownTime(view.inventory.sourceTime) == null);
+  return nothingSaved ? "empty" : "frozen";
+}
+
+// The frozen banner's text. An unreadable link time is said to be one,
+// never shown as a time guessed in some zone; a time always shows its year
+// and zone, so a saved observation is never read as this year's.
+function FrozenSubject({
+  at,
+  clusters,
+  now,
+  timeZone,
+}: {
+  at: string;
+  clusters: ClusterView[];
+  now: number;
+  timeZone: string;
+}) {
   const time = observationMs(at);
   if (time == null) {
-    return <>This link's time could not be read</>;
+    return <>This link's time could not be read.</>;
   }
-  return (
+  const selected = (
     <>
-      Viewing the saved observation at{" "}
       <strong className="font-medium">
-        {formatDateTime(time, timeZone)} {timeZoneLabel(timeZone, time)}
-      </strong>
+        {formatDateTime(time, timeZone, { year: "always" })}
+      </strong>{" "}
+      {timeZoneLabel(timeZone, time)}
     </>
   );
+  switch (frozenState(time, clusters, now)) {
+    case "retention":
+      return (
+        <>
+          {selected} is outside the {INVENTORY_RETENTION_DAYS}-day
+          saved-observation retention.
+        </>
+      );
+    case "ahead":
+      return <>{selected} is after the hub's current time.</>;
+    case "empty":
+      return <>No saved observation at {selected}.</>;
+    default:
+      return (
+        <>
+          Frozen at {selected}. Live updates are paused. Collection settings and
+          the observer's report are shown as captured with each cluster's
+          inventory, where the hub kept them.
+        </>
+      );
+  }
 }

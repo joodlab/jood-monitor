@@ -1,13 +1,5 @@
 import type { ClusterView } from "@jood-monitor/api-client";
 import { Badge } from "@jood-monitor/ui/badge";
-import { Button } from "@jood-monitor/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@jood-monitor/ui/card";
 import {
   Tabs,
   TabsContent,
@@ -27,14 +19,21 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import { fetchWorkspaces } from "../hooks/api/clusters";
 import { type Theme, useDisplay } from "../hooks/display";
+import {
+  capturedHeartbeatAt,
+  captureTime,
+  heartbeatKnown,
+} from "../lib/collection-state";
 import { freshness } from "../lib/metrics";
 import { stagedClusters, useStagedState } from "../lib/staged-changes";
 import {
+  formatDateTime,
   type TimeZonePreference,
   timeZoneLabel,
   timeZoneOptions,
 } from "../lib/time";
 import type { SearchState } from "../schemas/monitor";
+import { CapturedClusterSettings } from "./collection-captured";
 import { ClusterSettings } from "./collection-cluster";
 import { capabilityLabel, clusterNodes } from "./collection-model";
 import { EmptyState } from "./page";
@@ -55,27 +54,38 @@ function clusterSection(id: string) {
 // The section last opened in this tab, so returning to Settings keeps it.
 let rememberedSection: string | undefined;
 
-function heartbeatText(view: ClusterView, now: number) {
+// A section's state line and dot. Live it states the heartbeat; frozen it
+// names when the saved observation was captured, with no wall-clock verdict.
+function entryState(
+  view: ClusterView,
+  now: number,
+  frozen: boolean,
+  timeZone: string
+) {
+  if (frozen) {
+    const capture = captureTime(view);
+    return capture == null
+      ? { text: "No saved observation", dot: "bg-muted-foreground" }
+      : {
+          text: `Saved ${formatDateTime(capture, timeZone, { year: "auto" })} ${timeZoneLabel(timeZone, capture)}`,
+          dot: "bg-info",
+        };
+  }
   const state = freshness(view.cluster.heartbeatAt, now);
   if (state === "unknown") {
-    return "No heartbeat yet";
+    return { text: "No heartbeat yet", dot: "bg-muted-foreground" };
   }
-  return state === "fresh" ? "Heartbeat fresh" : `Heartbeat ${state}`;
-}
-
-function heartbeatDot(view: ClusterView, now: number) {
-  const state = freshness(view.cluster.heartbeatAt, now);
-  if (state === "unknown") {
-    return "bg-muted-foreground";
-  }
-  return state === "fresh" ? "bg-success" : "bg-warning";
+  return state === "fresh"
+    ? { text: "Heartbeat fresh", dot: "bg-success" }
+    : { text: `Heartbeat ${state}`, dot: "bg-warning" };
 }
 
 const sectionTrigger =
   "h-auto min-h-11 w-full flex-none justify-start gap-2.5 rounded-md px-2.5 py-2 text-left font-normal text-muted-foreground hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring data-active:bg-muted data-active:text-foreground dark:data-active:border-transparent dark:data-active:bg-muted";
 
 function ClusterEntry({ view, staged }: { view: ClusterView; staged: number }) {
-  const { now } = useDisplay();
+  const { now, frozen, timeZone } = useDisplay();
+  const state = entryState(view, now, frozen, timeZone);
   return (
     <TabsTrigger
       className={sectionTrigger}
@@ -83,15 +93,14 @@ function ClusterEntry({ view, staged }: { view: ClusterView; staged: number }) {
     >
       <span
         aria-hidden
-        className={cn("size-2 shrink-0 rounded-full", heartbeatDot(view, now))}
+        className={cn("size-2 shrink-0 rounded-full", state.dot)}
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium text-foreground text-sm">
           {view.cluster.name}
         </span>
         <span className="block truncate text-xs">
-          {view.cluster.environment || "No environment"} ·{" "}
-          {heartbeatText(view, now)}
+          {view.cluster.environment || "No environment"} · {state.text}
         </span>
       </span>
       {staged > 0 && (
@@ -119,14 +128,15 @@ function SectionList({
   clusterFilter?: string;
   linked?: ClusterView;
 }) {
-  const { now } = useDisplay();
+  const { now, frozen } = useDisplay();
   const staged = useStagedState();
   const list = useRef<HTMLDivElement>(null);
+  // Frozen views hold a past profile, so drafts are not counted against
+  // them; the staged-changes card says changes wait for the live view.
   const counts = new Map(
-    (now ? stagedClusters(staged, views, now) : []).map((cluster) => [
-      cluster.view.cluster.id,
-      cluster.rows.length,
-    ])
+    (now && !frozen ? stagedClusters(staged, views, now) : []).map(
+      (cluster) => [cluster.view.cluster.id, cluster.rows.length]
+    )
   );
   return (
     <div className="space-y-3 lg:sticky lg:top-28 lg:self-start" ref={list}>
@@ -182,7 +192,42 @@ function SectionList({
   );
 }
 
+function SourceBadges({ view }: { view: ClusterView }) {
+  const capabilities = view.heartbeat.capabilities ?? [];
+  if (!capabilities.length) {
+    return <span className="text-muted-foreground">Not reported yet</span>;
+  }
+  return capabilities.map((capability) => (
+    <Badge
+      key={capability}
+      variant={capability.endsWith("_unavailable") ? "warning" : "outline"}
+    >
+      {capability.endsWith("_unavailable") && <TriangleAlert aria-hidden />}
+      {capabilityLabel(capability)}
+    </Badge>
+  ));
+}
+
+// Frozen, each observer's sources come from the heartbeat captured with its
+// saved observation, and only where the hub kept one.
+function Sources({ view, frozen }: { view: ClusterView; frozen: boolean }) {
+  let gap: string | undefined;
+  if (frozen && captureTime(view) == null) {
+    gap = "No saved observation at this time";
+  } else if (frozen && !heartbeatKnown(view, true)) {
+    gap = "Not captured with this observation";
+  } else if (frozen && capturedHeartbeatAt(view) == null) {
+    gap = "No heartbeat had arrived before this inventory";
+  }
+  return gap ? (
+    <span className="text-muted-foreground">{gap}</span>
+  ) : (
+    <SourceBadges view={view} />
+  );
+}
+
 function SourcesRail({ views }: { views: ClusterView[] }) {
+  const { frozen } = useDisplay();
   return (
     <SettingsRail
       description="What each observer reports it can collect. Topology shows configured and discovered structure, not traffic."
@@ -200,36 +245,15 @@ function SourcesRail({ views }: { views: ClusterView[] }) {
         </p>
       </div>
       <ul className="space-y-2">
-        {views.map((view) => {
-          const capabilities = view.heartbeat.capabilities ?? [];
-          return (
-            <li
-              className="flex flex-wrap items-center gap-1.5 text-xs"
-              key={view.cluster.id}
-            >
-              <span className="mr-1 font-medium">{view.cluster.name}</span>
-              {capabilities.length ? (
-                capabilities.map((capability) => (
-                  <Badge
-                    key={capability}
-                    variant={
-                      capability.endsWith("_unavailable")
-                        ? "warning"
-                        : "outline"
-                    }
-                  >
-                    {capability.endsWith("_unavailable") && (
-                      <TriangleAlert aria-hidden />
-                    )}
-                    {capabilityLabel(capability)}
-                  </Badge>
-                ))
-              ) : (
-                <span className="text-muted-foreground">Not reported yet</span>
-              )}
-            </li>
-          );
-        })}
+        {views.map((view) => (
+          <li
+            className="flex flex-wrap items-center gap-1.5 text-xs"
+            key={view.cluster.id}
+          >
+            <span className="mr-1 font-medium">{view.cluster.name}</span>
+            <Sources frozen={frozen} view={view} />
+          </li>
+        ))}
       </ul>
       <a
         className="inline-flex items-center gap-1.5 rounded-sm text-primary text-xs underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -386,29 +410,38 @@ function initialSection(search: SearchState, sections: string[]) {
   return sections[0] ?? workspaceSection;
 }
 
-function FrozenSettings({ onResumeLive }: { onResumeLive: () => void }) {
+// A cluster's section: its live settings, or frozen, the read-only settings
+// captured with its saved observation, which never stage a change.
+function ClusterSection({
+  view,
+  clusters,
+  workspaceName,
+  initialNodeUid,
+  onResumeLive,
+}: {
+  view: ClusterView;
+  clusters: ClusterView["cluster"][];
+  workspaceName: string;
+  initialNodeUid?: string;
+  onResumeLive: () => void;
+}) {
+  const { frozen } = useDisplay();
+  if (frozen) {
+    return (
+      <CapturedClusterSettings
+        onResumeLive={onResumeLive}
+        view={view}
+        workspaceName={workspaceName}
+      />
+    );
+  }
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Collection status is not retained historically</CardTitle>
-          <CardDescription>
-            Saved observations retain inventory and metrics. Resume live to
-            inspect collection acknowledgments and to stage or apply profile
-            changes. Changes are only available live.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button
-            className="focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={onResumeLive}
-          >
-            Resume live
-          </Button>
-        </CardContent>
-      </Card>
-      <StagedChangesBar />
-    </div>
+    <ClusterSettings
+      clusters={clusters}
+      initialNodeUid={initialNodeUid}
+      view={view}
+      workspaceName={workspaceName}
+    />
   );
 }
 
@@ -445,9 +478,6 @@ export function CollectionSettings({
       setSelected(clusterSection(requested));
     }
   }, [requested]);
-  if (search.at) {
-    return <FrozenSettings onResumeLive={onResumeLive} />;
-  }
   if (!listed.length) {
     return (
       <EmptyState
@@ -493,13 +523,14 @@ export function CollectionSettings({
             key={view.cluster.id}
             value={clusterSection(view.cluster.id)}
           >
-            <ClusterSettings
+            <ClusterSection
               clusters={clusters}
               initialNodeUid={
                 requested === view.cluster.id
                   ? search.diagnosticNode
                   : undefined
               }
+              onResumeLive={onResumeLive}
               view={view}
               workspaceName={
                 names[view.cluster.workspaceId] ?? view.cluster.workspaceId
