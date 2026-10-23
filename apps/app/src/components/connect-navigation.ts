@@ -2,6 +2,8 @@
 // apart from the dialog so it can be checked without the hub's server
 // functions.
 
+import { inspectorReset } from "../schemas/monitor";
+
 export interface ConnectedTarget {
   problems?: boolean;
   q?: string;
@@ -9,9 +11,10 @@ export interface ConnectedTarget {
   view: string;
 }
 
-// Where those buttons land: the new cluster, live. Targets use the current
-// view and tab ids, so neither the legacy view mapping nor a tab carried over
-// from the previous page decides the page. The mode follows the view and tab.
+// Where those buttons land: the new cluster, live, with the service panel
+// closed. Targets use the current view and tab ids, so neither the legacy
+// view mapping nor a tab carried over from the previous page decides the
+// page. The mode follows the view and tab.
 export function connectedSearch<T extends object>(
   old: T,
   cluster: { id: string; workspaceId: string },
@@ -23,8 +26,7 @@ export function connectedSearch<T extends object>(
     workspace: cluster.workspaceId,
     cluster: cluster.id,
     at: undefined,
-    resource: undefined,
-    resourceCluster: undefined,
+    ...inspectorReset,
     // A Settings section opened by an earlier link would outrank the new
     // cluster.
     settingsCluster: undefined,

@@ -55,6 +55,32 @@ describe("connected cluster navigation", () => {
     expect(next).toMatchObject({ view: "settings", cluster: "cl-new" });
     expect(next.resource).toBeUndefined();
   });
+  it("closes the service panel with its tab and link time", () => {
+    const old = from({
+      view: "architecture",
+      resource: "r1",
+      resourceCluster: "cl-old",
+      panel: "metrics",
+      linkedAt: "2026-10-22T12:00:00Z",
+    });
+    expect(old).toMatchObject({
+      panel: "metrics",
+      linkedAt: "2026-10-22T12:00:00.000Z",
+    });
+    const target = connectedSearch(old, cluster, {
+      view: "resources",
+      tab: "servers",
+    });
+    // The patch clears them itself, not only through validation.
+    for (const key of ["resource", "resourceCluster", "panel", "linkedAt"]) {
+      expect(Object.hasOwn(target, key)).toBe(true);
+      expect(target[key as keyof typeof target]).toBeUndefined();
+    }
+    const next = from(target);
+    expect(next.panel).toBeUndefined();
+    expect(next.linkedAt).toBeUndefined();
+    expect(next.resource).toBeUndefined();
+  });
   it("opens the new cluster even after a Settings link named another", () => {
     const old = from({
       view: "settings",

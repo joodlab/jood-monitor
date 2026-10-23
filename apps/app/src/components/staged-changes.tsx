@@ -74,7 +74,7 @@ import {
   stagedWaiting,
   useStagedState,
 } from "../lib/staged-changes";
-import { scopeReset } from "../schemas/monitor";
+import { inspectorReset, scopeReset } from "../schemas/monitor";
 import type { AckRequest, DraftField } from "./collection-model";
 import {
   ackPatienceMs,
@@ -1165,8 +1165,7 @@ export function StagedChangesBar({
               view: "settings",
               // Names the section to open; the cluster filter stays.
               settingsCluster: cluster,
-              resource: undefined,
-              resourceCluster: undefined,
+              ...inspectorReset,
               diagnosticNode: undefined,
             }),
           });
