@@ -1,30 +1,34 @@
 import { cn } from "@jood-monitor/ui/utils";
-import { defineChart, dot, lineY, ruleY } from "@tanstack/charts";
+import { defineChart, dot, lineY, rect, ruleY, text } from "@tanstack/charts";
 import { crosshair } from "@tanstack/charts/crosshair";
+import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
 import { TriangleAlert } from "lucide-react";
-import { type CSSProperties, useMemo } from "react";
+import { type CSSProperties, type ReactNode, useMemo } from "react";
 import { useDisplay } from "../hooks/display";
 import {
-  type ChartRow,
+  chartAria,
   type DisplayUnit,
-  displayUnit,
+  displayUnitFor,
   formatInUnit,
   formatNumber,
   formatUsage,
   GAP_MS,
   historySamples,
-  isolatedSamples,
+  intervalText,
+  isolatedRows,
+  type MetricRow,
   needsDate,
   percentOf,
   type Reference,
+  rowStats,
   type SampleStats,
-  sampleStats,
   tickLabel,
   timeTicks,
   tooltipContent,
+  type UnitFamily,
   type UsageField,
   valueAxis,
   valueDomainTop,
@@ -45,6 +49,33 @@ const tooltipTheme = {
   "--ts-chart-tooltip-font": "500 0.75rem/1.35 var(--font-sans, system-ui)",
 } as CSSProperties;
 
+// Series paint in order; dashes, not colour alone, tell series apart.
+const seriesPaint = ["var(--primary)", "var(--info)"];
+
+export interface ChartSeries {
+  dash?: string;
+  id: string;
+  label: string;
+  rows: readonly MetricRow[];
+}
+
+// A shaded period with a short label, such as a Diagnostic.
+export interface ChartSpan {
+  end: number;
+  label: string;
+  start: number;
+}
+
+type Heading = "h3" | "h4";
+
+const fieldFamily: Record<UsageField, UnitFamily> = {
+  cpu: "cores",
+  memory: "bytes",
+};
+
+// One Pod or Node metric from raw samples. Its props and accessible strings
+// are the ones the Metrics tab has always used; the optional props add
+// Diagnostic periods, a zoomed domain, an empty-state reason and a heading.
 export function ResourceChart({
   samples,
   name,
@@ -56,6 +87,10 @@ export function ResourceChart({
   references = [],
   percentBase,
   height = 200,
+  spans,
+  domain,
+  emptyReason,
+  heading,
 }: {
   samples: readonly { name: string; sourceTime: string; value: string }[];
   name: string;
@@ -69,45 +104,148 @@ export function ResourceChart({
   // Reference the latest value is expressed against, e.g. the pod limit.
   percentBase?: Reference;
   height?: number;
+  spans?: readonly ChartSpan[];
+  domain?: readonly [number, number];
+  emptyReason?: string;
+  heading?: Heading;
+}) {
+  const series = useMemo(
+    () => [
+      {
+        id: name,
+        label: title,
+        rows: withGaps(historySamples(samples, name)),
+      },
+    ],
+    [samples, name, title]
+  );
+  return (
+    <MetricChart
+      domain={domain}
+      emptyReason={emptyReason}
+      family={fieldFamily[field]}
+      from={from}
+      heading={heading}
+      height={height}
+      percentBase={percentBase}
+      references={references}
+      series={series}
+      spans={spans}
+      subject={subject}
+      title={title}
+      to={to}
+    />
+  );
+}
+
+// Breaks a chart's summary counts instead of its null rows: a counter's rate
+// can be missing for a gap or for a reset.
+export interface ChartBreaks {
+  gaps: number;
+  resets: number;
+}
+
+// Raw history for one subject, one or more series in one unit family. The
+// time axis is the fetched window, or a narrower client-side domain.
+export function MetricChart({
+  title,
+  subject,
+  family,
+  from,
+  to,
+  series,
+  references = [],
+  spans = [],
+  domain,
+  height = 200,
+  emptyReason,
+  percentBase,
+  breaks,
+  heading: Title = "h3",
+  footnote,
+}: {
+  title: string;
+  subject: string;
+  family: UnitFamily;
+  from: number;
+  to: number;
+  series: readonly ChartSeries[];
+  references?: readonly Reference[];
+  spans?: readonly ChartSpan[];
+  domain?: readonly [number, number];
+  height?: number;
+  emptyReason?: string;
+  percentBase?: Reference;
+  breaks?: ChartBreaks;
+  heading?: Heading;
+  footnote?: ReactNode;
 }) {
   const { timeZone, frozen } = useDisplay();
-  const series = useMemo(() => historySamples(samples, name), [samples, name]);
-  const stats = useMemo(() => sampleStats(series), [series]);
-  const unit = displayUnit(field, stats.max);
+  const primary = series[0]?.rows;
+  const stats = useMemo(() => rowStats(primary ?? []), [primary]);
+  const max = useMemo(() => seriesMax(series), [series]);
+  const unit = displayUnitFor(family, max);
+  const [start, end] = domain ?? [from, to];
+  const shown = useMemo(
+    () => visibleSpans(spans, start, end),
+    [spans, start, end]
+  );
   const definition = useMemo(
     () =>
       chartDefinition({
         series,
         unit,
-        from,
-        to,
+        from: start,
+        to: end,
+        clip: !!domain,
         timeZone,
         title,
         references,
+        spans: shown,
         percentBase,
-        top: valueDomainTop(stats.max, references),
+        top: valueDomainTop(max, references),
       }),
-    [series, unit, from, to, timeZone, title, references, percentBase, stats]
+    [
+      series,
+      unit,
+      start,
+      end,
+      domain,
+      timeZone,
+      title,
+      references,
+      shown,
+      percentBase,
+      max,
+    ]
   );
-  const interval = `${formatDateTime(from, timeZone)} to ${formatDateTime(to, timeZone)} ${timeZoneLabel(timeZone, to)}`;
+  const interval = intervalText(from, to, timeZone);
+  const aria = chartAria({
+    title,
+    subject,
+    unit,
+    stats,
+    interval,
+    extra: spanSentences(shown, timeZone),
+  });
   return (
     <figure className="space-y-2">
       <figcaption className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 className="font-medium text-sm">
+        <Title className="font-medium text-sm">
           {title}{" "}
           <span className="font-normal text-muted-foreground text-xs">
             ({unit.label})
           </span>
-        </h3>
+        </Title>
         {references.length > 0 && (
-          <ReferenceLegend field={field} references={references} />
+          <ReferenceLegend family={family} references={references} />
         )}
       </figcaption>
       {stats.count ? (
         <div className="text-muted-foreground" style={tooltipTheme}>
           <Chart
-            ariaDescription={`${statsSentence(stats, unit)}. Interval ${interval}. Gaps longer than ${GAP_MS / 1000} seconds are left blank.`}
-            ariaLabel={`${title} for ${subject}, in ${unit.label}`}
+            ariaDescription={aria.description}
+            ariaLabel={aria.label}
             definition={definition}
             height={height}
           />
@@ -118,10 +256,16 @@ export function ResourceChart({
           <p className="text-muted-foreground text-xs">
             {interval}. Missing samples are not zero usage.
           </p>
+          {emptyReason && (
+            <p className="max-w-prose text-muted-foreground text-xs">
+              {emptyReason}
+            </p>
+          )}
         </div>
       )}
       {stats.count > 0 && (
         <ChartSummary
+          breaks={breaks}
           frozen={frozen}
           percentBase={percentBase}
           stats={stats}
@@ -129,20 +273,51 @@ export function ResourceChart({
           unit={unit}
         />
       )}
+      {footnote}
     </figure>
   );
 }
 
-function statsSentence(stats: SampleStats, unit: DisplayUnit) {
-  return `Latest ${formatInUnit(stats.latest?.value, unit)}, minimum ${formatInUnit(stats.min, unit)}, maximum ${formatInUnit(stats.max, unit)}, ${stats.count} samples`;
+function seriesMax(series: readonly ChartSeries[]) {
+  let max: number | undefined;
+  for (const item of series) {
+    for (const row of item.rows) {
+      if (row.value != null) {
+        max = max == null ? row.value : Math.max(max, row.value);
+      }
+    }
+  }
+  return max;
+}
+
+// Periods inside the shown domain, cut to it.
+function visibleSpans(
+  spans: readonly ChartSpan[],
+  start: number,
+  end: number
+): ChartSpan[] {
+  return spans
+    .filter((item) => item.end >= start && item.start <= end)
+    .map((item) => ({
+      ...item,
+      start: Math.max(item.start, start),
+      end: Math.min(item.end, end),
+    }));
+}
+
+function spanSentences(spans: readonly ChartSpan[], timeZone: string) {
+  return spans.map(
+    (item) =>
+      `${item.label}, ${formatDateTime(item.start, timeZone)} to ${formatDateTime(item.end, timeZone)} ${timeZoneLabel(timeZone, item.end)}.`
+  );
 }
 
 function ReferenceLegend({
   references,
-  field,
+  family,
 }: {
   references: readonly Reference[];
-  field: UsageField;
+  family: UnitFamily;
 }) {
   return (
     <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
@@ -162,12 +337,43 @@ function ReferenceLegend({
           <span>
             {ref.label}{" "}
             <span className="text-foreground tabular-nums">
-              {formatUsage(field, ref.value)}
+              {formatUsage(family === "cores" ? "cpu" : "memory", ref.value)}
             </span>
           </span>
         </li>
       ))}
     </ul>
+  );
+}
+
+function BreakCounts({
+  stats,
+  breaks,
+}: {
+  stats: SampleStats;
+  breaks?: ChartBreaks;
+}) {
+  const gaps = breaks?.gaps ?? stats.gaps;
+  const resets = breaks?.resets ?? 0;
+  return (
+    <>
+      {gaps > 0 && (
+        <>
+          <span aria-hidden>·</span>
+          <span>
+            {gaps} gap{gaps === 1 ? "" : "s"} over {GAP_MS / 1000} s left blank
+          </span>
+        </>
+      )}
+      {resets > 0 && (
+        <>
+          <span aria-hidden>·</span>
+          <span>
+            {resets} counter reset{resets === 1 ? "" : "s"} left blank
+          </span>
+        </>
+      )}
+    </>
   );
 }
 
@@ -177,12 +383,14 @@ function ChartSummary({
   percentBase,
   to,
   frozen,
+  breaks,
 }: {
   stats: SampleStats;
   unit: DisplayUnit;
   percentBase?: Reference;
   to: number;
   frozen: boolean;
+  breaks?: ChartBreaks;
 }) {
   const latest = stats.latest;
   const share = percentOf(latest?.value, percentBase?.value);
@@ -225,17 +433,55 @@ function ChartSummary({
         />
         {silent && " · none since"}
       </span>
-      {stats.gaps > 0 && (
-        <>
-          <span aria-hidden>·</span>
-          <span>
-            {stats.gaps} gap{stats.gaps === 1 ? "" : "s"} over {GAP_MS / 1000} s
-            left blank
-          </span>
-        </>
-      )}
+      <BreakCounts breaks={breaks} stats={stats} />
     </p>
   );
+}
+
+function scaledRows(
+  item: ChartSeries,
+  unit: DisplayUnit,
+  rows: readonly MetricRow[] = item.rows
+) {
+  return rows.map((row) => ({
+    ...row,
+    label: row.label ?? item.label,
+    series: item.id,
+    value: row.value == null ? null : row.value * unit.factor,
+  }));
+}
+
+function spanMarks(spans: readonly ChartSpan[], top: number) {
+  if (!spans.length) {
+    return [];
+  }
+  return [
+    decorative(
+      rect(spans, {
+        id: "spans",
+        x1: "start",
+        x2: "end",
+        y1: () => 0,
+        y2: () => top,
+        fill: "var(--info)",
+        fillOpacity: 0.12,
+        inset: 0,
+      })
+    ),
+    decorative(
+      text(spans, {
+        id: "span-labels",
+        x: "start",
+        y: () => top,
+        text: "label",
+        anchor: "start",
+        dx: 4,
+        dy: 9,
+        fill: "var(--info-text)",
+        fontSize: 11,
+      })
+    ),
+  ];
 }
 
 function chartDefinition({
@@ -243,37 +489,33 @@ function chartDefinition({
   unit,
   from,
   to,
+  clip,
   timeZone,
   title,
   references,
+  spans,
   percentBase,
   top,
 }: {
-  series: ReturnType<typeof historySamples>;
+  series: readonly ChartSeries[];
   unit: DisplayUnit;
   from: number;
   to: number;
+  clip: boolean;
   timeZone: string;
   title: string;
   references: readonly Reference[];
+  spans: readonly ChartSpan[];
   percentBase?: Reference;
   top: number;
 }) {
-  const scaled = (value: number | null) =>
-    value == null ? null : value * unit.factor;
-  const rows: ChartRow[] = withGaps(series).map((row) => ({
-    time: row.time,
-    value: scaled(row.value),
-  }));
-  const isolated: ChartRow[] = isolatedSamples(series).map((row) => ({
-    time: row.time,
-    value: scaled(row.value),
-  }));
   const ticks = timeTicks(from, to, timeZone);
   const axis = valueAxis(top * unit.factor);
   const withDate = needsDate(from, to, timeZone);
   return defineChart({
+    clip,
     marks: [
+      ...spanMarks(spans, axis.top),
       ...references.map((ref) =>
         ruleY([ref.value * unit.factor], {
           stroke: "currentColor",
@@ -282,13 +524,28 @@ function chartDefinition({
           strokeWidth: 1.25,
         })
       ),
-      lineY(rows, {
-        x: "time",
-        y: "value",
-        stroke: "var(--primary)",
-        strokeWidth: 1.75,
-      }),
-      dot(isolated, { x: "time", y: "value", fill: "var(--primary)", r: 2.5 }),
+      // Each series is its own path; a null row breaks it. Stacking never
+      // applies, so a series is drawn at its own value.
+      ...series.map((item, index) =>
+        lineY(scaledRows(item, unit), {
+          id: `line-${item.id}`,
+          x: "time",
+          y: "value",
+          z: "series",
+          stroke: seriesPaint[index % seriesPaint.length],
+          strokeDasharray: item.dash,
+          strokeWidth: 1.75,
+        })
+      ),
+      ...series.map((item, index) =>
+        dot(scaledRows(item, unit, isolatedRows(item.rows)), {
+          id: `dot-${item.id}`,
+          x: "time",
+          y: "value",
+          fill: seriesPaint[index % seriesPaint.length],
+          r: 2.5,
+        })
+      ),
       crosshair({ x: { strokeOpacity: 0.4 }, y: false }),
     ],
     scales: {
@@ -318,7 +575,7 @@ function chartDefinition({
       use: tooltip,
       placement: ["top", "bottom", "left", "right"],
       content: (points) =>
-        tooltipContent(points[0]?.datum as ChartRow | undefined, {
+        tooltipContent(points[0]?.datum as MetricRow | undefined, {
           unit,
           timeZone,
           title,
