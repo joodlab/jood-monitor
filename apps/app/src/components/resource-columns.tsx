@@ -24,6 +24,8 @@ import {
 } from "../lib/infrastructure";
 import {
   type ConfiguredText,
+  limitScope,
+  notUsage,
   type PodRequestText,
   podRequestText,
 } from "../lib/pod-requests";
@@ -186,39 +188,33 @@ function Configured({ value }: { value: ConfiguredText }) {
   return <span className="tabular-nums">{value.text}</span>;
 }
 
-type ConfiguredField = "cpuRequest" | "memoryLimit" | "memoryRequest";
+// The configured amounts the pod table and cards show.
+type ConfiguredColumn = "cpuRequest" | "memoryLimit" | "memoryRequest";
 
-const configuredLabels: Record<ConfiguredField, string> = {
+const configuredLabels: Record<ConfiguredColumn, string> = {
   cpuRequest: "CPU request",
   memoryRequest: "Memory request",
   memoryLimit: "Memory limit",
 };
 
-// The observer adds up the limits that are set, so a pod with one limited
-// and one unlimited container shows a finite limit it is not capped by.
-const configuredNotes: Partial<Record<ConfiguredField, string>> = {
-  memoryLimit:
-    "Only containers that set a limit are counted; one without a limit is not capped",
-};
-
-function isConfiguredField(id: string): id is ConfiguredField {
+function isConfiguredField(id: string): id is ConfiguredColumn {
   return Object.hasOwn(configuredLabels, id);
 }
 
-// What follows "Configured, " in a configured column's note.
-function notUsage(field: ConfiguredField) {
-  const note = configuredNotes[field];
-  return note ? `not usage. ${note}` : "not usage";
+// The words a configured label carries for screen readers, from the note
+// the table, the cards and the inspector share (lib/pod-requests).
+function configuredNote(field: ConfiguredColumn) {
+  return `, configured, ${notUsage(field)}`;
 }
 
 // Configured requests and limits sit beside measured usage, so the header
 // says which they are. The sort button's accessible name carries the note;
 // sighted users read it from the note button beside it (ColumnNote).
-function ConfiguredHeader({ field }: { field: ConfiguredField }) {
+function ConfiguredHeader({ field }: { field: ConfiguredColumn }) {
   return (
     <>
       {configuredLabels[field]}
-      <span className="sr-only">{`, configured, ${notUsage(field)}`}</span>
+      <span className="sr-only">{configuredNote(field)}</span>
     </>
   );
 }
@@ -253,7 +249,7 @@ export function ColumnNote({ column }: { column: string }) {
   );
 }
 
-function configuredColumn(field: ConfiguredField): Column {
+function configuredColumn(field: ConfiguredColumn): Column {
   return {
     id: field,
     header: () => <ConfiguredHeader field={field} />,
@@ -265,10 +261,15 @@ function configuredColumn(field: ConfiguredField): Column {
   };
 }
 
+// A card is one button, so it holds no note button: each configured label
+// carries the table header's note for screen readers, and a finite summed
+// limit names its scope in sight.
 function configuredFacts(text: PodRequestText): CardFact[] {
   return (["cpuRequest", "memoryRequest", "memoryLimit"] as const).map(
     (field) => ({
       label: configuredLabels[field],
+      note: configuredNote(field),
+      hint: limitScope(field, text[field]),
       value: <Configured value={text[field]} />,
     })
   );
@@ -645,8 +646,31 @@ export function resourceColumns(
 }
 
 export interface CardFact {
+  // A short visible qualifier under the value, e.g. a summed limit's scope.
+  hint?: string;
   label: string;
+  // Words that follow the label for screen readers only.
+  note?: string;
   value: ReactNode;
+}
+
+// One fact on a stacked card. The value truncates; the hint wraps under it,
+// so the words that qualify a value are never cut off.
+export function CardFactItem({ fact }: { fact: CardFact }) {
+  return (
+    <span className="min-w-0">
+      <span className="block text-muted-foreground">
+        {fact.label}
+        {fact.note && <span className="sr-only">{fact.note}</span>}
+      </span>
+      <span className="block truncate">{fact.value ?? "—"}</span>
+      {fact.hint && (
+        <span className="block break-words text-muted-foreground">
+          {fact.hint}
+        </span>
+      )}
+    </span>
+  );
 }
 
 // Key facts for the stacked mobile card of each preset.

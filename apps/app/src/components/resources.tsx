@@ -56,6 +56,7 @@ import {
 import { defaultPageSize, pageSizes } from "../schemas/monitor";
 import { EmptyState } from "./page";
 import {
+  CardFactItem,
   ColumnNote,
   cardFacts,
   resourceColumns,
@@ -388,10 +389,7 @@ function ResourceCard({
       </span>
       <span className="grid w-full grid-cols-2 gap-x-3 gap-y-2 text-xs">
         {cardFacts(row, preset).map((fact) => (
-          <span className="min-w-0" key={fact.label}>
-            <span className="block text-muted-foreground">{fact.label}</span>
-            <span className="block truncate">{fact.value ?? "—"}</span>
-          </span>
+          <CardFactItem fact={fact} key={fact.label} />
         ))}
       </span>
       <span className="flex w-full border-t pt-3">

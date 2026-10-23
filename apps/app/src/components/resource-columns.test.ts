@@ -12,6 +12,7 @@ import {
 } from "../lib/resource-table";
 import { headerStatus } from "./inspector-header";
 import {
+  CardFactItem,
   ColumnNote,
   cardFacts,
   resourceColumns,
@@ -284,6 +285,47 @@ describe("Pods table requests", () => {
     expect(
       renderToStaticMarkup(createElement(Fragment, null, limit?.value))
     ).toContain("768 MiB");
+  });
+  it("gives the phone cards the table's configured note", () => {
+    const fact = (name: string, label: string) => {
+      const found = cardFacts(row(name), "pods").find(
+        (item) => item.label === label
+      );
+      if (!found) {
+        throw new Error(`no ${label} fact for ${name}`);
+      }
+      return found;
+    };
+    const card = (name: string, label: string) =>
+      renderToStaticMarkup(
+        createElement(CardFactItem, { fact: fact(name, label) })
+      );
+    // The card is one button, so the note is plain text for screen readers
+    // there, in the header's words, never a nested note button.
+    for (const [id, label] of [
+      ["cpuRequest", "CPU request"],
+      ["memoryRequest", "Memory request"],
+      ["memoryLimit", "Memory limit"],
+    ]) {
+      const markup = card("web", label);
+      expect(markup).toContain('<span class="sr-only">, configured, not usage');
+      expect(markup).not.toContain("<button");
+      const note = fact("web", label).note ?? "";
+      expect(note).not.toBe("");
+      const header = column(id).header as () => ReactNode;
+      expect(renderToStaticMarkup(header())).toContain(note);
+    }
+    // A finite summed limit names its scope in sight, under the value and
+    // never cut off with it; its full caveat is in the note.
+    const limit = card("web", "Memory limit");
+    expect(limit).toContain("Only containers that set a limit are counted");
+    expect(limit).toContain(
+      '<span class="block break-words text-muted-foreground">Containers with a limit only</span>'
+    );
+    expect(card("web", "Memory request")).not.toContain("with a limit only");
+    // "No limit" and an unknown limit leave nothing out.
+    expect(fact("best-effort", "Memory limit").hint).toBeUndefined();
+    expect(fact("older", "Memory limit").hint).toBeUndefined();
   });
 });
 

@@ -81,6 +81,34 @@ export function podRequestText(pod: Entity): PodRequestText {
   };
 }
 
+export type ConfiguredField = keyof PodRequestText;
+
+const limitFields: readonly ConfiguredField[] = ["cpuLimit", "memoryLimit"];
+
+// The observer adds up the limits that are set, so a pod with one limited
+// and one unlimited container shows a finite limit it is not capped by.
+const summedLimitNote =
+  "Only containers that set a limit are counted; one without a limit is not capped";
+
+// What follows "Configured, " in a configured value's note: a request or a
+// limit is never usage, and a summed limit says what it leaves out. The
+// table header, the phone card and the inspector read it from here.
+export function notUsage(field: ConfiguredField) {
+  return limitFields.includes(field)
+    ? `not usage. ${summedLimitNote}`
+    : "not usage";
+}
+
+// The note's short visible form beside a finite summed limit. "No limit"
+// and an unknown value leave nothing out, so they need none.
+export function limitScope(field: ConfiguredField, value: ConfiguredText) {
+  return limitFields.includes(field) &&
+    value.sort != null &&
+    Number.isFinite(value.sort)
+    ? "Containers with a limit only"
+    : undefined;
+}
+
 // One pod's configured request against the node's allocatable.
 export interface PodRequestShare {
   // requested / allocatable × 100; absent when either side is unknown.

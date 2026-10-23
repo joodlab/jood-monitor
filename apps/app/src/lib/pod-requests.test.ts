@@ -1,8 +1,10 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import {
+  limitScope,
   memoryShareText,
   nodeRequestShares,
+  notUsage,
   podRequestText,
   rankByShare,
   requestLine,
@@ -106,6 +108,28 @@ describe("pod request text", () => {
     for (const value of Object.values(older)) {
       expect(value.text).not.toBe("None reported");
     }
+  });
+  it("notes every configured amount as not usage, and a summed limit's scope", () => {
+    expect(notUsage("cpuRequest")).toBe("not usage");
+    expect(notUsage("memoryRequest")).toBe("not usage");
+    // The observer adds up the limits that are set, so each limit says
+    // that a container without one is not capped by the sum.
+    for (const field of ["cpuLimit", "memoryLimit"] as const) {
+      expect(notUsage(field)).toBe(
+        "not usage. Only containers that set a limit are counted; one without a limit is not capped"
+      );
+    }
+    const capped = podRequestText(pod("capped", { limitedMemory: 512 * MiB }));
+    expect(limitScope("memoryLimit", capped.memoryLimit)).toBe(
+      "Containers with a limit only"
+    );
+    // "No limit", an unknown limit and a request name no scope.
+    expect(limitScope("cpuLimit", capped.cpuLimit)).toBeUndefined();
+    expect(limitScope("memoryRequest", capped.memoryRequest)).toBeUndefined();
+    const older = podRequestText(
+      pod("older", { requestedCpu: undefined, requestedMemory: undefined })
+    );
+    expect(limitScope("memoryLimit", older.memoryLimit)).toBeUndefined();
   });
   it("writes a workload pod's absolute requests", () => {
     expect(requestLine(pod("web", { requestedMemory: 512 * MiB }))).toBe(
