@@ -192,10 +192,20 @@ function SectionList({
   );
 }
 
-function SourceBadges({ view }: { view: ClusterView }) {
+function SourceBadges({
+  view,
+  frozen,
+}: {
+  view: ClusterView;
+  frozen: boolean;
+}) {
   const capabilities = view.heartbeat.capabilities ?? [];
   if (!capabilities.length) {
-    return <span className="text-muted-foreground">Not reported yet</span>;
+    return (
+      <span className="text-muted-foreground">
+        {frozen ? "None in the captured heartbeat" : "Not reported yet"}
+      </span>
+    );
   }
   return capabilities.map((capability) => (
     <Badge
@@ -222,7 +232,7 @@ function Sources({ view, frozen }: { view: ClusterView; frozen: boolean }) {
   return gap ? (
     <span className="text-muted-foreground">{gap}</span>
   ) : (
-    <SourceBadges view={view} />
+    <SourceBadges frozen={frozen} view={view} />
   );
 }
 

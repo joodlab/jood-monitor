@@ -17,6 +17,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { useDisplay } from "../hooks/display";
+import { formatDateTime, knownTime, timeZoneLabel } from "../lib/time";
 import {
   type AckStatus,
   ackCounts,
@@ -62,8 +64,16 @@ function StatusBadge({ status }: { status: AckStatus }) {
 
 // A node collector's running total of discarded batches, in the text colour:
 // a total since the collector started is not by itself a problem. Without a
-// fresh acknowledgment it is the last total the observer forwarded.
-function DroppedCell({ row }: { row: NodeAckRow }) {
+// fresh acknowledgment it is the last total the observer forwarded; in a
+// saved observation (`absolute`) it is the total as captured, never a live
+// last-reported value.
+function DroppedCell({
+  row,
+  absolute,
+}: {
+  row: NodeAckRow;
+  absolute: boolean;
+}) {
   if (!row.ack) {
     return (
       <span className="text-muted-foreground">
@@ -74,7 +84,8 @@ function DroppedCell({ row }: { row: NodeAckRow }) {
   if (row.status === "unavailable") {
     return (
       <span className="text-muted-foreground">
-        {formatCount(row.ack.dropped)} (last reported)
+        {formatCount(row.ack.dropped)}{" "}
+        {absolute ? "as captured" : "(last reported)"}
       </span>
     );
   }
@@ -129,7 +140,7 @@ function AckRow({
         )}
       </TableCell>
       <TableCell className="text-right text-xs tabular-nums">
-        <DroppedCell row={row} />
+        <DroppedCell absolute={absolute} row={row} />
       </TableCell>
       <TableCell className="text-xs">
         <TimeText
@@ -142,7 +153,18 @@ function AckRow({
   );
 }
 
-// `absolute` shows exact times, for a saved observation's acknowledgments.
+// When a saved observation's totals were captured: the hub's receipt of its
+// inventory, where it was kept.
+function capturedTotals(view: ClusterView, timeZone: string) {
+  const received = knownTime(view.cluster.receivedAt);
+  if (received == null) {
+    return "Totals as captured with this observation.";
+  }
+  return `Totals as captured at ${formatDateTime(received, timeZone, { year: "auto" })} ${timeZoneLabel(timeZone, received)}.`;
+}
+
+// `absolute` shows exact times and captured totals, for a saved
+// observation's acknowledgments.
 export function NodeAcknowledgments({
   view,
   rows,
@@ -152,6 +174,7 @@ export function NodeAcknowledgments({
   rows: NodeAckRow[];
   absolute?: boolean;
 }) {
+  const { timeZone } = useDisplay();
   const [expanded, setExpanded] = useState(false);
   const counts = ackCounts(rows);
   const shown = expanded ? rows : rows.slice(0, collapsedRows);
@@ -203,6 +226,7 @@ export function NodeAcknowledgments({
         Node collector batches discarded since that collector started, after 5
         minutes unsent or when the observer refused them. Totals reset on
         restart.
+        {absolute && ` ${capturedTotals(view, timeZone)}`}
       </p>
       {rows.length > collapsedRows && (
         <Button

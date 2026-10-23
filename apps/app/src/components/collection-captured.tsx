@@ -124,6 +124,35 @@ function CapturedHeading({
   );
 }
 
+// What the hub stored with the inventory, naming only what it captured and
+// saying which part it did not.
+function storedSentence(capture: Capture, timeZone: string) {
+  const receipt =
+    capture.received == null
+      ? "with this inventory"
+      : `with the inventory it received at ${exactTime(capture.received, timeZone)}`;
+  let stored = "these settings and the observer's last report";
+  if (!capture.heartbeat) {
+    stored = "these settings";
+  } else if (!capture.profile) {
+    stored = "the observer's last report";
+  }
+  const parts = [`Read-only. The hub stored ${stored} ${receipt}.`];
+  if (!capture.heartbeat) {
+    parts.push("The observer's report was not captured with it.");
+  }
+  if (!capture.profile) {
+    parts.push("The collection settings were not captured with it.");
+  }
+  if (capture.heartbeat) {
+    parts.push(
+      "The heartbeat is the last one before that inventory, not a continuous record."
+    );
+  }
+  parts.push("Return to live to stage or apply changes.");
+  return parts.join(" ");
+}
+
 function captureSentences(
   capture: Capture,
   timeZone: string,
@@ -137,13 +166,7 @@ function captureSentences(
   }
   const sentences: string[] = [];
   if (capture.profile || capture.heartbeat) {
-    const receipt =
-      capture.received == null
-        ? "with this inventory"
-        : `with the inventory it received at ${exactTime(capture.received, timeZone)}`;
-    sentences.push(
-      `Read-only. The hub stored these settings and the observer's last report ${receipt}. The heartbeat is the last one before that inventory, not a continuous record. Return to live to stage or apply changes.`
-    );
+    sentences.push(storedSentence(capture, timeZone));
   } else {
     sentences.push("Only the inventory was saved with this observation.");
   }
@@ -157,17 +180,25 @@ function captureSentences(
 }
 
 // How far the capture is from the selected time, so a capture minutes or
-// days older than the selected time is never read as that moment.
+// days older than the selected time is never read as that moment. The hub
+// picks a saved inventory by its source time, at or before the selected
+// time, so the hub's receipt of it (a spooled or delayed delivery) can come
+// after the selected time.
 function captureDistance(capture: Capture, referenceTime: number) {
   if (capture.capture == null) {
     return;
   }
   const event = capture.received == null ? "sampled" : "received";
-  const gap = age(capture.capture, referenceTime);
-  if (!gap || gap === "0s") {
+  const delta = capture.capture - referenceTime;
+  if (Math.abs(delta) < 1000) {
     return `This inventory was ${event} at the selected time.`;
   }
-  return `This inventory was ${event} ${gap} before the selected time.`;
+  if (delta > 0) {
+    const source =
+      capture.received == null ? "" : "; its source time is at or before it";
+    return `This inventory was ${event} ${age(referenceTime, capture.capture)} after the selected time${source}.`;
+  }
+  return `This inventory was ${event} ${age(capture.capture, referenceTime)} before the selected time.`;
 }
 
 function CaptureNotice({
@@ -224,17 +255,17 @@ function CapturedHeartbeat({ capture }: { capture: Capture }) {
       </span>
     );
   }
-  const state =
-    capture.received == null
-      ? "not evaluated"
-      : freshness(heartbeatAt, capture.capture);
-  if (state === "unknown") {
+  // A capture without a heartbeat before it says so, whether or not the
+  // hub's receipt time was kept to judge one against.
+  const fresh = freshness(heartbeatAt, capture.capture);
+  if (fresh === "unknown") {
     return (
       <span className="text-muted-foreground">
         No heartbeat had arrived before this inventory
       </span>
     );
   }
+  const state = capture.received == null ? "not evaluated" : fresh;
   return (
     <span className={state === "stale" ? "text-warning-text" : undefined}>
       <TimeText
@@ -297,7 +328,13 @@ function ObserverReport({ capture }: { capture: Capture }) {
       </div>
       <div className="space-y-1.5">
         <p className="font-medium text-sm">Reported sources</p>
-        <Capabilities view={view} />
+        {view.heartbeat.capabilities?.length ? (
+          <Capabilities view={view} />
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            The captured heartbeat reported no sources.
+          </p>
+        )}
         <MetricsApiReport view={view} />
       </div>
     </>

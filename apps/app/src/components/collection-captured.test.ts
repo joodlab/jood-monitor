@@ -144,6 +144,54 @@ describe("captured cluster settings", () => {
     // 15 s old at the receipt, though over 4 min old at the selected time.
     expect(html).toContain("2 acknowledged · 0 pending · 0 without");
     expect(html).not.toContain("(last reported)");
+    expect(html).toContain("Totals as captured at Oct 22, 13:56:10 UTC.");
+  });
+
+  it("reads an acknowledgment not fresh at the receipt as captured", () => {
+    const view = capture();
+    const [nodeA, nodeB] = view.heartbeat.nodes ?? [];
+    // node-b's collector last reported 3 minutes before the receipt.
+    view.heartbeat.nodes = [
+      nodeA,
+      { ...nodeB, seenAt: "2026-10-22T13:53:10Z", dropped: 0 },
+    ];
+    const html = render(view);
+    expect(html).toContain("1 acknowledged · 0 pending · 1 without");
+    expect(html).toContain("0 as captured");
+    expect(html).not.toContain("(last reported)");
+  });
+
+  it("names only the part captured with the inventory", () => {
+    const settings = render(capture({ profile: true, heartbeat: false }));
+    expect(settings).toContain(
+      "Read-only. The hub stored these settings with the inventory it received at Oct 22, 13:56:10 UTC. The observer&#x27;s report was not captured with it. Return to live to stage or apply changes."
+    );
+    expect(settings).not.toContain("The heartbeat is the last one");
+    expect(settings).toContain("Standard profile");
+    const report = render(capture({ profile: false, heartbeat: true }));
+    expect(report).toContain(
+      "Read-only. The hub stored the observer&#x27;s last report with the inventory it received at Oct 22, 13:56:10 UTC. The collection settings were not captured with it. The heartbeat is the last one before that inventory, not a continuous record."
+    );
+    expect(report).not.toContain("these settings");
+    expect(report).not.toContain("Standard profile");
+  });
+
+  it("places a receipt after the selected time after it", () => {
+    // Sourced at 13:59:00, spooled by the observer and received at 14:30:00.
+    const view = capture();
+    view.inventory.sourceTime = "2026-10-22T13:59:00Z";
+    view.cluster.inventoryTime = "2026-10-22T13:59:00Z";
+    view.cluster.receivedAt = "2026-10-22T14:30:00Z";
+    expect(render(view)).toContain(
+      "This inventory was received 30m after the selected time; its source time is at or before it."
+    );
+    view.cluster.receivedAt = "2026-10-22T14:00:40Z";
+    const close = render(view);
+    expect(close).toContain(
+      "This inventory was received 40s after the selected time"
+    );
+    expect(close).not.toContain("at the selected time.");
+    expect(close).not.toContain("in future");
   });
 
   it("says what was not captured with an older observation", () => {
@@ -164,8 +212,25 @@ describe("captured cluster settings", () => {
     expect(html).not.toContain("46");
   });
 
+  it("reads a saved observation without a capture record as not captured", () => {
+    const view = capture();
+    // An older observation carries no record of what was captured with it.
+    view.observationMetadataAvailable = undefined;
+    const html = render(view);
+    expect(html).toContain(
+      "Only the inventory was saved with this observation."
+    );
+    expect(html).toContain(
+      "The observer report was not captured with this observation."
+    );
+    expect(html).not.toContain("Standard profile");
+    expect(html).not.toContain("46");
+  });
+
   it("says when nothing was saved at or before the selected time", () => {
-    const view = capture(undefined);
+    const view = capture();
+    // Neither a capture record nor an inventory.
+    view.observationMetadataAvailable = undefined;
     view.inventory = {
       entities: [],
       edges: [],
@@ -184,6 +249,8 @@ describe("captured cluster settings", () => {
     );
     expect(html).not.toContain("Desired revision");
     expect(html).not.toContain("Standard profile");
+    expect(html).not.toContain("Heartbeat");
+    expect(html).not.toContain("Paused");
   });
 
   it("names no heartbeat for a capture made before the first one", () => {
@@ -215,5 +282,23 @@ describe("captured cluster settings", () => {
       "Saved inventory from Oct 22, 13:56:09 UTC; hub receipt time not retained."
     );
     expect(html).toContain("· not evaluated");
+  });
+
+  it("names no heartbeat without a receipt time or a heartbeat", () => {
+    const view = capture();
+    view.cluster.receivedAt = null;
+    view.cluster.heartbeatAt = null;
+    const html = render(view);
+    expect(html).toContain("No heartbeat had arrived before this inventory");
+    expect(html).not.toContain("Unknown");
+    expect(html).not.toContain("not evaluated");
+  });
+
+  it("says a captured heartbeat reported no sources", () => {
+    const view = capture();
+    view.heartbeat.capabilities = [];
+    const html = render(view);
+    expect(html).toContain("The captured heartbeat reported no sources.");
+    expect(html).not.toContain("Sources appear once");
   });
 });
