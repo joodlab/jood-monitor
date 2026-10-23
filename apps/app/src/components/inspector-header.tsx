@@ -8,18 +8,14 @@ import {
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
 import { type Ref, useState } from "react";
 import { liveNodeProblem } from "../lib/attention";
-import { routedServiceWithoutEndpoints } from "../lib/infrastructure";
+import { summarize } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
+import { serviceStatusDetail } from "../lib/resource-table";
 import type { HubClock } from "../lib/time";
 import type { PanelTab, SearchState } from "../schemas/monitor";
 import { CopyButton, CopyLinkMenu } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
-import {
-  KindTile,
-  routedEmptyDetail,
-  StatusBadge,
-  type StatusDetail,
-} from "./resource-status";
+import { KindTile, StatusBadge, type StatusDetail } from "./resource-status";
 
 // What the link menu needs: the page's search, the tab on screen and the
 // hub clock that bounds a pinned moment.
@@ -52,11 +48,12 @@ export function useInspectionTrail(
 const iconButton =
   "size-9 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
-// The header badge's verdict, as on the resource's canvas card: nodes follow
-// the attention rule (memory near full included), and a routed Service with
-// no endpoint pods is a problem that names its reason. Every other kind keeps
-// the badge's own rule.
-function headerStatus(
+// The header badge's verdict, as on the Resources row that opens it: nodes
+// follow the attention rule (memory near full included), and a Service
+// follows the shared Service rule, naming its reason (routed with no
+// endpoint pods, or endpoint pods not all ready). Every other kind keeps the
+// badge's own rule.
+export function headerStatus(
   view: ClusterView,
   entity: Entity,
   referenceTime: number
@@ -64,8 +61,14 @@ function headerStatus(
   if (entity.kind === "Node") {
     return { problem: liveNodeProblem(view, entity, referenceTime) };
   }
-  if (routedServiceWithoutEndpoints(view, entity, referenceTime)) {
-    return { detail: routedEmptyDetail, problem: true };
+  if (entity.kind === "Service") {
+    const detail = serviceStatusDetail(
+      view,
+      entity,
+      summarize(view, entity, referenceTime),
+      referenceTime
+    );
+    return detail ? { detail, problem: true } : {};
   }
   return {};
 }

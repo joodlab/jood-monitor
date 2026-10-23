@@ -1,5 +1,7 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import type { StatusDetail } from "../components/resource-status";
 import { liveNodeProblem, livePodProblem } from "./attention";
+import { routedEmptyText } from "./canvas-cards";
 import {
   gapLabel,
   gapReason,
@@ -103,6 +105,9 @@ export interface ResourceRow {
   problem: boolean;
   // The cluster's inventory is not current: the row is its last report.
   stale: boolean;
+  // Why the row is a problem when its status cannot say, e.g. a Service's
+  // endpoint pods (serviceStatusDetail).
+  statusDetail?: StatusDetail;
   summary: ResourceSummary;
   view: ClusterView;
 }
@@ -148,6 +153,63 @@ export function includesSystem(
   return filter.system || isSystemNamespace(filter.namespace);
 }
 
+// Without endpoint discovery the observer counts selector-matched pods.
+export function selectorOnly(view: ClusterView) {
+  return view.inventory.capabilities.includes("endpointslices_unavailable");
+}
+
+export function endpointTitle(selector: boolean) {
+  return selector
+    ? "Endpoint discovery is unavailable; counts selector-matched pods."
+    : "Ready endpoint pods / active endpoint pods";
+}
+
+// A routed Service with no endpoint pods still reports "Observed", so its
+// badge names the canvas card's reason: configuration observed, no cause
+// named and no traffic measured.
+const routedEmpty: StatusDetail = {
+  label: "routed, no endpoint pods",
+  title: routedEmptyText,
+};
+
+// Why a Service is a problem, which its status ("Observed") cannot say: an
+// Ingress routes to it and it has no endpoint pods at all (the canvas and
+// attention rule), or its endpoint pods are not all ready. An unrouted
+// Service without endpoints is not assumed to be a fault. The Resources row
+// and the panel header it opens both read this, so they never disagree.
+export function serviceStatusDetail(
+  view: ClusterView,
+  entity: Entity,
+  summary: ResourceSummary,
+  now: number
+): StatusDetail | undefined {
+  if (entity.kind !== "Service") {
+    return;
+  }
+  if (routedServiceWithoutEndpoints(view, entity, now)) {
+    return routedEmpty;
+  }
+  const { ready, desired } = summary;
+  if (ready == null || desired == null || ready >= desired) {
+    return;
+  }
+  const selector = selectorOnly(view);
+  return {
+    label: `${ready}/${desired} ${selector ? "selected" : "endpoint"} pods ready`,
+    title: endpointTitle(selector),
+  };
+}
+
+// A Service is a problem exactly when it has a reason to name.
+export function serviceProblem(
+  view: ClusterView,
+  entity: Entity,
+  summary: ResourceSummary,
+  now: number
+) {
+  return serviceStatusDetail(view, entity, summary, now) !== undefined;
+}
+
 function rowProblem(
   { view, entity }: Candidate,
   summary: ResourceSummary,
@@ -163,15 +225,7 @@ function rowProblem(
     return liveNodeProblem(view, entity, now);
   }
   if (entity.kind === "Service") {
-    // Endpoints exist but not all are ready, or an Ingress routes to it and
-    // it has no endpoint pods at all (the canvas and attention rule). An
-    // unrouted Service without endpoints is not assumed to be a fault.
-    return (
-      (summary.ready != null &&
-        summary.desired != null &&
-        summary.ready < summary.desired) ||
-      routedServiceWithoutEndpoints(view, entity, now)
-    );
+    return serviceProblem(view, entity, summary, now);
   }
   return hasProblem(entity);
 }
@@ -218,6 +272,7 @@ function toRow(candidate: Candidate, now: number): ResourceRow {
     summary,
     gap: usageGap(view, entity, summary.pods, now),
     problem: rowProblem(candidate, summary, now),
+    statusDetail: serviceStatusDetail(view, entity, summary, now),
     stale: inventoryStale(view, now),
     node: entity.kind === "Pod" ? findEntity(view, entity.nodeUid) : undefined,
   };

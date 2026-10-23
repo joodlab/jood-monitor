@@ -29,13 +29,14 @@ import {
 } from "../lib/pod-requests";
 import { usageShare } from "../lib/resource-servers";
 import {
+  endpointTitle,
   type ResourceRow,
+  selectorOnly,
   type TablePreset,
   usageDisplay,
 } from "../lib/resource-table";
 import {
   MetricBar,
-  routedEmptyDetail,
   StatusBadge,
   type StatusDetail,
   staleTitle,
@@ -110,36 +111,12 @@ function statusRank(row: ResourceRow) {
   return row.stale ? 1 : 2;
 }
 
-function selectorOnly(row: ResourceRow) {
-  return row.view.inventory.capabilities.includes("endpointslices_unavailable");
-}
-
-function endpointTitle(selector: boolean) {
-  return selector
-    ? "Endpoint discovery is unavailable; counts selector-matched pods."
-    : "Ready endpoint pods / active endpoint pods";
-}
-
 // What a problem row's status cannot say. A Service reports "Observed", so
-// the row names why the row rule flagged it: its endpoint pods are not all
-// ready, or it has none while an Ingress routes to it (the canvas and
-// attention rule). A warning badge never reads "Observed" without a reason.
+// the row names why the shared Service rule (serviceStatusDetail) flagged
+// it, in the words of the panel header it opens. A warning badge never reads
+// "Observed" without a reason.
 export function rowStatusDetail(row: ResourceRow): StatusDetail | undefined {
-  if (!row.problem || row.entity.kind !== "Service") {
-    return;
-  }
-  const { active, ready, desired } = row.summary;
-  if (active === 0) {
-    return routedEmptyDetail;
-  }
-  if (ready == null || desired == null || ready >= desired) {
-    return;
-  }
-  const selector = selectorOnly(row);
-  return {
-    label: `${ready}/${desired} ${selector ? "selected" : "endpoint"} pods ready`,
-    title: endpointTitle(selector),
-  };
+  return row.problem ? row.statusDetail : undefined;
 }
 
 const statusColumn: Column = {
@@ -527,7 +504,7 @@ function RoutedEmpty({
 }
 
 function EndpointReadiness({ row }: { row: ResourceRow }) {
-  const selector = selectorOnly(row);
+  const selector = selectorOnly(row.view);
   const { ready, desired } = row.summary;
   if (desired === 0) {
     // With no active endpoint pods, a problem row is the routed-empty one.

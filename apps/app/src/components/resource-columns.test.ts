@@ -3,14 +3,21 @@ import { createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { routedEmptyText } from "../lib/canvas-cards";
-import { type ResourceRow, resourceRows } from "../lib/resource-table";
+import { summarize } from "../lib/infrastructure";
+import {
+  type ResourceRow,
+  resourceRows,
+  serviceProblem,
+  serviceStatusDetail,
+} from "../lib/resource-table";
+import { headerStatus } from "./inspector-header";
 import {
   ColumnNote,
   cardFacts,
   resourceColumns,
   rowStatusDetail,
 } from "./resource-columns";
-import { MetricBar } from "./resource-status";
+import { MetricBar, routedEmptyDetail, StatusBadge } from "./resource-status";
 
 // Server-rendered Nodes table cells for synthetic clusters: a missing node
 // sample names the reason the hub knows, and never reads as a zero.
@@ -417,5 +424,57 @@ describe("Services with no endpoint pods", () => {
     expect(
       renderToStaticMarkup(createElement(Fragment, null, fact?.value))
     ).toContain("No endpoint pods");
+  });
+  it("gives the row and the panel header it opens one Service verdict", () => {
+    const entity = (name: string) => {
+      const found = cluster.inventory.entities.find(
+        (item) => item.name === name
+      );
+      if (!found) {
+        throw new Error(`no entity ${name}`);
+      }
+      return found;
+    };
+    const badge = (input: ReturnType<typeof headerStatus>, name: string) =>
+      renderToStaticMarkup(
+        createElement(StatusBadge, {
+          detail: input.detail,
+          entity: entity(name),
+          problem: input.problem,
+        })
+      );
+    const services = ["synthetic-cart", "synthetic-checkout", "synthetic-idle"];
+    for (const name of services) {
+      const { problem, summary } = row(name);
+      const header = headerStatus(cluster, entity(name), now);
+      // The same verdict and reason from the shared rule.
+      expect(header.problem ?? false).toBe(problem);
+      expect(header.detail).toEqual(rowStatusDetail(row(name)));
+      expect(serviceProblem(cluster, entity(name), summary, now)).toBe(problem);
+      // The same badge, tone and words, on the row and in the header.
+      expect(badge(header, name)).toBe(cell("list", "status", name));
+    }
+    // A Service whose endpoint pods are not all ready warns in the header
+    // too, naming the count, never a neutral "Observed".
+    const cart = headerStatus(cluster, entity("synthetic-cart"), now);
+    expect(cart).toEqual({
+      problem: true,
+      detail: {
+        label: "1/2 endpoint pods ready",
+        title: "Ready endpoint pods / active endpoint pods",
+      },
+    });
+    expect(badge(cart, "synthetic-cart")).toContain("bg-warning/10");
+    // The routed-empty reason is the badge's own wording.
+    expect(headerStatus(cluster, entity("synthetic-checkout"), now)).toEqual({
+      problem: true,
+      detail: routedEmptyDetail,
+    });
+    expect(headerStatus(cluster, entity("synthetic-idle"), now)).toEqual({});
+    // Only a Service has a Service reason.
+    const pod = entity("synthetic-cart-1");
+    expect(
+      serviceStatusDetail(cluster, pod, summarize(cluster, pod, now), now)
+    ).toBeUndefined();
   });
 });
