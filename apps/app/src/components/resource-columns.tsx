@@ -29,7 +29,9 @@ import {
 } from "../lib/resource-table";
 import {
   MetricBar,
+  routedEmptyDetail,
   StatusBadge,
+  type StatusDetail,
   staleTitle,
   UsageValue,
 } from "./resource-status";
@@ -102,6 +104,38 @@ function statusRank(row: ResourceRow) {
   return row.stale ? 1 : 2;
 }
 
+function selectorOnly(row: ResourceRow) {
+  return row.view.inventory.capabilities.includes("endpointslices_unavailable");
+}
+
+function endpointTitle(selector: boolean) {
+  return selector
+    ? "Endpoint discovery is unavailable; counts selector-matched pods."
+    : "Ready endpoint pods / active endpoint pods";
+}
+
+// What a problem row's status cannot say. A Service reports "Observed", so
+// the row names why the row rule flagged it: its endpoint pods are not all
+// ready, or it has none while an Ingress routes to it (the canvas and
+// attention rule). A warning badge never reads "Observed" without a reason.
+export function rowStatusDetail(row: ResourceRow): StatusDetail | undefined {
+  if (!row.problem || row.entity.kind !== "Service") {
+    return;
+  }
+  const { active, ready, desired } = row.summary;
+  if (active === 0) {
+    return routedEmptyDetail;
+  }
+  if (ready == null || desired == null || ready >= desired) {
+    return;
+  }
+  const selector = selectorOnly(row);
+  return {
+    label: `${ready}/${desired} ${selector ? "selected" : "endpoint"} pods ready`,
+    title: endpointTitle(selector),
+  };
+}
+
 const statusColumn: Column = {
   id: "status",
   header: "Status",
@@ -110,6 +144,7 @@ const statusColumn: Column = {
     `${statusRank(row)}${resourceStatus(row.entity).toLowerCase()}`,
   cell: ({ row }) => (
     <StatusBadge
+      detail={rowStatusDetail(row.original)}
       entity={row.original.entity}
       problem={row.original.problem}
       stale={row.original.stale}
@@ -453,12 +488,38 @@ const portsColumn: Column = {
   ),
 };
 
-function EndpointReadiness({ row }: { row: ResourceRow }) {
-  const selector = row.view.inventory.capabilities.includes(
-    "endpointslices_unavailable"
+// A routed Service with no endpoint pods is a problem and says so, as on its
+// canvas card; staleness never hides a last reported problem. Nothing names
+// a cause or measures traffic.
+function RoutedEmpty({
+  detail,
+  stale,
+}: {
+  detail: StatusDetail;
+  stale: boolean;
+}) {
+  const text = "No endpoint pods";
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-warning-text text-xs"
+      title={stale ? `${staleTitle} ${detail.title}` : detail.title}
+    >
+      <TriangleAlert aria-hidden className="size-3.5 shrink-0" />
+      {stale ? `Stale · ${text}` : text}
+      <span className="sr-only">. {detail.title}</span>
+    </span>
   );
+}
+
+function EndpointReadiness({ row }: { row: ResourceRow }) {
+  const selector = selectorOnly(row);
   const { ready, desired } = row.summary;
   if (desired === 0) {
+    // With no active endpoint pods, a problem row is the routed-empty one.
+    const detail = rowStatusDetail(row);
+    if (detail) {
+      return <RoutedEmpty detail={detail} stale={row.stale} />;
+    }
     const none = selector ? "No selected pods" : "No endpoints";
     return row.stale ? (
       <StaleValue>{none}</StaleValue>
@@ -467,13 +528,7 @@ function EndpointReadiness({ row }: { row: ResourceRow }) {
     );
   }
   return (
-    <span
-      title={
-        selector
-          ? "Endpoint discovery is unavailable; counts selector-matched pods."
-          : "Ready endpoint pods / active endpoint pods"
-      }
-    >
+    <span title={endpointTitle(selector)}>
       <ReplicaCount
         desired={desired}
         ready={ready}

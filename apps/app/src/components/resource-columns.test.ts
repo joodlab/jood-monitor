@@ -2,8 +2,13 @@ import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { routedEmptyText } from "../lib/canvas-cards";
 import { type ResourceRow, resourceRows } from "../lib/resource-table";
-import { cardFacts, resourceColumns } from "./resource-columns";
+import {
+  cardFacts,
+  resourceColumns,
+  rowStatusDetail,
+} from "./resource-columns";
 import { MetricBar } from "./resource-status";
 
 // Server-rendered Nodes table cells for synthetic clusters: a missing node
@@ -251,5 +256,145 @@ describe("Pods table requests", () => {
     expect(
       renderToStaticMarkup(createElement(Fragment, null, limit?.value))
     ).toContain("768 MiB");
+  });
+});
+
+describe("Services with no endpoint pods", () => {
+  const edge = (source: string, target: string, relation: string) => ({
+    source,
+    target,
+    relation,
+    evidence: "Synthetic fixture",
+  });
+  // Synthetic: an Ingress routes to one Service whose owned EndpointSlice
+  // lists no pods, beside an unrouted Service with no endpoints and one with
+  // an endpoint pod that is not ready.
+  const cluster = view({});
+  cluster.inventory.entities = [
+    node,
+    {
+      uid: "in",
+      name: "synthetic-in",
+      kind: "Ingress",
+      namespace: "shop",
+      status: "Observed",
+    },
+    {
+      uid: "checkout",
+      name: "synthetic-checkout",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    {
+      uid: "checkout-slice",
+      name: "synthetic-checkout-abc",
+      kind: "EndpointSlice",
+      namespace: "shop",
+      status: "Observed",
+    },
+    {
+      uid: "idle",
+      name: "synthetic-idle",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    {
+      uid: "cart",
+      name: "synthetic-cart",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    ...[1, 0].map(
+      (ready, index): Entity => ({
+        uid: `cart-${index}`,
+        name: `synthetic-cart-${index}`,
+        kind: "Pod",
+        namespace: "shop",
+        status: "Running",
+        ready,
+        desired: 1,
+        nodeUid: node.uid,
+      })
+    ),
+  ];
+  cluster.inventory.edges = [
+    edge("in", "checkout", "routes_to"),
+    edge("checkout-slice", "checkout", "owned_by"),
+    edge("cart", "cart-0", "has_endpoint"),
+    edge("cart", "cart-1", "has_endpoint"),
+  ];
+  const rows = (problems: boolean) =>
+    resourceRows(
+      [cluster],
+      { namespace: "all", problems, q: "", system: true },
+      now,
+      ["Service"]
+    );
+  const row = (name: string) => {
+    const found = rows(false).find((item) => item.entity.name === name);
+    if (!found) {
+      throw new Error(`no row for ${name}`);
+    }
+    return found;
+  };
+  const context = { multiCluster: false, onInspect: () => undefined };
+  function cell(preset: "list" | "services", id: string, name: string) {
+    const found = resourceColumns(preset, context).find(
+      (item) => item.id === id
+    );
+    const render = found?.cell as (context: unknown) => ReactNode;
+    return renderToStaticMarkup(render({ row: { original: row(name) } }));
+  }
+
+  it("keeps a routed empty Service in Problems only, not an unrouted one", () => {
+    expect(rows(true).map(({ entity }) => entity.name)).toEqual([
+      "synthetic-cart",
+      "synthetic-checkout",
+    ]);
+    expect(rowStatusDetail(row("synthetic-checkout"))?.title).toBe(
+      routedEmptyText
+    );
+    expect(rowStatusDetail(row("synthetic-idle"))).toBeUndefined();
+  });
+  it("shows a warning badge with the routed-empty reason", () => {
+    const status = cell("list", "status", "synthetic-checkout");
+    expect(status).toContain("bg-warning/10");
+    expect(status).toContain("Observed · routed, no endpoint pods");
+    expect(status).toContain(routedEmptyText);
+    const idle = cell("list", "status", "synthetic-idle");
+    expect(idle).not.toContain("bg-warning/10");
+    expect(idle).not.toContain("no endpoint pods");
+  });
+  it("names not-ready endpoint pods on a warning badge", () => {
+    const status = cell("list", "status", "synthetic-cart");
+    expect(status).toContain("bg-warning/10");
+    expect(status).toContain("Observed · 1/2 endpoint pods ready");
+    expect(status).not.toContain("no endpoint pods");
+    const endpoints = cell("services", "endpoints", "synthetic-cart");
+    expect(endpoints).toContain("1/2");
+    expect(endpoints).not.toContain("No endpoint pods");
+  });
+  it("warns in the endpoints cell, never as a muted 'No endpoints'", () => {
+    const endpoints = cell("services", "endpoints", "synthetic-checkout");
+    expect(endpoints).toContain("text-warning-text");
+    expect(endpoints).toContain("No endpoint pods");
+    expect(endpoints).toContain(routedEmptyText);
+    expect(endpoints).not.toContain("No endpoints");
+    // An unrouted Service with no endpoints is not assumed to be a fault.
+    const idle = cell("services", "endpoints", "synthetic-idle");
+    expect(idle).toContain("No endpoints");
+    expect(idle).not.toContain("text-warning-text");
+    const fact = cardFacts(row("synthetic-checkout"), "services").find(
+      (item) => item.label === "Endpoints"
+    );
+    expect(
+      renderToStaticMarkup(createElement(Fragment, null, fact?.value))
+    ).toContain("No endpoint pods");
   });
 });

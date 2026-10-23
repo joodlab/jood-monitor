@@ -3,7 +3,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { livePodProblem } from "../lib/attention";
-import { StatusBadge, StatusLine } from "./resource-status";
+import { routedEmptyText } from "../lib/canvas-cards";
+import {
+  routedEmptyDetail,
+  StatusBadge,
+  StatusLine,
+  staleTitle,
+} from "./resource-status";
 
 // Synthetic pods and nodes only.
 const now = Date.parse("2026-10-22T12:00:00Z");
@@ -23,6 +29,15 @@ const readyNode = {
   kind: "Node",
   name: "synthetic-node",
   status: "True",
+} as Entity;
+
+// The Go observer reports every Service as "Observed".
+const service = {
+  uid: "synthetic-service",
+  kind: "Service",
+  name: "synthetic-checkout",
+  namespace: "shop",
+  status: "Observed",
 } as Entity;
 
 const warning = "bg-warning/10";
@@ -67,5 +82,44 @@ describe("status badge", () => {
         createElement(StatusLine, { entity: readyNode, problem: true })
       )
     ).toContain("text-warning-text");
+  });
+
+  it("warns on a Service its caller judged a problem, and says why", () => {
+    // A Service is neutral unless the caller passes an explicit verdict,
+    // even though it reports "Observed".
+    expect(badge(service)).not.toContain(warning);
+    expect(badge(service, false)).not.toContain(warning);
+    expect(badge(service, true)).toContain(warning);
+    const routed = renderToStaticMarkup(
+      createElement(StatusBadge, {
+        entity: service,
+        problem: true,
+        detail: routedEmptyDetail,
+      })
+    );
+    expect(routed).toContain(warning);
+    expect(routed).toContain("Observed · routed, no endpoint pods");
+    // The full wording, with "traffic not measured", is the title and is
+    // read to screen readers.
+    expect(routed).toContain(`title="${routedEmptyText}"`);
+    expect(routed).toContain(`<span class="sr-only">. ${routedEmptyText}`);
+    const line = renderToStaticMarkup(
+      createElement(StatusLine, {
+        entity: service,
+        problem: true,
+        detail: routedEmptyDetail,
+        stale: true,
+      })
+    );
+    expect(line).toContain("text-warning-text");
+    expect(line).toContain("Stale · Observed · routed, no endpoint pods");
+    expect(line).toContain(`title="${staleTitle} ${routedEmptyText}"`);
+  });
+
+  it("lets an explicit verdict override the neutral statuses", () => {
+    const unknown = pod("Unknown");
+    expect(badge(unknown)).not.toContain(warning);
+    expect(badge(unknown, true)).toContain(warning);
+    expect(badge(pod("Failed"), true)).toContain(warning);
   });
 });

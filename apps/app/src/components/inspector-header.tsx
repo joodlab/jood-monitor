@@ -8,12 +8,18 @@ import {
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
 import { type Ref, useState } from "react";
 import { liveNodeProblem } from "../lib/attention";
+import { routedServiceWithoutEndpoints } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import type { HubClock } from "../lib/time";
 import type { PanelTab, SearchState } from "../schemas/monitor";
 import { CopyButton, CopyLinkMenu } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
-import { KindTile, StatusBadge } from "./resource-status";
+import {
+  KindTile,
+  routedEmptyDetail,
+  StatusBadge,
+  type StatusDetail,
+} from "./resource-status";
 
 // What the link menu needs: the page's search, the tab on screen and the
 // hub clock that bounds a pinned moment.
@@ -46,6 +52,24 @@ export function useInspectionTrail(
 const iconButton =
   "size-9 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
+// The header badge's verdict, as on the resource's canvas card: nodes follow
+// the attention rule (memory near full included), and a routed Service with
+// no endpoint pods is a problem that names its reason. Every other kind keeps
+// the badge's own rule.
+function headerStatus(
+  view: ClusterView,
+  entity: Entity,
+  referenceTime: number
+): { detail?: StatusDetail; problem?: boolean } {
+  if (entity.kind === "Node") {
+    return { problem: liveNodeProblem(view, entity, referenceTime) };
+  }
+  if (routedServiceWithoutEndpoints(view, entity, referenceTime)) {
+    return { detail: routedEmptyDetail, problem: true };
+  }
+  return {};
+}
+
 // Railway's service header: a large kind tile and name, the status pill and
 // where the resource lives, with copy actions and close on the right. Back
 // follows browser history when the previous entry is that resource (see
@@ -73,6 +97,7 @@ export function InspectorHeader({
   const back = trail.at(-2);
   const stale =
     inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
+  const status = headerStatus(view, entity, referenceTime);
   return (
     <header className="space-y-3 px-4 pt-3 sm:px-6 sm:pt-4">
       {back && (
@@ -107,13 +132,9 @@ export function InspectorHeader({
           </SheetTitle>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <StatusBadge
+              detail={status.detail}
               entity={entity}
-              // Nodes follow the attention rule, memory near full included.
-              problem={
-                entity.kind === "Node"
-                  ? liveNodeProblem(view, entity, referenceTime)
-                  : undefined
-              }
+              problem={status.problem}
               stale={stale}
             />
             <SheetDescription className="min-w-0 text-xs">

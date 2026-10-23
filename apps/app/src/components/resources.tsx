@@ -55,7 +55,11 @@ import {
 } from "../lib/resource-table";
 import { defaultPageSize, pageSizes } from "../schemas/monitor";
 import { EmptyState } from "./page";
-import { cardFacts, resourceColumns } from "./resource-columns";
+import {
+  cardFacts,
+  resourceColumns,
+  rowStatusDetail,
+} from "./resource-columns";
 import { KindTile, StaleInventoryNotice, StatusLine } from "./resource-status";
 
 const nouns: Record<TablePreset, [string, string]> = {
@@ -386,6 +390,7 @@ function ResourceCard({
       </span>
       <span className="flex w-full border-t pt-3">
         <StatusLine
+          detail={rowStatusDetail(row)}
           entity={row.entity}
           problem={row.problem}
           stale={row.stale}
