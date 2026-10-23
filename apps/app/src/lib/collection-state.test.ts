@@ -456,12 +456,14 @@ describe("cluster crumb", () => {
       text: "staging · saved inventory Oct 22, 11:58:30 UTC",
       tone: "info",
     });
-    expect(clusterCrumb(view, now + 10 * 60_000, true, "UTC").tone).toBe(
-      "warning"
-    );
+    // Stale at the selected time says so in words, not by the dot alone.
+    expect(clusterCrumb(view, now + 10 * 60_000, true, "UTC")).toEqual({
+      text: "staging · saved inventory Oct 22, 11:58:30 UTC · stale at this time",
+      tone: "warning",
+    });
     view.inventory.sourceTime = "2025-10-22T11:58:30Z";
     expect(clusterCrumb(view, now, true, "UTC").text).toBe(
-      "staging · saved inventory Oct 22, 2025, 11:58:30 UTC"
+      "staging · saved inventory Oct 22, 2025, 11:58:30 UTC · stale at this time"
     );
   });
 

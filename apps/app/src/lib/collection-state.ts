@@ -315,10 +315,10 @@ export function collectionNotice(
 
 export type CrumbTone = "success" | "warning" | "info" | "muted";
 
-// The cluster crumb's second line and dot. Live it states the heartbeat;
-// frozen it states the saved inventory, judged against the selected time by
-// the saved-inventory budget. A saved heartbeat is never judged against the
-// wall clock.
+// The cluster crumb's second line and dot, the state always in words. Live
+// it states the heartbeat; frozen it states the saved inventory, judged
+// against the selected time by the saved-inventory budget. A saved heartbeat
+// is never judged against the wall clock.
 export function clusterCrumb(
   view: ClusterView,
   now: number,
@@ -332,12 +332,11 @@ export function clusterCrumb(
       return { text: "no saved observation at this time", tone: "muted" };
     }
     const saved = `${formatDateTime(sourceTime, timeZone, { year: "auto" })} ${timeZoneLabel(timeZone, sourceTime)}`;
+    const stale =
+      inventoryFreshness(view.inventory.sourceTime, now) === "stale";
     return {
-      text: `${environment} · saved inventory ${saved}`,
-      tone:
-        inventoryFreshness(view.inventory.sourceTime, now) === "stale"
-          ? "warning"
-          : "info",
+      text: `${environment} · saved inventory ${saved}${stale ? " · stale at this time" : ""}`,
+      tone: stale ? "warning" : "info",
     };
   }
   const state = freshness(view.cluster.heartbeatAt, now);
