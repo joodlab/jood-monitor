@@ -7,7 +7,8 @@ import {
 } from "../components/collection-model";
 import { compactCpu, compactMemory, isFinished } from "./infrastructure";
 import { minutesLeft } from "./install-enrollment";
-import { freshness, observedUsage } from "./metrics";
+import { freshness, inventoryFreshness, observedUsage } from "./metrics";
+import { formatDateTime, knownTime, timeZoneLabel } from "./time";
 
 // What the hub knows about collection, and why it expects no usage sample
 // for a resource. A gap explains a missing value; it never stands in for one,
@@ -75,17 +76,68 @@ export function profileKnown(view: ClusterView, frozen = false) {
   return captured(view, frozen, "profile");
 }
 
+// Whether the observer's report (its last heartbeat) is known for the view,
+// by the same rule as the collection settings.
+export function heartbeatKnown(view: ClusterView, frozen = false) {
+  return captured(view, frozen, "heartbeat");
+}
+
+// When a saved observation was captured: the hub's receipt of its inventory,
+// else the inventory's own source time. Undefined when nothing was saved.
+export function captureTime(view: ClusterView) {
+  return (
+    knownTime(view.cluster.receivedAt) ?? knownTime(view.inventory.sourceTime)
+  );
+}
+
+// The heartbeat captured with a saved observation: the last one the hub
+// received before that inventory. One later than the inventory's receipt
+// cannot be it (a live time leaking into the capture), so it reads as none,
+// as does a capture made before any heartbeat arrived.
+export function capturedHeartbeatAt(view: ClusterView) {
+  const heartbeat = knownTime(view.cluster.heartbeatAt);
+  const received = knownTime(view.cluster.receivedAt);
+  if (heartbeat == null || (received != null && heartbeat > received)) {
+    return null;
+  }
+  return view.cluster.heartbeatAt ?? null;
+}
+
+// A saved observation's view with its captured heartbeat time, so anything
+// judged on it never reads a heartbeat that arrived after its inventory.
+export function withCapturedHeartbeat(view: ClusterView): ClusterView {
+  return {
+    ...view,
+    cluster: { ...view.cluster, heartbeatAt: capturedHeartbeatAt(view) },
+  };
+}
+
 // The observer reports a Metrics API failure on the heartbeat of a failed
-// sampling round; a stale heartbeat no longer says anything current.
+// sampling round; a stale heartbeat no longer says anything current. A saved
+// observation's report counts only while its inventory is current at the
+// selected time (the saved-inventory budget) and its heartbeat was fresh when
+// that inventory arrived; it is never judged against the wall clock.
 export function metricsApiUnavailable(
   view: ClusterView,
   now: number,
   frozen: boolean
 ) {
+  if (
+    !(
+      captured(view, frozen, "heartbeat") &&
+      view.heartbeat.capabilities.includes("metrics_api_unavailable")
+    )
+  ) {
+    return false;
+  }
+  if (!(frozen || view.observationMetadataAvailable)) {
+    return freshness(view.cluster.heartbeatAt, now) === "fresh";
+  }
+  const capture = captureTime(view);
   return (
-    captured(view, frozen, "heartbeat") &&
-    freshness(view.cluster.heartbeatAt, now) === "fresh" &&
-    view.heartbeat.capabilities.includes("metrics_api_unavailable")
+    capture != null &&
+    inventoryFreshness(view.inventory.sourceTime, now) === "fresh" &&
+    freshness(capturedHeartbeatAt(view), capture) === "fresh"
   );
 }
 
@@ -223,29 +275,76 @@ export function collectionState(
   };
 }
 
+function diagnosticNodeNames(
+  diagnostic: NonNullable<CollectionState["diagnostic"]>
+) {
+  return diagnostic.nodes.join(", ") || "an unlisted node";
+}
+
 // "Diagnostic on node-a, 7 min left, then Standard".
 export function diagnosticText(
   diagnostic: NonNullable<CollectionState["diagnostic"]>,
   now: number
 ) {
-  const nodes = diagnostic.nodes.join(", ") || "an unlisted node";
-  return `Diagnostic on ${nodes}, ${minutesLeft(diagnostic.expiresAt, now)} left, then ${diagnostic.returnTo}`;
+  return `Diagnostic on ${diagnosticNodeNames(diagnostic)}, ${minutesLeft(diagnostic.expiresAt, now)} left, then ${diagnostic.returnTo}`;
 }
 
 // A short state for compact headers: "Paused", "Diagnostic on …", both, or
-// nothing while collection runs as configured. A saved observation states a
-// pause as of its time and has no countdown to show.
+// nothing while collection runs as configured. A saved observation states
+// each as of the selected time (the caller judges the Diagnostic there) and
+// has no countdown to show.
 export function collectionNotice(
   state: CollectionState,
   now: number,
   frozen = false
 ) {
+  const parts = frozen
+    ? [
+        state.paused ? "Paused at this time" : undefined,
+        state.diagnostic
+          ? `Diagnostic on ${diagnosticNodeNames(state.diagnostic)} at this time`
+          : undefined,
+      ]
+    : [
+        state.paused ? "Paused" : undefined,
+        state.diagnostic ? diagnosticText(state.diagnostic, now) : undefined,
+      ];
+  const shown = parts.filter(Boolean);
+  return shown.length ? shown.join(" · ") : undefined;
+}
+
+export type CrumbTone = "success" | "warning" | "info" | "muted";
+
+// The cluster crumb's second line and dot, the state always in words. Live
+// it states the heartbeat; frozen it states the saved inventory, judged
+// against the selected time by the saved-inventory budget. A saved heartbeat
+// is never judged against the wall clock. A stale saved inventory says so
+// first, before the free-text environment, so the words lead the line.
+export function clusterCrumb(
+  view: ClusterView,
+  now: number,
+  frozen: boolean,
+  timeZone = "UTC"
+): { text: string; tone: CrumbTone } {
+  const { environment } = view.cluster;
   if (frozen) {
-    return state.paused ? "Paused at this time" : undefined;
+    const sourceTime = knownTime(view.inventory.sourceTime);
+    if (sourceTime == null) {
+      return { text: "no saved observation at this time", tone: "muted" };
+    }
+    const saved = `${formatDateTime(sourceTime, timeZone, { year: "auto" })} ${timeZoneLabel(timeZone, sourceTime)}`;
+    const stale =
+      inventoryFreshness(view.inventory.sourceTime, now) === "stale";
+    return {
+      text: `${stale ? "Stale at this time · " : ""}${environment} · saved inventory ${saved}`,
+      tone: stale ? "warning" : "info",
+    };
   }
-  const parts = [
-    state.paused ? "Paused" : undefined,
-    state.diagnostic ? diagnosticText(state.diagnostic, now) : undefined,
-  ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : undefined;
+  const state = freshness(view.cluster.heartbeatAt, now);
+  if (state === "unknown") {
+    return { text: `${environment} · no heartbeat yet`, tone: "muted" };
+  }
+  return state === "fresh"
+    ? { text: `${environment} · heartbeat fresh`, tone: "success" }
+    : { text: `${environment} · heartbeat ${state}`, tone: "warning" };
 }

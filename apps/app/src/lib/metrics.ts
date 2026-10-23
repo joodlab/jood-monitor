@@ -71,7 +71,11 @@ export function inventoryFreshness(
 // sample left from before a switch to Basic is not stretched to its cadence.
 // A sample stays current for two intervals plus 45 s of Metrics API scrape
 // age and delivery, so one late sample is not a gap. An expired Diagnostic
-// already samples at its return profile's interval.
+// already samples at its return profile's interval. A profile the view does
+// not know (a saved observation without captured settings reads "unknown")
+// gets the slowest node cadence, so a Basic sample is never called missing.
+const fastNodeProfiles = new Set(["standard", "diagnostic"]);
+
 export function resourceSampleBudget(
   profile: ClusterView["profile"],
   now = Date.now(),
@@ -81,7 +85,7 @@ export function resourceSampleBudget(
     profile.name === "diagnostic" &&
     (!profile.expiresAt || Date.parse(profile.expiresAt) <= now);
   const name = expired ? profile.returnProfile || "basic" : profile.name;
-  return 2 * (kind === "Node" && name === "basic" ? 60 : 30) + 45;
+  return 2 * (kind === "Node" && !fastNodeProfiles.has(name) ? 60 : 30) + 45;
 }
 
 export function nodeProfileOutcome(

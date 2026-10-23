@@ -12,13 +12,21 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { formatUsage, type UsageField } from "../lib/chart-scale";
-import { collectionState, profileKnown } from "../lib/collection-state";
+import {
+  capturedHeartbeatAt,
+  captureTime,
+  collectionState,
+  heartbeatKnown,
+  profileKnown,
+  withCapturedHeartbeat,
+} from "../lib/collection-state";
 import {
   owningWorkload,
   type ResourceSummary,
   workloadKinds,
 } from "../lib/infrastructure";
 import { nodeProfileOutcome } from "../lib/metrics";
+import { knownTime } from "../lib/time";
 import { CopyButton } from "./inspector-copy";
 import { exposure, ingressesFor, placement } from "./inspector-model";
 import {
@@ -320,6 +328,14 @@ function configured(field: UsageField, value?: number | null) {
   return value == null ? "None reported" : formatUsage(field, value);
 }
 
+// A pod's limit is the sum over the containers that set one, so a reported
+// limit says what it leaves out.
+function limit(field: UsageField, value?: number | null) {
+  return value == null
+    ? configured(field, value)
+    : `${configured(field, value)} · containers with a limit only`;
+}
+
 function resourceRows(entity: Entity): MetaRow[] {
   if (
     !["Pod", "Deployment", "StatefulSet", "DaemonSet"].includes(entity.kind)
@@ -334,7 +350,7 @@ function resourceRows(entity: Entity): MetaRow[] {
     },
     {
       label: `CPU limit${suffix}`,
-      value: configured("cpu", entity.limitedCpu),
+      value: limit("cpu", entity.limitedCpu),
     },
     {
       label: `Memory request${suffix}`,
@@ -342,7 +358,7 @@ function resourceRows(entity: Entity): MetaRow[] {
     },
     {
       label: `Memory limit${suffix}`,
-      value: configured("memory", entity.limitedMemory),
+      value: limit("memory", entity.limitedMemory),
     },
   ];
 }
@@ -374,8 +390,9 @@ function nodeRows(entity: Entity): MetaRow[] {
   ];
 }
 
-// A saved observation states the settings it was captured with, if any;
-// per-node acknowledgments are live only.
+// A saved observation states the settings it was captured with, if any, and
+// a Node the acknowledgment in its captured heartbeat, both judged when the
+// hub received that inventory, never against the selected time or the clock.
 function collectionLabel(
   view: ClusterView,
   entity: Entity,
@@ -383,13 +400,21 @@ function collectionLabel(
   frozen: boolean
 ) {
   if (!profileKnown(view, frozen)) {
-    return "Not retained historically";
+    return "Not captured with this observation";
   }
-  if (entity.kind === "Node" && !frozen) {
-    return nodeProfileOutcome(view, entity.uid, now);
+  if (!frozen) {
+    if (entity.kind === "Node") {
+      return nodeProfileOutcome(view, entity.uid, now);
+    }
+    const state = collectionState(view, now);
+    return `${state.label} profile${state.paused ? " · paused" : ""}`;
   }
-  const state = collectionState(view, now);
-  return `${state.label} profile${state.paused ? " · paused" : ""}`;
+  const capture = captureTime(view) ?? now;
+  if (entity.kind === "Node" && heartbeatKnown(view, frozen)) {
+    return `${nodeProfileOutcome(withCapturedHeartbeat(view), entity.uid, capture)} (as captured)`;
+  }
+  const state = collectionState(view, capture);
+  return `${state.label} profile${state.paused ? " · paused" : ""} (as captured)`;
 }
 
 function collectionDescription(view: ClusterView, frozen: boolean) {
@@ -397,8 +422,8 @@ function collectionDescription(view: ClusterView, frozen: boolean) {
     return "Profiles, per-node acknowledgments and time-boxed diagnostics for this cluster.";
   }
   return profileKnown(view, frozen)
-    ? "Settings as captured with this saved observation; the controls are available on the live view."
-    : "Unavailable for a saved observation; collection status is not retained historically.";
+    ? "Settings as captured with this saved observation; the controls are on the live view."
+    : "Not captured with this saved observation; the controls are on the live view.";
 }
 
 function ContainerResources({ entity }: { entity: Entity }) {
@@ -470,10 +495,7 @@ function ObservationFooter({
           />
         </li>
         {frozen ? (
-          <li>
-            Hub receipts and collection status are not retained historically for
-            saved observations.
-          </li>
+          <SavedReceipts view={view} />
         ) : (
           <li>
             Latest hub receipt{" "}
@@ -497,6 +519,50 @@ function ObservationFooter({
         )}
       </dl>
     </InspectorSection>
+  );
+}
+
+// A saved observation's receipt times: when the hub received its inventory,
+// and the last observer heartbeat it had received before then, where the hub
+// kept them. A heartbeat after that inventory is never shown as its own.
+function SavedReceipts({ view }: { view: ClusterView }) {
+  const heartbeatAt = capturedHeartbeatAt(view);
+  let heartbeat: ReactNode =
+    "Observer heartbeat not captured with this observation";
+  if (heartbeatKnown(view, true)) {
+    heartbeat = heartbeatAt ? (
+      <>
+        Last observer heartbeat before it{" "}
+        <TimeText
+          absolute
+          className="text-foreground"
+          label="Last observer heartbeat the hub received before this inventory"
+          value={heartbeatAt}
+        />
+      </>
+    ) : (
+      "No observer heartbeat had arrived before this inventory"
+    );
+  }
+  return (
+    <>
+      <li>
+        {knownTime(view.cluster.receivedAt) == null ? (
+          "Hub receipt time not captured with this observation"
+        ) : (
+          <>
+            Hub received this inventory{" "}
+            <TimeText
+              absolute
+              className="text-foreground"
+              label="Hub receipt time"
+              value={view.cluster.receivedAt}
+            />
+          </>
+        )}
+      </li>
+      <li>{heartbeat}</li>
+    </>
   );
 }
 

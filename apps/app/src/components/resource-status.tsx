@@ -17,6 +17,7 @@ import {
   Server,
   TriangleAlert,
 } from "lucide-react";
+import { routedEmptyText } from "../lib/canvas-cards";
 import { gapLabel, gapReason, type UsageGap } from "../lib/collection-state";
 import {
   hasProblem,
@@ -31,9 +32,30 @@ import { TimeText } from "./time";
 
 type Tone = "neutral" | "ok" | "problem" | "stale";
 
+// Why a caller judged a resource a problem when its own status cannot say:
+// a short reason shown after the status, and the full wording as its title
+// and for screen readers.
+export interface StatusDetail {
+  label: string;
+  title: string;
+}
+
+// A routed Service with no endpoint pods still reports "Observed", so its
+// badge names the canvas card's reason: configuration observed, no cause
+// named and no traffic measured.
+export const routedEmptyDetail: StatusDetail = {
+  label: "routed, no endpoint pods",
+  title: routedEmptyText,
+};
+
 // Stale data is never shown as healthy. A last reported problem keeps its
 // warning so staleness does not hide it; the label says it is stale either way.
 function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
+  // A caller's explicit problem verdict wins over every neutral rule below,
+  // so a routed Service without endpoint pods ("Observed") still warns.
+  if (problem === true) {
+    return "problem";
+  }
   const status = resourceStatus(entity);
   // A not-ready pod the caller has judged unproblematic is still starting:
   // neutral, never a green "ok".
@@ -42,9 +64,9 @@ function statusTone(entity: Entity, stale: boolean, problem?: boolean): Tone {
     entity.kind === "Pod" &&
     entity.ready === 0 &&
     !isFinished(entity);
-  // A finished pod is history everywhere, failed or not; a caller can still
-  // mark one a problem explicitly.
-  const history = entity.kind === "Pod" && isFinished(entity) && !problem;
+  // A finished pod is history everywhere, failed or not, unless a caller
+  // marked it a problem explicitly (above).
+  const history = entity.kind === "Pod" && isFinished(entity);
   if (
     starting ||
     history ||
@@ -71,6 +93,23 @@ const badgeTones: Record<Tone, string> = {
 export const staleTitle =
   "The inventory is stale: this is the last reported state and the current state is unknown.";
 
+function statusText(entity: Entity, stale: boolean, detail?: StatusDetail) {
+  const status = detail
+    ? `${statusLabel(entity)} · ${detail.label}`
+    : statusLabel(entity);
+  return stale ? `Stale · ${status}` : status;
+}
+
+function statusTitle(stale: boolean, detail?: StatusDetail) {
+  const parts = [stale ? staleTitle : "", detail?.title ?? ""];
+  return parts.filter(Boolean).join(" ") || undefined;
+}
+
+// The full reason for screen readers, which do not reliably read a title.
+function DetailText({ detail }: { detail?: StatusDetail }) {
+  return detail ? <span className="sr-only">. {detail.title}</span> : null;
+}
+
 // Status text is always shown; the mark's shape (dot, warning triangle,
 // hollow ring, clock) repeats the tone so colour is never the only signal.
 // Stale badges keep the last reported status after "Stale".
@@ -78,19 +117,23 @@ export function StatusBadge({
   entity,
   stale = false,
   problem,
+  detail,
   className,
 }: {
   entity: Entity;
   stale?: boolean;
   // Overrides the generic problem rule, e.g. with pod start-up grace.
   problem?: boolean;
+  // Why `problem` holds when the status does not say, e.g. a routed Service
+  // with no endpoint pods.
+  detail?: StatusDetail;
   className?: string;
 }) {
   const tone = statusTone(entity, stale, problem);
   return (
     <Badge
       className={cn(badgeTones[tone], className)}
-      title={stale ? staleTitle : undefined}
+      title={statusTitle(stale, detail)}
       variant="outline"
     >
       {tone === "problem" && <TriangleAlert aria-hidden />}
@@ -104,7 +147,8 @@ export function StatusBadge({
         />
       )}
       {tone === "stale" && <Clock aria-hidden />}
-      {stale ? `Stale · ${statusLabel(entity)}` : statusLabel(entity)}
+      {statusText(entity, stale, detail)}
+      <DetailText detail={detail} />
     </Badge>
   );
 }
@@ -130,11 +174,13 @@ export function StatusLine({
   entity,
   stale = false,
   problem,
+  detail,
   className,
 }: {
   entity: Entity;
   stale?: boolean;
   problem?: boolean;
+  detail?: StatusDetail;
   className?: string;
 }) {
   const tone = statusTone(entity, stale, problem);
@@ -146,11 +192,12 @@ export function StatusLine({
         lineTones[tone],
         className
       )}
-      title={stale ? staleTitle : undefined}
+      title={statusTitle(stale, detail)}
     >
       <Icon aria-hidden className="size-3.5 shrink-0" />
       <span className="truncate">
-        {stale ? `Stale · ${statusLabel(entity)}` : statusLabel(entity)}
+        {statusText(entity, stale, detail)}
+        <DetailText detail={detail} />
       </span>
     </span>
   );

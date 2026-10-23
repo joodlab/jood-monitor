@@ -110,6 +110,13 @@ describe("resource sample budget", () => {
     expect(nodeTotals([basic], sampled + 164_000).usedCpu).toBe(1.5);
     expect(nodeTotals([basic], sampled + 166_000).usedCpu).toBeUndefined();
   });
+  it("gives a profile it does not know the Basic node budget", () => {
+    // A saved observation without captured settings reads "unknown".
+    const unknown = view({ name: "unknown" });
+    expect(resourceSampleBudget(unknown.profile, sampled)).toBe(165);
+    expect(observedUsage(unknown, node, "cpu", sampled + 150_000)).toBe(1.5);
+    expect(resourceSampleBudget(unknown.profile, sampled, "Pod")).toBe(105);
+  });
   it("never stretches a pod sample to the Basic node cadence", () => {
     const pod: Entity = {
       uid: "p1",

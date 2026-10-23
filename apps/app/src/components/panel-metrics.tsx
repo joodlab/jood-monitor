@@ -1,10 +1,23 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
-import { Skeleton } from "@jood-monitor/ui/skeleton";
-import { useQuery } from "@tanstack/react-query";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { ChartLine, History } from "lucide-react";
-import { lazy, Suspense, useMemo } from "react";
-import { getHistoryFn } from "../functions/clusters";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { SeriesHistorySeries } from "../contracts/types";
+import {
+  type SeriesName,
+  type SeriesRead,
+  type SeriesWindow,
+  useSeriesHistory,
+} from "../hooks/api/history";
 import { useDisplay } from "../hooks/display";
 import { podProblem } from "../lib/attention";
 import {
@@ -13,25 +26,34 @@ import {
   references,
   type UsageField,
 } from "../lib/chart-scale";
+import {
+  chartSpans,
+  nanoMs,
+  type OmittedPeriod,
+  omittedPeriods,
+} from "../lib/history-series";
+import { hasHostSamples } from "../lib/host-metrics";
 import type { ResourceSummary } from "../lib/infrastructure";
 import { historyError } from "../lib/install-errors";
 import { usageName } from "../lib/metrics";
-import { RAW_RETENTION_DAYS, rawRetentionMessage } from "../lib/retention";
-import {
-  formatDateTime,
-  type HubClock,
-  hubNow,
-  observationMs,
-  rangeLabel,
-  rawWindow,
-  timeZoneLabel,
-} from "../lib/time";
-import {
-  type Coverage,
-  historyRefetchInterval,
-  podGroups,
-} from "./inspector-model";
+import { RAW_RETENTION_DAYS } from "../lib/retention";
+import { formatDateTime, rangeLabel, timeZoneLabel } from "../lib/time";
+import { useMediaQuery } from "./canvas-hooks";
+import { type Coverage, podGroups } from "./inspector-model";
 import { CoverageNote } from "./inspector-sections";
+import {
+  blankSpans,
+  ChartSkeleton,
+  DiagnosticNotices,
+  type HostQuery,
+  NodeHostSection,
+  OmissionNotice,
+  omittedEmptyReason,
+  RetentionFootnote,
+  type SectionRead,
+  toChartSpans,
+  useHostHistory,
+} from "./panel-metrics-host";
 import { PodUsage, podUsage } from "./panel-pods";
 import { RangeSelect } from "./range-select";
 import { StatusBadge } from "./resource-status";
@@ -44,28 +66,38 @@ const ResourceChart = lazy(() =>
   }))
 );
 
-function ChartSkeleton({ title }: { title: string }) {
-  return (
-    <div className="space-y-2">
-      <h3 className="font-medium text-sm">{title}</h3>
-      <Skeleton
-        aria-label={`Loading ${title} history`}
-        className="h-[220px] w-full"
-      />
-    </div>
-  );
-}
-
 type Inspected = { view: ClusterView; entity: Entity } | null;
 
-interface HistoryWindow {
-  at?: string;
-  connection?: string;
-  // The snapshot's hub time; the 7-day raw boundary is measured from it.
-  hubClock?: HubClock;
-  range: string;
-  referenceTime: number;
-  scope?: string;
+// The window a chart reads: the page's range, ending at the saved
+// observation when frozen, bounded by the hub's raw retention.
+type HistoryWindow = SeriesWindow;
+
+// One chart's part of the shared Metrics API read.
+interface FieldHistory {
+  clamped: boolean;
+  from: number;
+  // Diagnostic periods the read left out, which the chart leaves blank.
+  omitted: OmittedPeriod[];
+  series: SeriesHistorySeries[];
+  to: number;
+}
+
+// A chart's read, with the resource and window it covers so the Host
+// section reads the same window.
+export interface HistoryQuery {
+  inspected: Inspected;
+  query: UseQueryResult<FieldHistory, Error>;
+  window: HistoryWindow;
+}
+
+// Pod or Node usage from the Kubernetes Metrics API. CPU and memory share
+// one read: both calls name both metrics, so they share its key.
+function usageNames(entity: Entity | undefined) {
+  // usageName returns the k8s.{pod,node}.{cpu,memory}.usage series names.
+  return [
+    usageName(entity, "cpu"),
+    usageName(entity, "memory"),
+  ] as SeriesName[];
 }
 
 // Raw history is kept per Pod and Node. The chart's time axis is exactly
@@ -74,63 +106,35 @@ interface HistoryWindow {
 export function useHistory(
   inspected: Inspected,
   field: UsageField,
-  { at, connection, hubClock, scope, range, referenceTime }: HistoryWindow
-) {
-  const workspace = inspected?.view.cluster.workspaceId;
-  return useQuery({
-    // The scope leads the key so the stream's per-scope invalidation
-    // reaches it, including the all-workspaces view.
-    queryKey: [
-      "history",
-      scope ?? workspace,
-      workspace,
-      inspected?.view.cluster.id,
-      inspected?.entity.uid,
-      field,
-      range,
-      at ?? "live",
-      "window",
-    ],
-    enabled:
-      !!inspected &&
-      ["Node", "Pod"].includes(inspected.entity.kind) &&
-      referenceTime > 0,
-    refetchInterval: historyRefetchInterval(at, connection),
-    retry: (failures, error) =>
-      failures < 1 && historyError(error, !!at).retryable,
-    queryFn: async () => {
-      const hubTime = hubNow(hubClock, Date.now());
-      // Live, the hub ends the window at its own now, so the start is
-      // measured from the hub's clock too: a browser clock running ahead
-      // would otherwise ask for a window that has not begun.
-      const to = at ? observationMs(at) : (hubTime ?? Date.now());
-      if (to == null) {
-        throw new Error("invalid timestamp");
-      }
-      const bounds = rawWindow(to, Number(range), hubTime);
-      // A request the hub would refuse is not sent; it fails the same way.
-      if (bounds.outside) {
-        throw new Error(rawRetentionMessage);
-      }
-      const samples = await getHistoryFn({
-        data: {
-          workspace: workspace ?? "",
-          cluster: inspected?.view.cluster.id ?? "",
-          entity: inspected?.entity.uid,
-          name: usageName(inspected?.entity, field),
-          from: new Date(bounds.from).toISOString(),
-          to: at,
-        },
-      });
-      return { samples, ...bounds };
-    },
+  window: HistoryWindow
+): HistoryQuery {
+  const entity = inspected?.entity;
+  const name = usageName(entity, field);
+  const select = useCallback(
+    (read: SeriesRead): FieldHistory => ({
+      clamped: read.clamped,
+      from: read.from,
+      to: read.to,
+      omitted: omittedPeriods(read.response.omitted),
+      series: read.response.series.filter((item) => item.name === name),
+    }),
+    [name]
+  );
+  const query = useSeriesHistory({
+    inspected,
+    entities: entity ? [entity.uid] : [],
+    names: usageNames(entity),
+    window,
+    part: "k8s",
+    enabled: entity?.kind === "Node" || entity?.kind === "Pod",
+    select,
   });
+  return { inspected, query, window };
 }
-export type HistoryQuery = ReturnType<typeof useHistory>;
 
 // The window start when the 7-day raw boundary cut it short.
 function clampedFrom(...queries: HistoryQuery[]) {
-  return queries.find((query) => query.data?.clamped)?.data?.from;
+  return queries.find((item) => item.query.data?.clamped)?.query.data?.from;
 }
 
 export function MetricsTab({
@@ -166,46 +170,16 @@ export function MetricsTab({
   onShowPods: () => void;
   onPodHistory: (pod: Entity) => void;
 }) {
-  const { at, timeZone } = useDisplay();
   if (entity.kind === "Pod" || entity.kind === "Node") {
-    const clamped = clampedFrom(cpu, memory);
     return (
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="max-w-prose text-muted-foreground text-xs">
-            Raw samples at their source time. Gaps longer than {GAP_MS / 1000} s
-            stay blank; nothing is interpolated or drawn as zero.
-          </p>
-          {onRange ? (
-            <RangeSelect onRange={onRange} range={range} />
-          ) : (
-            <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-              <History aria-hidden className="size-3.5" />
-              {rangeLabel(range, at, timeZone)}
-            </span>
-          )}
-        </div>
-        {clamped != null && (
-          <p className="text-muted-foreground text-xs" role="note">
-            History before {formatDateTime(clamped, timeZone)}{" "}
-            {timeZoneLabel(timeZone, clamped)} is outside the{" "}
-            {RAW_RETENTION_DAYS}-day raw window.
-          </p>
-        )}
-        {charts.map((chart) => (
-          <div
-            className="rounded-lg border bg-background/40 p-4"
-            key={chart.field}
-          >
-            <HistoryPlot
-              entity={entity}
-              field={chart.field}
-              query={chart.field === "cpu" ? cpu : memory}
-              title={chart.title}
-            />
-          </div>
-        ))}
-      </div>
+      <UsageHistory
+        cpu={cpu}
+        entity={entity}
+        memory={memory}
+        onRange={onRange}
+        range={range}
+        view={view}
+      />
     );
   }
   return (
@@ -221,6 +195,237 @@ export function MetricsTab({
         view={view}
       />
     </div>
+  );
+}
+
+// Phones get shorter charts so a section fits on screen.
+const phoneQuery = "(max-width: 767px)";
+
+// What one section's read left out, for the omission notice.
+function sectionRead(
+  label: string,
+  query: {
+    data?: { from: number; to: number };
+    isError: boolean;
+    isPending: boolean;
+  },
+  periods: readonly OmittedPeriod[]
+): SectionRead {
+  return {
+    label,
+    pending: query.isPending,
+    failed: query.isError,
+    periods,
+    window: query.data && { from: query.data.from, to: query.data.to },
+  };
+}
+
+// A Pod's Metrics API charts; a Node's in their own section beside the
+// Host section. A zoom applies to every chart and resets with the
+// resource or window. A Diagnostic period the range's reads left out can be
+// read on its own instead: every section then reads that period, with a
+// minute either side, until the way back is chosen.
+function UsageHistory({
+  view,
+  entity,
+  cpu,
+  memory,
+  range,
+  onRange,
+}: {
+  view: ClusterView;
+  entity: Entity;
+  cpu: HistoryQuery;
+  memory: HistoryQuery;
+  range: string;
+  onRange?: (range: string) => void;
+}) {
+  const { at, timeZone } = useDisplay();
+  const node = entity.kind === "Node";
+  const readKey = `${view.cluster.id}:${entity.uid}:${range}:${at ?? "live"}`;
+  const [focus, setFocus] = useState<{ key: string; period: OmittedPeriod }>();
+  const focused = focus?.key === readKey ? focus.period : undefined;
+  const periodWindow: HistoryWindow = {
+    ...cpu.window,
+    period: focused && { start: focused.start, end: focused.end },
+  };
+  const periodCpu = useHistory(
+    focused ? cpu.inspected : null,
+    "cpu",
+    periodWindow
+  );
+  const periodMemory = useHistory(
+    focused ? memory.inspected : null,
+    "memory",
+    periodWindow
+  );
+  const shownCpu = focused ? periodCpu : cpu;
+  const shownMemory = focused ? periodMemory : memory;
+  const host = useHostHistory(
+    cpu.inspected,
+    focused ? periodWindow : cpu.window,
+    node
+  );
+  const phone = useMediaQuery(phoneQuery);
+  const height = node && phone ? 180 : 220;
+  const zoomKey = `${readKey}:${focused?.from ?? "range"}`;
+  const [zoom, setZoom] = useState<{
+    key: string;
+    domain: [number, number];
+  }>();
+  const domain = zoom?.key === zoomKey ? zoom.domain : undefined;
+  // The range control, where focus goes when the way back from a period
+  // leaves no button for it.
+  const rangeRow = useRef<HTMLDivElement>(null);
+  const clamped = clampedFrom(shownCpu, shownMemory);
+  const hostShown =
+    node && !!host.data && hasHostSamples(host.data.response.series);
+  const reads = [
+    sectionRead(
+      "Kubernetes Metrics API",
+      shownCpu.query,
+      shownCpu.query.data?.omitted ?? []
+    ),
+    ...(node
+      ? [sectionRead("Host", host, omittedPeriods(host.data?.response.omitted))]
+      : []),
+  ];
+  const kubernetes = charts.map((chart) => (
+    <div className="rounded-lg border bg-background/40 p-4" key={chart.field}>
+      <HistoryPlot
+        domain={domain}
+        emptyReason={
+          hostShown
+            ? "Host CPU and memory from the node collector are shown below."
+            : undefined
+        }
+        entity={entity}
+        field={chart.field}
+        heading={node ? "h4" : undefined}
+        height={height}
+        history={chart.field === "cpu" ? shownCpu : shownMemory}
+        title={chart.title}
+      />
+    </div>
+  ));
+  return (
+    <div className="space-y-4">
+      <div
+        className="flex flex-wrap items-center justify-between gap-2"
+        ref={rangeRow}
+      >
+        <p className="max-w-prose text-muted-foreground text-xs">
+          Raw samples at their source time. Gaps longer than {GAP_MS / 1000} s
+          stay blank; nothing is interpolated or drawn as zero.
+        </p>
+        {onRange ? (
+          <RangeSelect onRange={onRange} range={range} />
+        ) : (
+          <span
+            className="flex items-center gap-1.5 rounded-sm text-muted-foreground text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-range
+            tabIndex={-1}
+          >
+            <History aria-hidden className="size-3.5" />
+            {rangeLabel(range, at, timeZone)}
+          </span>
+        )}
+      </div>
+      {clamped != null && (
+        <p className="text-muted-foreground text-xs" role="note">
+          History before {formatDateTime(clamped, timeZone)}{" "}
+          {timeZoneLabel(timeZone, clamped)} is outside the {RAW_RETENTION_DAYS}
+          -day raw window.
+        </p>
+      )}
+      <OmissionNotice
+        focused={focused}
+        hubClock={cpu.window.hubClock}
+        onBack={() => {
+          setFocus(undefined);
+          setZoom(undefined);
+        }}
+        onLoad={(period) => {
+          setFocus({ key: readKey, period });
+          setZoom(undefined);
+        }}
+        range={range}
+        reads={reads}
+        returnTo={rangeRow}
+      />
+      {node ? (
+        <NodeSections
+          domain={domain}
+          entity={entity}
+          height={height}
+          history={shownCpu}
+          host={host}
+          kubernetes={kubernetes}
+          onReset={() => setZoom(undefined)}
+          onZoom={(next) => setZoom({ key: zoomKey, domain: next })}
+          view={view}
+        />
+      ) : (
+        kubernetes
+      )}
+    </div>
+  );
+}
+
+function NodeSections({
+  view,
+  entity,
+  history,
+  host,
+  kubernetes,
+  domain,
+  height,
+  onZoom,
+  onReset,
+}: {
+  view: ClusterView;
+  entity: Entity;
+  history: HistoryQuery;
+  host: HostQuery;
+  kubernetes: ReactNode;
+  domain?: [number, number];
+  height: number;
+  onZoom: (domain: [number, number]) => void;
+  onReset: () => void;
+}) {
+  const hubClock = history.window.hubClock;
+  return (
+    <>
+      <DiagnosticNotices
+        entity={entity}
+        host={host}
+        hubClock={hubClock}
+        onReset={onReset}
+        onZoom={onZoom}
+        view={view}
+        zoomed={!!domain}
+      />
+      <section aria-labelledby="metrics-api-history" className="space-y-4">
+        <h3 className="font-medium text-base" id="metrics-api-history">
+          Kubernetes Metrics API
+        </h3>
+        {kubernetes}
+        <RetentionFootnote
+          from={history.query.data?.from}
+          hubClock={hubClock}
+        />
+      </section>
+      <NodeHostSection
+        domain={domain}
+        entity={entity}
+        height={height}
+        host={host}
+        hubClock={hubClock}
+        period={!!history.window.period}
+        range={history.window.range}
+        view={view}
+      />
+    </>
   );
 }
 
@@ -353,30 +558,66 @@ function chartReferences(entity: Entity, field: UsageField) {
   return { refs, percentBase: refs.find((ref) => ref.label === "limit") };
 }
 
+// The read's points as the samples ResourceChart draws, at millisecond
+// source times; the read keeps the exact nanoseconds.
+function chartSamples(series: readonly SeriesHistorySeries[] | undefined) {
+  return (series ?? []).flatMap((item) =>
+    item.points.map(([nano, value]) => ({
+      name: item.name,
+      sourceTime: new Date(nanoMs(nano)).toISOString(),
+      value,
+    }))
+  );
+}
+
 function HistoryPlot({
   entity,
   field,
   title,
-  query,
+  history,
+  domain,
+  emptyReason,
+  heading,
+  height,
 }: {
   entity: Entity;
   field: UsageField;
   title: string;
-  query: HistoryQuery;
+  history: HistoryQuery;
+  domain?: [number, number];
+  emptyReason?: string;
+  heading?: "h4";
+  height: number;
 }) {
   const { frozen } = useDisplay();
+  const { query } = history;
   const { refs, percentBase } = useMemo(
     () => chartReferences(entity, field),
     [entity, field]
   );
+  const series = query.data?.series;
+  const omitted = query.data?.omitted;
+  const samples = useMemo(() => chartSamples(series), [series]);
+  // Periods sampled during a Diagnostic, at the cadence these series show,
+  // and periods the read left out, which stay blank.
+  const spans = useMemo(
+    () => [
+      ...toChartSpans(chartSpans(series ?? [])),
+      ...blankSpans(omitted ?? []),
+    ],
+    [series, omitted]
+  );
   if (query.isPending) {
-    return <ChartSkeleton title={title} />;
+    return <ChartSkeleton heading={heading} height={height} title={title} />;
   }
   if (query.isError) {
-    const problem = historyError(query.error, frozen);
+    const problem = historyError(query.error, frozen, history.window.range, {
+      period: !!history.window.period,
+    });
+    const Title = heading ?? "h3";
     return (
       <div className="space-y-2">
-        <h3 className="font-medium text-sm">{title}</h3>
+        <Title className="font-medium text-sm">{title}</Title>
         <p className="rounded-md border p-3 text-sm" role="alert">
           {problem.title}.{problem.detail && ` ${problem.detail}`}{" "}
           {problem.retryable && (
@@ -389,15 +630,27 @@ function HistoryPlot({
     );
   }
   return (
-    <Suspense fallback={<ChartSkeleton title={title} />}>
+    <Suspense
+      fallback={
+        <ChartSkeleton heading={heading} height={height} title={title} />
+      }
+    >
       <ResourceChart
+        domain={domain}
+        emptyReason={
+          [query.data.omitted.length ? omittedEmptyReason : "", emptyReason]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
         field={field}
         from={query.data.from}
-        height={220}
+        heading={heading}
+        height={height}
         name={usageName(entity, field)}
         percentBase={percentBase}
         references={refs}
-        samples={query.data.samples}
+        samples={samples}
+        spans={spans}
         subject={`${entity.kind} ${entity.name}`}
         title={title}
         to={query.data.to}

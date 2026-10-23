@@ -101,15 +101,28 @@ export function formatClock(
   }).format(time);
 }
 
+function zonedYear(time: number, timeZone: string) {
+  return formatter("year", timeZone, { year: "numeric" }).format(time);
+}
+
+// "Oct 22, 14:00:00". A year is added always, or with 'auto' only when it
+// differs from the current year in the display zone, so a saved observation
+// from another year never reads as this one.
 export function formatDateTime(
   value: string | number | null | undefined,
-  timeZone: string
+  timeZone: string,
+  options: { year?: "auto" | "always" } = {}
 ) {
   const time = valid(value);
   if (time == null) {
     return "Unknown";
   }
-  return formatter("dateTime", timeZone, {
+  const withYear =
+    options.year === "always" ||
+    (options.year === "auto" &&
+      zonedYear(time, timeZone) !== zonedYear(Date.now(), timeZone));
+  return formatter(withYear ? "dateTimeYear" : "dateTime", timeZone, {
+    ...(withYear ? { year: "numeric" } : {}),
     month: "short",
     day: "numeric",
     hour: "2-digit",

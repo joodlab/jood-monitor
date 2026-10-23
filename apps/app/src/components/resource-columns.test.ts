@@ -1,10 +1,24 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { createElement, type ReactNode } from "react";
+import { createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { resourceRows } from "../lib/resource-table";
-import { resourceColumns } from "./resource-columns";
-import { MetricBar } from "./resource-status";
+import { routedEmptyText } from "../lib/canvas-cards";
+import { summarize } from "../lib/infrastructure";
+import {
+  type ResourceRow,
+  resourceRows,
+  serviceProblem,
+  serviceStatusDetail,
+} from "../lib/resource-table";
+import { headerStatus } from "./inspector-header";
+import {
+  CardFactItem,
+  ColumnNote,
+  cardFacts,
+  resourceColumns,
+  rowStatusDetail,
+} from "./resource-columns";
+import { MetricBar, routedEmptyDetail, StatusBadge } from "./resource-status";
 
 // Server-rendered Nodes table cells for synthetic clusters: a missing node
 // sample names the reason the hub knows, and never reads as a zero.
@@ -137,5 +151,372 @@ describe("Nodes table usage", () => {
     );
     expect(markup).toContain("42.0%");
     expect(markup).not.toContain("Paused");
+  });
+});
+
+describe("Pods table requests", () => {
+  const MiB = 1024 ** 2;
+  const pod = (name: string, extra: Partial<Entity>): Entity => ({
+    uid: name,
+    name,
+    kind: "Pod",
+    namespace: "shop",
+    status: "Running",
+    ready: 1,
+    desired: 1,
+    nodeUid: node.uid,
+    ...extra,
+  });
+  const cluster = view({});
+  cluster.inventory.entities = [
+    node,
+    pod("web", {
+      requestedCpu: 0.25,
+      requestedMemory: 512 * MiB,
+      limitedMemory: 768 * MiB,
+    }),
+    pod("best-effort", { requestedCpu: 0, requestedMemory: 0 }),
+    pod("older", {}),
+  ];
+  const rows = resourceRows(
+    [cluster],
+    { namespace: "all", problems: false, q: "", system: true },
+    now,
+    ["Pod"]
+  );
+  const row = (name: string) => {
+    const found = rows.find((item) => item.entity.name === name);
+    if (!found) {
+      throw new Error(`no row for ${name}`);
+    }
+    return found;
+  };
+  const columns = resourceColumns("pods", {
+    multiCluster: false,
+    onInspect: () => undefined,
+  });
+  function column(id: string) {
+    const found = columns.find((item) => item.id === id);
+    if (!found) {
+      throw new Error(`no column ${id}`);
+    }
+    return found as typeof found & {
+      accessorFn: (row: ResourceRow, index: number) => unknown;
+    };
+  }
+  function cell(id: string, name: string) {
+    const render = column(id).cell as (context: unknown) => ReactNode;
+    return renderToStaticMarkup(render({ row: { original: row(name) } }));
+  }
+
+  it("gives configured columns a note button outside the sort button", () => {
+    // The header label sits inside the sort button; the note is a button of
+    // its own, so tapping it on a touch screen never re-sorts.
+    const note = renderToStaticMarkup(
+      createElement(ColumnNote, { column: "memoryLimit" })
+    );
+    expect(note).toContain('aria-label="About Memory limit"');
+    expect(note).toContain("<button");
+    expect(
+      renderToStaticMarkup(createElement(ColumnNote, { column: "cpuRequest" }))
+    ).toContain('aria-label="About CPU request"');
+    for (const id of ["cpu", "memory", "name", "status"]) {
+      expect(
+        renderToStaticMarkup(createElement(ColumnNote, { column: id }))
+      ).toBe("");
+    }
+    // The header itself holds no button, so none nests in the sort button.
+    const header = column("memoryRequest").header as () => ReactNode;
+    expect(renderToStaticMarkup(header())).not.toContain("<button");
+  });
+  it("adds configured request and limit columns, labelled not usage", () => {
+    for (const [id, label] of [
+      ["cpuRequest", "CPU request"],
+      ["memoryRequest", "Memory request"],
+      ["memoryLimit", "Memory limit"],
+    ]) {
+      const header = column(id).header as () => ReactNode;
+      const markup = renderToStaticMarkup(header());
+      expect(markup).toContain(label);
+      expect(markup).toContain("configured, not usage");
+      expect(column(id).sortUndefined).toBe("last");
+    }
+    // The observer adds up only the limits that are set, and the header
+    // says so rather than presenting a partial sum as the pod's cap.
+    const limit = renderToStaticMarkup(
+      (column("memoryLimit").header as () => ReactNode)()
+    );
+    expect(limit).toContain("Only containers that set a limit are counted");
+    expect(
+      renderToStaticMarkup(
+        (column("memoryRequest").header as () => ReactNode)()
+      )
+    ).not.toContain("containers that set a limit");
+  });
+  it("shows absolute amounts, a reported 0 and unknown values", () => {
+    expect(cell("cpuRequest", "web")).toContain(">250m<");
+    expect(cell("memoryRequest", "web")).toContain(">512 MiB<");
+    expect(cell("memoryLimit", "web")).toContain(">768 MiB<");
+    expect(cell("memoryRequest", "best-effort")).toContain("0 · none set");
+    expect(cell("memoryLimit", "best-effort")).toContain("No limit");
+    const older = cell("memoryRequest", "older");
+    expect(older).toContain("—");
+    expect(older).toContain("not reported by this observer");
+    expect(cell("memoryLimit", "older")).not.toContain("No limit");
+    for (const name of ["web", "best-effort", "older"]) {
+      expect(cell("memoryRequest", name)).not.toContain("%");
+    }
+  });
+  it("sorts unknown requests last, never as 0", () => {
+    const accessor = column("memoryRequest").accessorFn;
+    expect(accessor(row("best-effort"), 0)).toBe(0);
+    expect(accessor(row("older"), 0)).toBeUndefined();
+    expect(column("memoryLimit").accessorFn(row("best-effort"), 0)).toBe(
+      Number.POSITIVE_INFINITY
+    );
+  });
+  it("puts the same facts on the phone cards", () => {
+    const facts = cardFacts(row("web"), "pods");
+    const labels = facts.map((fact) => fact.label);
+    expect(labels).toEqual(
+      expect.arrayContaining(["CPU request", "Memory request", "Memory limit"])
+    );
+    const limit = facts.find((fact) => fact.label === "Memory limit");
+    expect(
+      renderToStaticMarkup(createElement(Fragment, null, limit?.value))
+    ).toContain("768 MiB");
+  });
+  it("gives the phone cards the table's configured note", () => {
+    const fact = (name: string, label: string) => {
+      const found = cardFacts(row(name), "pods").find(
+        (item) => item.label === label
+      );
+      if (!found) {
+        throw new Error(`no ${label} fact for ${name}`);
+      }
+      return found;
+    };
+    const card = (name: string, label: string) =>
+      renderToStaticMarkup(
+        createElement(CardFactItem, { fact: fact(name, label) })
+      );
+    // The card is one button, so the note is plain text for screen readers
+    // there, in the header's words, never a nested note button.
+    for (const [id, label] of [
+      ["cpuRequest", "CPU request"],
+      ["memoryRequest", "Memory request"],
+      ["memoryLimit", "Memory limit"],
+    ]) {
+      const markup = card("web", label);
+      expect(markup).toContain('<span class="sr-only">, configured, not usage');
+      expect(markup).not.toContain("<button");
+      const note = fact("web", label).note ?? "";
+      expect(note).not.toBe("");
+      const header = column(id).header as () => ReactNode;
+      expect(renderToStaticMarkup(header())).toContain(note);
+    }
+    // A finite summed limit names its scope in sight, under the value and
+    // never cut off with it; its full caveat is in the note.
+    const limit = card("web", "Memory limit");
+    expect(limit).toContain("Only containers that set a limit are counted");
+    expect(limit).toContain(
+      '<span class="block break-words text-muted-foreground">Containers with a limit only</span>'
+    );
+    expect(card("web", "Memory request")).not.toContain("with a limit only");
+    // "No limit" and an unknown limit leave nothing out.
+    expect(fact("best-effort", "Memory limit").hint).toBeUndefined();
+    expect(fact("older", "Memory limit").hint).toBeUndefined();
+  });
+});
+
+describe("Services with no endpoint pods", () => {
+  const edge = (source: string, target: string, relation: string) => ({
+    source,
+    target,
+    relation,
+    evidence: "Synthetic fixture",
+  });
+  // Synthetic: an Ingress routes to one Service whose owned EndpointSlice
+  // lists no pods, beside an unrouted Service with no endpoints and one with
+  // an endpoint pod that is not ready.
+  const cluster = view({});
+  cluster.inventory.entities = [
+    node,
+    {
+      uid: "in",
+      name: "synthetic-in",
+      kind: "Ingress",
+      namespace: "shop",
+      status: "Observed",
+    },
+    {
+      uid: "checkout",
+      name: "synthetic-checkout",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    {
+      uid: "checkout-slice",
+      name: "synthetic-checkout-abc",
+      kind: "EndpointSlice",
+      namespace: "shop",
+      status: "Observed",
+    },
+    {
+      uid: "idle",
+      name: "synthetic-idle",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    {
+      uid: "cart",
+      name: "synthetic-cart",
+      kind: "Service",
+      namespace: "shop",
+      status: "Observed",
+      serviceType: "ClusterIP",
+    },
+    ...[1, 0].map(
+      (ready, index): Entity => ({
+        uid: `cart-${index}`,
+        name: `synthetic-cart-${index}`,
+        kind: "Pod",
+        namespace: "shop",
+        status: "Running",
+        ready,
+        desired: 1,
+        nodeUid: node.uid,
+      })
+    ),
+  ];
+  cluster.inventory.edges = [
+    edge("in", "checkout", "routes_to"),
+    edge("checkout-slice", "checkout", "owned_by"),
+    edge("cart", "cart-0", "has_endpoint"),
+    edge("cart", "cart-1", "has_endpoint"),
+  ];
+  const rows = (problems: boolean) =>
+    resourceRows(
+      [cluster],
+      { namespace: "all", problems, q: "", system: true },
+      now,
+      ["Service"]
+    );
+  const row = (name: string) => {
+    const found = rows(false).find((item) => item.entity.name === name);
+    if (!found) {
+      throw new Error(`no row for ${name}`);
+    }
+    return found;
+  };
+  const context = { multiCluster: false, onInspect: () => undefined };
+  function cell(preset: "list" | "services", id: string, name: string) {
+    const found = resourceColumns(preset, context).find(
+      (item) => item.id === id
+    );
+    const render = found?.cell as (context: unknown) => ReactNode;
+    return renderToStaticMarkup(render({ row: { original: row(name) } }));
+  }
+
+  it("keeps a routed empty Service in Problems only, not an unrouted one", () => {
+    expect(rows(true).map(({ entity }) => entity.name)).toEqual([
+      "synthetic-cart",
+      "synthetic-checkout",
+    ]);
+    expect(rowStatusDetail(row("synthetic-checkout"))?.title).toBe(
+      routedEmptyText
+    );
+    expect(rowStatusDetail(row("synthetic-idle"))).toBeUndefined();
+  });
+  it("shows a warning badge with the routed-empty reason", () => {
+    const status = cell("list", "status", "synthetic-checkout");
+    expect(status).toContain("bg-warning/10");
+    expect(status).toContain("Observed · routed, no endpoint pods");
+    expect(status).toContain(routedEmptyText);
+    const idle = cell("list", "status", "synthetic-idle");
+    expect(idle).not.toContain("bg-warning/10");
+    expect(idle).not.toContain("no endpoint pods");
+  });
+  it("names not-ready endpoint pods on a warning badge", () => {
+    const status = cell("list", "status", "synthetic-cart");
+    expect(status).toContain("bg-warning/10");
+    expect(status).toContain("Observed · 1/2 endpoint pods ready");
+    expect(status).not.toContain("no endpoint pods");
+    const endpoints = cell("services", "endpoints", "synthetic-cart");
+    expect(endpoints).toContain("1/2");
+    expect(endpoints).not.toContain("No endpoint pods");
+  });
+  it("warns in the endpoints cell, never as a muted 'No endpoints'", () => {
+    const endpoints = cell("services", "endpoints", "synthetic-checkout");
+    expect(endpoints).toContain("text-warning-text");
+    expect(endpoints).toContain("No endpoint pods");
+    expect(endpoints).toContain(routedEmptyText);
+    expect(endpoints).not.toContain("No endpoints");
+    // An unrouted Service with no endpoints is not assumed to be a fault.
+    const idle = cell("services", "endpoints", "synthetic-idle");
+    expect(idle).toContain("No endpoints");
+    expect(idle).not.toContain("text-warning-text");
+    const fact = cardFacts(row("synthetic-checkout"), "services").find(
+      (item) => item.label === "Endpoints"
+    );
+    expect(
+      renderToStaticMarkup(createElement(Fragment, null, fact?.value))
+    ).toContain("No endpoint pods");
+  });
+  it("gives the row and the panel header it opens one Service verdict", () => {
+    const entity = (name: string) => {
+      const found = cluster.inventory.entities.find(
+        (item) => item.name === name
+      );
+      if (!found) {
+        throw new Error(`no entity ${name}`);
+      }
+      return found;
+    };
+    const badge = (input: ReturnType<typeof headerStatus>, name: string) =>
+      renderToStaticMarkup(
+        createElement(StatusBadge, {
+          detail: input.detail,
+          entity: entity(name),
+          problem: input.problem,
+        })
+      );
+    const services = ["synthetic-cart", "synthetic-checkout", "synthetic-idle"];
+    for (const name of services) {
+      const { problem, summary } = row(name);
+      const header = headerStatus(cluster, entity(name), now);
+      // The same verdict and reason from the shared rule.
+      expect(header.problem ?? false).toBe(problem);
+      expect(header.detail).toEqual(rowStatusDetail(row(name)));
+      expect(serviceProblem(cluster, entity(name), summary, now)).toBe(problem);
+      // The same badge, tone and words, on the row and in the header.
+      expect(badge(header, name)).toBe(cell("list", "status", name));
+    }
+    // A Service whose endpoint pods are not all ready warns in the header
+    // too, naming the count, never a neutral "Observed".
+    const cart = headerStatus(cluster, entity("synthetic-cart"), now);
+    expect(cart).toEqual({
+      problem: true,
+      detail: {
+        label: "1/2 endpoint pods ready",
+        title: "Ready endpoint pods / active endpoint pods",
+      },
+    });
+    expect(badge(cart, "synthetic-cart")).toContain("bg-warning/10");
+    // The routed-empty reason is the badge's own wording.
+    expect(headerStatus(cluster, entity("synthetic-checkout"), now)).toEqual({
+      problem: true,
+      detail: routedEmptyDetail,
+    });
+    expect(headerStatus(cluster, entity("synthetic-idle"), now)).toEqual({});
+    // Only a Service has a Service reason.
+    const pod = entity("synthetic-cart-1");
+    expect(
+      serviceStatusDetail(cluster, pod, summarize(cluster, pod, now), now)
+    ).toBeUndefined();
   });
 });

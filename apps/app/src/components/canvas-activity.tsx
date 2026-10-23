@@ -27,7 +27,7 @@ import {
   type ActivityRow,
   activityRows,
   changeDetail,
-  hiddenRolloutSteps,
+  hiddenReplicaSetSteps,
   hiddenStepsText,
   liveAttention,
   quietAttention,
@@ -227,7 +227,19 @@ function ChangeContent({
           {detail && <span className="text-muted-foreground"> · {detail}</span>}
         </span>
         <span className="block truncate text-muted-foreground text-xs">
-          <TimeText label="Observed" value={row.event.observedAt} />
+          <TimeText
+            label={row.summary.timeLabel}
+            value={row.event.observedAt}
+          />
+          {row.summary.subjectCreatedAt && (
+            <>
+              {" · created "}
+              <TimeText label="Created" value={row.summary.subjectCreatedAt} />
+            </>
+          )}
+          {/* A reported row says so in words, not only in its icon tint and
+              tooltip; observed rows need no extra words. */}
+          {row.summary.evidence === "reported" && " · reported by automation"}
           {clusterName && ` · ${clusterName}`}
         </span>
       </span>
@@ -250,7 +262,7 @@ function RecentChanges({
     const data = events.data ?? [];
     return {
       rows: activityRows(data, views, changeLimit),
-      steps: hiddenRolloutSteps(data),
+      steps: hiddenReplicaSetSteps(data),
     };
   }, [events.data, views]);
   const { at, timeZone } = useDisplay();

@@ -3,6 +3,18 @@ import { observationMs } from "../../lib/time";
 const topologyLayouts = ["graph", "list"] as const;
 type TopologyLayout = (typeof topologyLayouts)[number];
 
+// The service panel's tabs. Each kind shows only the ones it has (see
+// inspectorTabs); a tab the kind lacks stays in the URL while the panel
+// shows the kind's first tab.
+export const panelTabs = [
+  "pods",
+  "metrics",
+  "changes",
+  "details",
+  "links",
+] as const;
+export type PanelTab = (typeof panelTabs)[number];
+
 export interface SearchState {
   at?: string;
   cluster?: string;
@@ -13,10 +25,16 @@ export interface SearchState {
   // Topology Graph/List choice; absent follows the screen width. Kept in the
   // URL so it survives namespace drills, cluster changes and Back.
   layout?: TopologyLayout;
+  // The observation a live link remembers, so the panel can offer it if
+  // the linked resource is gone. Only with a resource open
+  // and no saved-observation time.
+  linkedAt?: string;
   mode: string;
   namespace: string;
   // Rows per resource table page; absent means the default page size.
   pageSize?: number;
+  // The open service panel's tab; only with a resource open.
+  panel?: PanelTab;
   problems: boolean;
   q: string;
   range: string;
@@ -36,6 +54,15 @@ export interface SearchState {
 export const scopeReset = {
   namespace: "all",
   q: "",
+} satisfies Partial<SearchState>;
+
+// Closing the service panel, or any change that leaves it, drops the open
+// resource with its tab and link time.
+export const inspectorReset = {
+  resource: undefined,
+  resourceCluster: undefined,
+  panel: undefined,
+  linkedAt: undefined,
 } satisfies Partial<SearchState>;
 
 export const pageSizes = [25, 50, 100] as const;
@@ -138,6 +165,10 @@ function optionalString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+function panelTab(value: unknown) {
+  return panelTabs.find((tab) => tab === value);
+}
+
 // Digits finer than milliseconds, which a Date cannot hold.
 const subMillisecond = /\.\d{4,9}(?:Z|[+-])/;
 
@@ -160,12 +191,21 @@ function observationTime(value: unknown) {
   return new Date(time).toISOString();
 }
 
+// The observation a live link remembers, canonical by the same rule. Only a readable one
+// is kept: it backs an offer, so there is nothing to explain without it.
+function linkedTime(value: unknown) {
+  const time = observationTime(value);
+  return time && observationMs(time) != null ? time : undefined;
+}
+
 export function validateMonitorSearch(
   raw: Record<string, unknown>
 ): SearchState {
   const view = viewFor(raw);
   const tab = resourceTab(raw);
   const at = observationTime(raw.at);
+  // The panel's tab and link time belong to an open resource.
+  const inspecting = typeof raw.resource === "string";
   return {
     workspace: typeof raw.workspace === "string" ? raw.workspace : "global",
     view,
@@ -187,5 +227,8 @@ export function validateMonitorSearch(
     resourceCluster: optionalString(raw.resourceCluster),
     settingsCluster: optionalString(raw.settingsCluster),
     diagnosticNode: optionalString(raw.diagnosticNode),
+    panel: inspecting ? panelTab(raw.panel) : undefined,
+    // A saved-observation time, even an unreadable one, already says when.
+    linkedAt: inspecting && !at ? linkedTime(raw.linkedAt) : undefined,
   };
 }

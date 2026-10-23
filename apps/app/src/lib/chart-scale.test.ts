@@ -1,13 +1,24 @@
+import { createChartScene, viewportInteractionPoints } from "@tanstack/charts";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { chartDefinition, MetricChart } from "../components/resource-chart";
+import { DisplayProvider } from "../hooks/display";
 import {
+  chartAria,
+  countText,
   displayUnit,
+  displayUnitFor,
   formatInUnit,
   formatUsage,
   historySamples,
+  intervalText,
+  isolatedRows,
   isolatedSamples,
   needsDate,
   percentOf,
   references,
+  rowStats,
   sampleStats,
   tickLabel,
   timeTicks,
@@ -18,6 +29,7 @@ import {
 } from "./chart-scale";
 
 const roundHour = /:00$/;
+const plotLabel = /<text[^>]*>[^<]*Diagnostic/;
 const t0 = Date.parse("2026-10-22T12:00:00Z");
 const metric = (offset: number, value: string, name = "k8s.pod.cpu.usage") => ({
   name,
@@ -177,5 +189,265 @@ describe("tooltip", () => {
         { unit, timeZone: "UTC", title: "CPU used" }
       )
     ).toEqual({ rows: [] });
+  });
+});
+
+describe("unit families", () => {
+  it("map cores and bytes onto the existing display units", () => {
+    expect(displayUnitFor("cores", 0.25)).toBe(displayUnit("cpu", 0.25));
+    expect(displayUnitFor("cores", 6)).toBe(displayUnit("cpu", 6));
+    expect(displayUnitFor("bytes", 512 * 1024 ** 2)).toBe(
+      displayUnit("memory", 512 * 1024 ** 2)
+    );
+    expect(displayUnitFor("bytes", 30 * 1024 ** 3).label).toBe("GiB");
+    expect(displayUnitFor("cores", undefined).label).toBe("millicores");
+  });
+});
+
+describe("chart rows", () => {
+  const samples = [
+    { time: t0, value: 4 },
+    { time: t0 + 30_000, value: 1 },
+    { time: t0 + 200_000, value: 2 },
+    { time: t0 + 500_000, value: 3 },
+  ];
+
+  it("summarize like samples, one break per null row", () => {
+    expect(rowStats(withGaps(samples))).toEqual(sampleStats(samples));
+    expect(rowStats([])).toEqual(sampleStats([]));
+  });
+
+  it("dot exactly the samples with no neighbour inside the gap window", () => {
+    expect(isolatedRows(withGaps(samples))).toEqual(isolatedSamples(samples));
+    expect(
+      isolatedRows([
+        { time: t0, value: null },
+        { time: t0 + 1, value: 5 },
+        { time: t0 + 2, value: null },
+      ])
+    ).toEqual([{ time: t0 + 1, value: 5 }]);
+  });
+
+  it("labels a multi-series tooltip by series and adds same-time readings", () => {
+    const unit = displayUnit("cpu", 2);
+    const content = tooltipContent(
+      {
+        time: Date.parse("2026-10-22T12:00:05Z"),
+        value: 1.5,
+        label: "Busy",
+        detail: [{ label: "idle", value: "6.5 cores" }],
+      },
+      { unit, timeZone: "UTC", title: "Host CPU busy" }
+    );
+    expect(content.rows).toEqual([
+      { label: "Busy", value: "1.5 cores" },
+      { label: "idle", value: "6.5 cores" },
+    ]);
+  });
+});
+
+// The strings the Pod and Node charts have always announced, written out in
+// full so a change to the shared builder cannot pass unnoticed.
+describe("chart accessible strings", () => {
+  const from = Date.parse("2026-10-22T11:00:00Z");
+  const to = Date.parse("2026-10-22T12:00:00Z");
+  const samples = historySamples(
+    [
+      metric(-3_600_000 + 60_000, "0.25"),
+      metric(-3_600_000 + 90_000, "0.5"),
+      metric(-1_800_000, "0.125"),
+    ],
+    "k8s.pod.cpu.usage"
+  );
+  const stats = sampleStats(samples);
+  const unit = displayUnit("cpu", stats.max);
+
+  it("keeps the interval, name and description byte for byte", () => {
+    const interval = intervalText(from, to, "UTC");
+    expect(interval).toBe("Oct 22, 11:00:00 to Oct 22, 12:00:00 UTC");
+    expect(
+      chartAria({
+        title: "CPU used",
+        subject: "Pod checkout-b4n8s",
+        unit,
+        stats: rowStats(withGaps(samples)),
+        interval,
+      })
+    ).toEqual({
+      label: "CPU used for Pod checkout-b4n8s, in millicores",
+      description:
+        "Latest 125m, minimum 125m, maximum 500m, 3 samples. Interval Oct 22, 11:00:00 to Oct 22, 12:00:00 UTC. Gaps longer than 90 seconds are left blank.",
+    });
+  });
+
+  it("appends Diagnostic periods after the fixed sentences", () => {
+    expect(
+      chartAria({
+        title: "Host CPU busy",
+        subject: "Node synthetic-node-a",
+        unit,
+        stats,
+        interval: intervalText(from, to, "UTC"),
+        extra: [
+          "Diagnostic · samples every 5 s, Oct 22, 11:10:00 to Oct 22, 11:19:00 UTC.",
+        ],
+      }).description
+    ).toBe(
+      "Latest 125m, minimum 125m, maximum 500m, 3 samples. Interval Oct 22, 11:00:00 to Oct 22, 12:00:00 UTC. Gaps longer than 90 seconds are left blank. Diagnostic · samples every 5 s, Oct 22, 11:10:00 to Oct 22, 11:19:00 UTC."
+    );
+  });
+});
+
+describe("chart counts and zoom", () => {
+  const from = Date.parse("2026-10-22T11:00:00Z");
+  const to = Date.parse("2026-10-22T12:00:00Z");
+  const samples = historySamples(
+    [
+      metric(-3_600_000 + 60_000, "0.25"),
+      metric(-3_600_000 + 90_000, "0.5"),
+      metric(-1_800_000, "0.125"),
+    ],
+    "k8s.pod.cpu.usage"
+  );
+  const stats = sampleStats(samples);
+  const unit = displayUnit("cpu", stats.max);
+  const rate = { one: "rate", other: "rates" };
+
+  it("names what the rows count, one or many", () => {
+    expect(countText(1)).toBe("1 sample");
+    expect(countText(3)).toBe("3 samples");
+    expect(countText(1, rate)).toBe("1 rate");
+    expect(countText(59, rate)).toBe("59 rates");
+  });
+
+  it("counts rates, not samples, for a rate chart", () => {
+    const { description } = chartAria({
+      title: "Host CPU busy",
+      subject: "Node synthetic-node-a",
+      unit,
+      stats,
+      interval: intervalText(from, to, "UTC"),
+      count: rate,
+    });
+    expect(description).toContain("maximum 500m, 3 rates.");
+    expect(description).not.toContain("samples.");
+  });
+
+  it("says the axis is zoomed and the summary is the full interval", () => {
+    const zoom = intervalText(
+      Date.parse("2026-10-22T11:10:00Z"),
+      Date.parse("2026-10-22T11:20:00Z"),
+      "UTC"
+    );
+    expect(
+      chartAria({
+        title: "Host CPU busy",
+        subject: "Node synthetic-node-a",
+        unit,
+        stats,
+        interval: intervalText(from, to, "UTC"),
+        zoom,
+        extra: [
+          "Diagnostic · samples every 5 s, Oct 22, 11:10:00 to Oct 22, 11:19:00 UTC.",
+        ],
+      }).description
+    ).toBe(
+      "Latest 125m, minimum 125m, maximum 500m, 3 samples. Interval Oct 22, 11:00:00 to Oct 22, 12:00:00 UTC. Gaps longer than 90 seconds are left blank. Time axis zoomed to Oct 22, 11:10:00 to Oct 22, 11:20:00 UTC; the summary covers the full interval. Diagnostic · samples every 5 s, Oct 22, 11:10:00 to Oct 22, 11:19:00 UTC."
+    );
+  });
+});
+
+// Synthetic node and values only.
+describe("metric chart", () => {
+  const from = Date.parse("2026-10-22T11:00:00Z");
+  const to = Date.parse("2026-10-22T12:00:00Z");
+  // One busy rate a minute, 0.5 cores.
+  const rows = Array.from({ length: 61 }, (_, index) => ({
+    time: from + index * 60_000,
+    value: 0.5,
+  }));
+  const series = [{ id: "busy", label: "Busy", rows }];
+  const label = "Diagnostic · samples every 5 s";
+  const spans = [
+    { start: from + 20 * 60_000, end: from + 25 * 60_000, label },
+    { start: from + 26 * 60_000, end: from + 29 * 60_000, label },
+  ];
+  const zoom: [number, number] = [from + 19 * 60_000, from + 30 * 60_000];
+
+  function render(domain?: [number, number]) {
+    return renderToStaticMarkup(
+      createElement(
+        DisplayProvider,
+        null,
+        createElement(MetricChart, {
+          title: "Host CPU busy",
+          subject: "Node synthetic-node-a",
+          family: "cores",
+          from,
+          to,
+          series,
+          spans,
+          domain,
+          countLabel: { one: "rate", other: "rates" },
+        })
+      )
+    );
+  }
+
+  it("counts rates in the visible summary", () => {
+    const html = render();
+    expect(html).toContain("61 rates");
+    expect(html).not.toContain("61 samples");
+  });
+
+  it("names Diagnostic periods once in the legend, not in the plot", () => {
+    const html = render();
+    const caption = html.slice(
+      html.indexOf("<figcaption"),
+      html.indexOf("</figcaption>")
+    );
+    expect(caption.split(label).length - 1).toBe(1);
+    expect(html).not.toMatch(plotLabel);
+  });
+
+  it("notes a zoomed axis beside the full-range summary", () => {
+    expect(render()).not.toContain("summary covers the full range");
+    const html = render(zoom);
+    expect(html).toContain(
+      "summary covers the full range, not only the zoomed axis"
+    );
+    expect(html).toContain("61 rates");
+  });
+
+  it("keeps focus on the samples inside a zoomed axis", () => {
+    const definition = (view?: readonly [number, number]) =>
+      chartDefinition({
+        series,
+        unit: displayUnit("cpu", 0.5),
+        from,
+        to,
+        view,
+        timeZone: "UTC",
+        title: "Host CPU busy",
+        references: [],
+        spans: [],
+        top: 0.5,
+      });
+    const size = { width: 640, height: 200 };
+    const full = createChartScene(definition(), size);
+    expect(viewportInteractionPoints(full)).toHaveLength(full.points.length);
+    const zoomed = createChartScene(definition(zoom), size);
+    const times = viewportInteractionPoints(zoomed).map(
+      (point) => (point.datum as { time: number }).time
+    );
+    expect(times.length).toBeGreaterThan(0);
+    expect(times.length).toBeLessThan(rows.length);
+    for (const time of times) {
+      expect(time).toBeGreaterThanOrEqual(zoom[0]);
+      expect(time).toBeLessThanOrEqual(zoom[1]);
+    }
+    // The axis shows the zoomed interval; the content spans the whole read.
+    expect(zoomed.scales.x.viewport?.domain).toEqual(zoom);
+    expect(zoomed.scales.x.viewport?.contentDomain).toEqual([from, to]);
   });
 });

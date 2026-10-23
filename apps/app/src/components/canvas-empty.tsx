@@ -18,6 +18,7 @@ import {
   Plus,
   TriangleAlert,
 } from "lucide-react";
+import { finishedText } from "../lib/canvas-cards";
 import { type ClusterCoverage, coverageNotes } from "../lib/coverage";
 import { emptyTopology, type ServiceGraph } from "../lib/service-graph";
 import { EmptyState } from "./page";
@@ -66,7 +67,7 @@ function hiddenCopy(props: EmptyProps): EmptyCopy {
       description: `${counted(count, "system namespace")} with resources ${verb} hidden by the current filters.`,
     };
   }
-  const history = historyText(props.graph.finishedFailed);
+  const history = historyText(props.graph);
   if (props.search) {
     return {
       icon: props.problems ? TriangleAlert : Network,
@@ -86,21 +87,33 @@ function scopeText(namespace: string) {
   return namespace === "all" ? "any namespace" : namespace;
 }
 
-// Finished pods that failed are history, named so the counts add up but
-// never presented as a problem.
-function historyText(finishedFailed = 0) {
-  if (!finishedFailed) {
+// Finished pods are history, named in the canvas's one wording ("5 finished
+// (2 failed)") so the counts add up, but never presented as a problem.
+function historyText(graph: ServiceGraph) {
+  const finished = graph.finished ?? 0;
+  if (!finished) {
     return "";
   }
-  return ` ${counted(finishedFailed, "finished pod")} with failures ${finishedFailed === 1 ? "is" : "are"} kept as history.`;
+  return ` ${finishedText(finished, graph.finishedFailed ?? 0)} ${finished === 1 ? "pod is" : "pods are"} kept as history.`;
+}
+
+// What the empty Problems only canvas checked. Routed Services without
+// endpoint pods are judged only on fresh live inventory (or a saved
+// observation), so stale live inventory never claims there are none.
+function problemText(props: EmptyProps, scope: string) {
+  const { coverage, frozen } = props;
+  if (!frozen && coverage.aged - coverage.observerAged > 0) {
+    return `No failing pods, under-replicated workloads or node problems in ${scope}. Routed Services without endpoint pods are judged only on fresh inventory.`;
+  }
+  return `No failing pods, under-replicated workloads, node problems or routed Services without endpoint pods in ${scope}.`;
 }
 
 function emptyCopy(props: EmptyProps): EmptyCopy {
   const { graph, problems, search, showSystem, frozen } = props;
   const scope = scopeText(props.namespace);
   const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads or node problems in ${scope}.`;
-  const history = historyText(graph.finishedFailed);
+  const problemList = problemText(props, scope);
+  const history = historyText(graph);
   switch (emptyTopology(graph, { problems, search }, props.coverage)) {
     case "hiddenSystem":
       return hiddenCopy(props);

@@ -88,7 +88,10 @@ applied the profile. Pausing collection preserves stored history.
 The observer spool is bounded. Accepted batches are removed after a successful
 protobuf acknowledgment. Retries respect backpressure and preserve batch order.
 Node buffers are bounded and have their own expiry. Reported drops and rejected
-points remain visible.
+points remain visible. Drop and rejection counts are running totals since the
+observer or node collector process started and reset on restart; they do not
+say when each drop happened, so the dashboard reports a rise only between
+heartbeats it received while open.
 
 The application spool defaults to 8 MiB. Set `JOOD_SPOOL_MAX_BYTES` to a decimal
 byte limit from 8 MiB to 256 MiB for a binary installation. Invalid limits stop

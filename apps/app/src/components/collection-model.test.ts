@@ -1,5 +1,6 @@
 import type { ClusterView } from "@jood-monitor/api-client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { nextWatch } from "../lib/delivery-watch";
 import { profileSchema } from "../schemas/clusters";
 import {
   ackPatienceMs,
@@ -185,9 +186,17 @@ describe("profile drafts", () => {
     expect(profileChoices.basic.detail).toContain(
       "No pod or container CPU/memory"
     );
+    // Host CPU and memory are charted on a node's Metrics tab; the other
+    // host sources are stored but not charted.
+    expect(profileChoices.standard.detail).toContain(
+      "host CPU and memory are charted in each node's Metrics tab; network, disk and filesystem counters are stored and available through the history API but not yet charted."
+    );
+    expect(profileChoices.diagnostic.detail).toContain(
+      "Host CPU and memory are charted in that node's Metrics tab; network, disk and filesystem samples are stored and available through the history API but not yet charted."
+    );
     for (const name of ["standard", "diagnostic"] as const) {
-      expect(profileChoices[name].detail).toContain(
-        "available through the history API but not yet charted in the dashboard"
+      expect(profileChoices[name].detail).not.toContain(
+        "not yet charted in the dashboard"
       );
     }
   });
@@ -404,21 +413,40 @@ describe("diagnostics", () => {
 });
 
 describe("delivery health", () => {
+  const iso = (time: number) => new Date(time).toISOString();
+  const opened = now - 5 * 60_000;
+  // A fresh heartbeat as the page saw it.
+  const reading = (dropped: number, heartbeatAt: string, queueBytes = 0) => ({
+    dropped,
+    rejectedPoints: 0,
+    queueBytes,
+    heartbeatAt,
+    fresh: true,
+  });
+  function reporting(dropped: number, heartbeatAt = at, queueBytes = 0) {
+    const view = fixture();
+    view.heartbeat = { ...view.heartbeat, dropped, queueBytes };
+    view.cluster = { ...view.cluster, heartbeatAt };
+    return view;
+  }
+  const droppedStat = (health: ReturnType<typeof deliveryHealth>) =>
+    health.stats.find((stat) => stat.term === "Dropped batches");
+
   it("presents counters as current only with a fresh heartbeat", () => {
     const view = fixture();
     const fresh = deliveryHealth(view, now);
     expect(fresh.note).toBeUndefined();
     expect(
-      fresh.stats.map((stat) => [stat.term, stat.value, stat.warn])
+      fresh.stats.map((stat) => [stat.term, stat.value, stat.tone])
     ).toEqual([
-      ["Buffered on agent", "0 B", false],
-      ["Dropped", "0", false],
-      ["Rejected points", "0", false],
+      ["Buffered on agent", "0 B", "ok"],
+      ["Dropped batches", "0", "ok"],
+      ["Rejected points", "0", "ok"],
     ]);
     const stale = deliveryHealth(view, now + 10 * 60_000);
-    expect(stale.stats.find((stat) => stat.term === "Dropped")).toMatchObject({
+    expect(droppedStat(stale)).toMatchObject({
       value: "0 (last reported)",
-      warn: true,
+      tone: "warn",
     });
     expect(
       stale.stats.every((stat) => stat.value.endsWith("(last reported)"))
@@ -426,26 +454,185 @@ describe("delivery health", () => {
     expect(stale.note).toContain("stale");
   });
 
-  it("flags non-zero counters and never shows missing heartbeats as zero", () => {
+  it("notices a running total without warning, and warns while buffering", () => {
+    const quiet = deliveryHealth(reporting(3815), now);
+    expect(droppedStat(quiet)).toMatchObject({
+      value: "3,815",
+      tone: "notice",
+    });
+    const backlog = reporting(3815, at, 65_536);
+    const watch = nextWatch(undefined, reading(3815, at, 65_536), now);
+    const health = deliveryHealth(backlog, now, { timeZone: "UTC", watch });
+    expect(health.stats.map((stat) => stat.tone)).toEqual([
+      "warn",
+      "warn",
+      "warn",
+    ]);
+    expect(droppedStat(health)?.value).toBe(
+      "3,815 · the observer is draining a backlog, so whether the total is still rising is unconfirmed"
+    );
+    // Stale still warns, by today's rule, whatever the watch saw.
+    expect(
+      droppedStat(deliveryHealth(reporting(3815), now + 10 * 60_000, { watch }))
+        ?.tone
+    ).toBe("warn");
+  });
+
+  it("warns for a rise seen within 15 minutes, then notices it", () => {
+    let watch = nextWatch(
+      undefined,
+      reading(3809, iso(opened - 10_000)),
+      opened
+    );
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(3809, iso(opened - 10_000)), opened, {
+          timeZone: "UTC",
+          watch,
+        })
+      )
+    ).toMatchObject({
+      value:
+        "3,809 · watching since this page opened at 09:55 UTC; no rise seen (the observer does not report when drops happened)",
+      tone: "notice",
+    });
+    watch = nextWatch(watch, reading(3815, at), now);
+    const rose = deliveryHealth(reporting(3815), now, {
+      timeZone: "UTC",
+      watch,
+    });
+    expect(droppedStat(rose)).toMatchObject({
+      value:
+        "3,815 · rose by 6 since this page opened (first new drops seen in the heartbeat the hub received at 09:59:50 UTC)",
+      tone: "warn",
+    });
+    const later = now + 16 * 60_000;
+    watch = nextWatch(watch, reading(3815, iso(later - 10_000)), later);
+    const settled = deliveryHealth(
+      reporting(3815, iso(later - 10_000)),
+      later,
+      {
+        timeZone: "UTC",
+        watch,
+      }
+    );
+    expect(droppedStat(settled)?.tone).toBe("notice");
+    expect(droppedStat(settled)?.value).toContain("rose by 6");
+  });
+
+  it("reads a lower total as a counter reset, not a rise", () => {
+    let watch = nextWatch(
+      undefined,
+      reading(3815, iso(opened - 10_000)),
+      opened
+    );
+    watch = nextWatch(watch, reading(12, at), now);
+    // The restarted observer's 12 drops are new, so the reset warns.
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(12), now, { timeZone: "UTC", watch })
+      )
+    ).toMatchObject({
+      value:
+        "12 · the total went down (3,815 → 12) in the heartbeat received 09:59:50 UTC; the observer's counter reset, usually after a restart",
+      tone: "warn",
+    });
+    // A reset to zero has nothing new: a notice, never a warning.
+    const cleared = nextWatch(
+      nextWatch(undefined, reading(3815, iso(opened - 10_000)), opened),
+      reading(0, at),
+      now
+    );
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(0), now, { timeZone: "UTC", watch: cleared })
+      )
+    ).toMatchObject({
+      value:
+        "0 · the total went down (3,815 → 0) in the heartbeat received 09:59:50 UTC; the observer's counter reset, usually after a restart",
+      tone: "ok",
+    });
+    // New drops after the reset count it in the rise.
+    const later = now + 15_000;
+    watch = nextWatch(watch, reading(20, iso(later - 10_000)), later);
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(20, iso(later - 10_000)), later, {
+          timeZone: "UTC",
+          watch,
+        })
+      )
+    ).toMatchObject({
+      value:
+        "20 · rose by 20 since this page opened, counting from zero after the counter reset (first new drops seen in the heartbeat the hub received at 09:59:50 UTC)",
+      tone: "warn",
+    });
+  });
+
+  it("never shows a missing or uncaptured heartbeat as zero", () => {
     const view = fixture();
     view.heartbeat = { ...view.heartbeat, queueBytes: 2048, dropped: 3 };
-    expect(
-      deliveryHealth(view, now).stats.map((stat) => [stat.value, stat.warn])
-    ).toEqual([
-      ["2.0 KiB", true],
-      ["3", true],
-      ["0", false],
-    ]);
     for (const heartbeatAt of [null, "0001-01-01T00:00:00Z"]) {
       view.cluster = { ...view.cluster, heartbeatAt };
       const missing = deliveryHealth(view, now);
       expect(missing.note).toBeUndefined();
       expect(
         missing.stats.every(
-          (stat) => stat.value === "Not reported" && !stat.warn
+          (stat) => stat.value === "Not reported" && stat.tone === "ok"
         )
       ).toBe(true);
+      // Captured with a saved observation that had no heartbeat yet.
+      expect(
+        deliveryHealth(view, now, { captured: true }).stats.map(
+          (stat) => stat.value
+        )
+      ).toEqual(new Array(3).fill("No heartbeat before this inventory"));
     }
+    const uncaptured = deliveryHealth(fixture(), now, { captured: false });
+    expect(uncaptured.note).toBeUndefined();
+    expect(uncaptured.stats.map((stat) => stat.value)).toEqual(
+      new Array(3).fill("Not captured with this observation")
+    );
+  });
+
+  it("states captured counters as of the inventory's receipt", () => {
+    // The capture's year is the current one, so no year is shown.
+    vi.setSystemTime(now);
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const view = reporting(40, new Date(now - 120_000).toISOString());
+    const captured = deliveryHealth(view, Date.parse(at), {
+      captured: true,
+      timeZone: "UTC",
+    });
+    expect(droppedStat(captured)).toMatchObject({
+      value: "40 as captured at Oct 22, 09:59:50 UTC",
+      tone: "warn",
+    });
+    expect(captured.note).toBe(
+      "The heartbeat was already stale when this inventory arrived, so these are the last values the observer had reported by then."
+    );
+    expect(JSON.stringify(captured)).not.toContain("browser");
+  });
+
+  it("defines the totals as running since the observer started", () => {
+    const definitions = Object.fromEntries(
+      deliveryHealth(fixture(), now).stats.map((stat) => [
+        stat.term,
+        stat.definition,
+      ])
+    );
+    expect(definitions["Dropped batches"]).toContain(
+      "The total resets when the observer restarts."
+    );
+    expect(definitions["Dropped batches"]).toContain(
+      "the hub refused it outright (HTTP 400, 404, 413 or 422"
+    );
+    expect(definitions["Dropped batches"]).toContain("never zero");
+    expect(definitions["Rejected points"]).toContain(
+      "since the observer last started"
+    );
   });
 });
 

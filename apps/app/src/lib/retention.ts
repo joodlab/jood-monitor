@@ -8,5 +8,7 @@ export const DAY_MS = 86_400_000;
 export const INVENTORY_RETENTION_DAYS = 180;
 // Raw CPU/memory samples.
 export const RAW_RETENTION_DAYS = 7;
+// Raw samples taken during a Diagnostic, counted from each sample's source time.
+export const DIAGNOSTIC_RETENTION_DAYS = 1;
 
 export const rawRetentionMessage = `history range must be within ${RAW_RETENTION_DAYS} days`;

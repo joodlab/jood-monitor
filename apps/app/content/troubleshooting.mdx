@@ -25,8 +25,11 @@ cannot prove a node is still collecting it.
 ## Delivery or history is unavailable
 
 Inspect retryable status, queue bytes, drops, rejected points and archival
-backlog. Do not clear a spool to hide a delivery problem. Narrow broad history
-queries. Preserve durable buffers while investigating R2 or D1 availability.
+backlog. Drop and rejection counts are running totals since the observer or
+node collector process started and reset on restart, so compare two readings
+rather than reading a non-zero total as a current problem. Do not clear a spool
+to hide a delivery problem. Narrow broad history queries. Preserve durable
+buffers while investigating R2 or D1 availability.
 
 ## Source comparison differs
 

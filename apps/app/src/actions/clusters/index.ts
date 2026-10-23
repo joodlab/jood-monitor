@@ -32,6 +32,7 @@ import { hash, token } from "../../lib/server/crypto";
 import { HttpError } from "../../lib/server/http";
 import { hubBufferStatus } from "../../lib/server/hub-buffer";
 import { newerObservation } from "../../lib/server/observations";
+import { withinHistory } from "../../lib/server/series-history";
 import { createTiming } from "../../lib/server/server-timing";
 import { compareMetrics } from "../../lib/server/telemetry";
 import { nanoTimestamp, timestampNano } from "../../lib/server/time";
@@ -241,7 +242,13 @@ export async function getSnapshot(
           profile: observation.data.profile !== null,
           heartbeat: observation.data.heartbeat !== null,
         };
-        view.cluster = { ...view.cluster, ...observation.data.times };
+        // A time the capture did not record is unknown at that instant; the
+        // live value would describe a later moment.
+        view.cluster = {
+          ...view.cluster,
+          ...unrecordedTimes,
+          ...observation.data.times,
+        };
       } else {
         view.inventory = {
           sourceTime: "0001-01-01T00:00:00Z",
@@ -279,6 +286,14 @@ export async function getSnapshot(
     serverTime: new Date().toISOString(),
   };
 }
+
+// Saved captures may omit a time, for example a heartbeat time before the
+// first heartbeat arrived.
+const unrecordedTimes = {
+  inventoryTime: null,
+  receivedAt: null,
+  heartbeatAt: null,
+};
 
 function latestObservations(points: StoredMetric[]) {
   const latest = new Map<string, StoredMetric>();
@@ -323,6 +338,7 @@ export function normalizeTime(value: string) {
   }
 }
 
+// Source-time bounds and the one-day Diagnostic cut every raw read applies.
 function historyContains(
   row: StoredMetric,
   from: string,
@@ -330,11 +346,7 @@ function historyContains(
   name?: string
 ) {
   return (
-    row.sourceTime >= from &&
-    row.sourceTime <= to &&
-    (!name || row.name === name) &&
-    (!row.diagnostic ||
-      validRangeTime(row.sourceTime) >= Date.now() - 86_400_000)
+    withinHistory(row, from, to, Date.now()) && (!name || row.name === name)
   );
 }
 

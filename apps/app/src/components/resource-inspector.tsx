@@ -16,8 +16,9 @@ import {
   Timer,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 import {
+  captureTime,
   collectionState,
   diagnosticText,
   gapReason,
@@ -33,7 +34,12 @@ import {
 } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import type { HubClock } from "../lib/time";
-import { InspectorHeader, useInspectionTrail } from "./inspector-header";
+import { type PanelTab, panelTabs, type SearchState } from "../schemas/monitor";
+import {
+  InspectorHeader,
+  type LinkContext,
+  useInspectionTrail,
+} from "./inspector-header";
 import {
   activeTab,
   type Coverage,
@@ -51,20 +57,37 @@ import {
   usageReading,
 } from "./inspector-model";
 import { RelationshipList } from "./inspector-sections";
+import {
+  type ChangesQuery,
+  ChangesTab,
+  changesBadge,
+  useChangeRows,
+  useResourceChanges,
+} from "./panel-changes";
 import { DetailsTab } from "./panel-details";
 import { type HistoryQuery, MetricsTab, useHistory } from "./panel-metrics";
 import { PodsTab } from "./panel-pods";
 import { PanelShell } from "./panel-shell";
 
-type Inspect = (view: ClusterView, entity: Entity) => void;
+// `extra.panel` opens the resource on that tab.
+type Inspect = (
+  view: ClusterView,
+  entity: Entity,
+  extra?: { panel?: PanelTab }
+) => void;
 type Inspected = { view: ClusterView; entity: Entity } | null;
 
 // Railway's service panel for one resource: header, usage at a glance, and
-// tabs for member pods (its Deployments list), metrics, details and links.
+// tabs for member pods (its Deployments list), metrics, recorded changes,
+// details and links. The tab lives in the URL (`panel`).
 export function ResourceInspector({
   inspected,
   onClose,
   onInspect,
+  onBack,
+  panel,
+  onPanel,
+  search,
   referenceTime,
   range,
   onRange,
@@ -77,6 +100,13 @@ export function ResourceInspector({
   inspected: Inspected;
   onClose: () => void;
   onInspect: Inspect;
+  // The header's Back to the previous resource in the trail.
+  onBack: (crumb: Crumb) => void;
+  // The URL's tab; a tab the kind lacks shows the kind's first tab.
+  panel?: string;
+  onPanel: (tab: PanelTab) => void;
+  // The page's search, which links to the panel carry.
+  search: SearchState;
   referenceTime: number;
   range: string;
   // Changes the shared history range; without it the Metrics tab shows the
@@ -95,9 +125,11 @@ export function ResourceInspector({
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
   const trail = useInspectionTrail(inspected);
+  const title = useRef<HTMLHeadingElement>(null);
   const live = { at, connection, hubClock, scope, range, referenceTime };
   const cpu = useHistory(inspected, "cpu", live);
   const memory = useHistory(inspected, "memory", live);
+  const changes = useResourceChanges(inspected, { at, connection, scope });
   return (
     <PanelShell
       onClose={onClose}
@@ -110,18 +142,26 @@ export function ResourceInspector({
             }
           : undefined
       }
+      title={title}
     >
       {inspected && (
         <InspectorBody
+          changes={changes}
           cpu={cpu}
           entity={inspected.entity}
           frozen={!!at}
+          hubClock={hubClock}
           memory={memory}
+          onBack={onBack}
           onCollection={onCollection}
           onInspect={onInspect}
+          onPanel={onPanel}
           onRange={onRange}
+          panel={panel}
           range={range}
           referenceTime={referenceTime}
+          search={search}
+          title={title}
           trail={trail}
           view={inspected.view}
         />
@@ -133,9 +173,19 @@ export function ResourceInspector({
 const tabNames: Record<InspectorTab, string> = {
   pods: "Pods",
   metrics: "Metrics",
+  changes: "Changes",
   details: "Details",
   links: "Links",
 };
+
+function panelTab(value: string) {
+  return panelTabs.find((tab) => tab === value);
+}
+
+// Pods, Nodes and kinds summed over member pods have usage to glance at.
+function hasUsage(kind: string) {
+  return kind === "Pod" || kind === "Node" || isCohort(kind);
+}
 
 const listClass =
   "sticky top-0 z-10 w-full shrink-0 justify-start gap-5 overflow-x-auto rounded-none border-b bg-popover p-0 px-4 group-data-[orientation=horizontal]/tabs:h-12 sm:px-6 md:static";
@@ -152,8 +202,15 @@ function InspectorBody({
   onRange,
   cpu,
   memory,
+  changes,
+  panel,
+  onPanel,
   onInspect,
+  onBack,
   onCollection,
+  search,
+  hubClock,
+  title,
 }: {
   view: ClusterView;
   entity: Entity;
@@ -164,8 +221,15 @@ function InspectorBody({
   onRange?: (range: string) => void;
   cpu: HistoryQuery;
   memory: HistoryQuery;
+  changes: ChangesQuery;
+  panel?: string;
+  onPanel: (tab: PanelTab) => void;
   onInspect: Inspect;
+  onBack: (crumb: Crumb) => void;
   onCollection: (view: ClusterView, node?: Entity) => void;
+  search: SearchState;
+  hubClock?: HubClock;
+  title: RefObject<HTMLHeadingElement | null>;
 }) {
   const summary = summarize(view, entity, referenceTime);
   const gap = usageGap(view, entity, summary.pods, referenceTime, frozen);
@@ -176,10 +240,10 @@ function InspectorBody({
   const profile = profileKnown(view, frozen)
     ? collectionState(view, referenceTime).label
     : undefined;
-  // The operator's tab choice; each kind shows it when it has that tab.
-  const [chosen, setChosen] = useState<string>();
+  // The URL's tab; each kind shows it when it has that tab.
   const tabs = inspectorTabs(entity.kind, links.length > 0);
-  const tab = activeTab(chosen, entity.kind, links.length > 0);
+  const tab = activeTab(panel, entity.kind, links.length > 0);
+  const related = useChangeRows(changes.data, view, entity);
   const scroller = useRef<HTMLDivElement>(null);
   const key = inspectionKey(view, entity);
   // Fetch the chart code while the operator reads the first tab.
@@ -194,30 +258,36 @@ function InspectorBody({
     }
   }, [key]);
   const select = (value: string) => {
-    setChosen(value);
+    const next = panelTab(value);
+    if (next) {
+      onPanel(next);
+    }
     scroller.current?.scrollTo({ top: 0 });
   };
-  const counts: Partial<Record<InspectorTab, number>> = {
+  const counts: Partial<Record<InspectorTab, number | string>> = {
     pods: summary.pods.length,
+    changes: changesBadge(related, changes.data != null),
     links: links.length,
   };
   const warnings: Partial<Record<InspectorTab, number>> = {
     pods: podGroups(summary.pods, referenceTime).attention.length,
     details: conditionGroups(entity.conditions).abnormal.length,
   };
+  const link: LinkContext = { search, panel: tab, hubClock };
   return (
     <>
       <div className="shrink-0 space-y-4 pb-5">
         <InspectorHeader
           entity={entity}
+          link={link}
+          onBack={onBack}
           onInspect={onInspect}
           referenceTime={referenceTime}
+          titleRef={title}
           trail={trail}
           view={view}
         />
-        {(entity.kind === "Pod" ||
-          entity.kind === "Node" ||
-          isCohort(entity.kind)) && (
+        {hasUsage(entity.kind) && (
           <UsageStrip coverage={coverage} entity={entity} summary={summary} />
         )}
         <CollectionNotice
@@ -275,16 +345,28 @@ function InspectorBody({
                 frozen={frozen}
                 memory={memory}
                 now={referenceTime}
-                onPodHistory={(pod) => {
-                  setChosen("metrics");
-                  onInspect(view, pod);
-                }}
+                // The pod opens on its own Metrics tab.
+                onPodHistory={(pod) =>
+                  onInspect(view, pod, { panel: "metrics" })
+                }
                 onRange={onRange}
                 onShowPods={() => select("pods")}
                 profile={profile}
                 range={range}
                 stale={stale}
                 summary={summary}
+                view={view}
+              />
+            </TabsContent>
+          )}
+          {tabs.includes("changes") && (
+            <TabsContent className="px-4 py-5 sm:px-6" value="changes">
+              <ChangesTab
+                changes={related}
+                entity={entity}
+                onInspect={onInspect}
+                query={changes}
+                stale={stale}
                 view={view}
               />
             </TabsContent>
@@ -316,7 +398,13 @@ function InspectorBody({
   );
 }
 
-function TabBadges({ count, warnings }: { count?: number; warnings?: number }) {
+function TabBadges({
+  count,
+  warnings,
+}: {
+  count?: number | string;
+  warnings?: number;
+}) {
   return (
     <>
       {count != null && (
@@ -336,9 +424,31 @@ function TabBadges({ count, warnings }: { count?: number; warnings?: number }) {
   );
 }
 
+// The Diagnostic running on this Node at `time`, if any.
+function diagnosticOn(view: ClusterView, entity: Entity, time: number) {
+  if (entity.kind !== "Node") {
+    return;
+  }
+  const running = collectionState(view, time).diagnostic;
+  return running?.nodeUids.includes(entity.uid) ? running : undefined;
+}
+
+// Whether a saved observation's captured settings show a Diagnostic running
+// on this Node when its inventory was captured. Judged at the capture, never
+// the selected time or the clock; without captured settings, no claim.
+export function capturedDiagnostic(view: ClusterView, entity: Entity) {
+  const capture = captureTime(view);
+  return (
+    profileKnown(view, true) &&
+    capture != null &&
+    !!diagnosticOn(view, entity, capture)
+  );
+}
+
 // Why usage is missing when the hub knows, with a way to the collection
-// settings when they cause it, and a Diagnostic running on this Node. The
-// display clock is zero until hydration, so the countdown waits for it.
+// settings when they cause it, and a Diagnostic running on this Node: live,
+// with its countdown; saved, as its captured settings show it. The display
+// clock is zero until hydration, so the countdown waits for it.
 function CollectionNotice({
   view,
   entity,
@@ -354,14 +464,10 @@ function CollectionNotice({
   now: number;
   onCollection: (view: ClusterView, node?: Entity) => void;
 }) {
-  const running =
-    !frozen && now > 0 && entity.kind === "Node"
-      ? collectionState(view, now).diagnostic
-      : undefined;
-  const diagnostic = running?.nodeUids.includes(entity.uid)
-    ? running
-    : undefined;
-  if (!(gap || diagnostic)) {
+  const diagnostic =
+    !frozen && now > 0 ? diagnosticOn(view, entity, now) : undefined;
+  const captured = frozen && capturedDiagnostic(view, entity);
+  if (!(gap || diagnostic || captured)) {
     return null;
   }
   const node =
@@ -386,6 +492,16 @@ function CollectionNotice({
                 className="mt-px size-3.5 shrink-0 text-info-text"
               />
               {diagnosticText(diagnostic, now)}.
+            </li>
+          )}
+          {captured && (
+            <li className="flex items-start gap-2">
+              <Timer
+                aria-hidden
+                className="mt-px size-3.5 shrink-0 text-info-text"
+              />
+              The settings captured with this inventory show a Diagnostic
+              running on this node when it was captured.
             </li>
           )}
         </ul>

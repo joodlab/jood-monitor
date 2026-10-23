@@ -6,27 +6,46 @@ import { PageState, retrySnapshot } from "./page-state";
 // Server-rendered markup of the dashboard's snapshot problem banner for
 // errors the hub can return.
 
-function render(error: unknown, data?: unknown) {
+function render(error: unknown, data?: unknown, chooser = true) {
   return renderToStaticMarkup(
     createElement(PageState, {
       loading: false,
       onRetry: () => undefined,
+      onChooseTime: chooser ? () => undefined : undefined,
       snapshot: { isError: true, error, data },
     })
   );
 }
 
+const chooseAnother = "Choose another time…</button>";
+
 describe("snapshot problem banner", () => {
-  it("hides Retry where a repeat fails the same way", () => {
+  it("offers another time instead of Retry where a repeat fails the same way", () => {
     for (const message of [
       "snapshot outside retention",
       "invalid timestamp",
+      "historical inventory precision boundary too broad",
       "query too broad; select an entity and metric",
     ]) {
       const html = render(new Error(message));
       expect(html).toContain('role="alert"');
       expect(html).not.toContain("Retry</button>");
-      expect(html).toContain("Return to live");
+      expect(html).toContain(chooseAnother);
+      expect(html).toContain("or return to live.");
+      // Without a picker to open, the banner offers no button at all.
+      expect(render(new Error(message), undefined, false)).not.toContain(
+        "</button>"
+      );
+    }
+  });
+
+  it("offers no other time where the time is not the problem", () => {
+    for (const error of [
+      new TypeError("Failed to fetch"),
+      new Error("snapshot too broad"),
+      new Error("authentication required"),
+    ]) {
+      expect(render(error)).not.toContain(chooseAnother);
     }
   });
 

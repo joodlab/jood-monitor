@@ -48,8 +48,8 @@ export interface ActivityRow {
   view?: ClusterView;
 }
 
-// Newest first, as the hub returns them. ReplicaSet steps of a rollout are
-// left to the Activity page, where they can be shown on request.
+// Newest first, as the hub returns them. ReplicaSet replica counts are left
+// to the Activity page, where they can be shown on request.
 export function activityRows(
   events: Lifecycle[],
   views: ClusterView[],
@@ -62,7 +62,7 @@ export function activityRows(
       break;
     }
     const summary = describeEvent(event);
-    if (summary.rolloutStep) {
+    if (summary.replicaSetStep) {
       continue;
     }
     const view = byCluster.get(event.clusterId);
@@ -76,14 +76,14 @@ export function activityRows(
   return rows;
 }
 
-// Rollout steps the panel leaves out. They were still observed, so the panel
-// counts them instead of reporting that nothing changed.
-export function hiddenRolloutSteps(events: Lifecycle[]) {
-  return events.filter((event) => describeEvent(event).rolloutStep).length;
+// ReplicaSet changes the panel leaves out. They were still observed, so the
+// panel counts them instead of reporting that nothing changed.
+export function hiddenReplicaSetSteps(events: Lifecycle[]) {
+  return events.filter((event) => describeEvent(event).replicaSetStep).length;
 }
 
-function rolloutStepCount(steps: number) {
-  return `${steps} Deployment rollout step${steps === 1 ? "" : "s"}`;
+function replicaSetCount(steps: number) {
+  return `${steps} ReplicaSet change${steps === 1 ? "" : "s"}`;
 }
 
 // The empty Recent changes line for a range such as "last hour".
@@ -91,22 +91,27 @@ export function quietChangesText(steps: number, range: string) {
   if (steps === 0) {
     return `No node, scaling or resource changes observed in the ${range}.`;
   }
-  return `No node, scaling or resource changes besides ${rolloutStepCount(steps)} observed in the ${range}. Rollout steps are on the Activity page.`;
+  return `No node, scaling or resource changes besides ${replicaSetCount(steps)} observed in the ${range}. ReplicaSet changes are on the Activity page.`;
 }
 
-// Notes rollout steps left out of a non-empty list.
+// Notes ReplicaSet changes left out of a non-empty list.
 export function hiddenStepsText(steps: number) {
-  return `${rolloutStepCount(steps)} not shown; see the Activity page.`;
+  return `${replicaSetCount(steps)} not shown; see the Activity page.`;
 }
 
 const replicaChange = /replicas (\S+ → \S+)$/;
+const replicaLabel = "Replicas (desired)";
 
-// The short "what changed" after the verb: the first before → after pair, or
-// the replica counts of a scaling change. Absent when nothing was compared.
+// The short "what changed" after the verb: the replica counts of a scaling
+// change, else the first before → after pair, with how many more fields
+// changed. Absent when nothing was compared.
 export function changeDetail(summary: EventSummary) {
   const [first, ...rest] = summary.changes;
+  const more = rest.length ? ` · +${rest.length} more` : "";
+  if (first?.label === replicaLabel) {
+    return `${first.before} → ${first.after} replicas${more}`;
+  }
   if (first) {
-    const more = rest.length ? ` · +${rest.length} more` : "";
     return `${first.label} ${first.before} → ${first.after}${more}`;
   }
   if (summary.category === "scaling") {

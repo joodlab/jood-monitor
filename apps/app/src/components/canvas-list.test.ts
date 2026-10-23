@@ -1,11 +1,13 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   type ServiceGraphOptions,
   serviceGraph,
   topologyTree,
 } from "../lib/service-graph";
-import { rowMeta } from "./canvas-list";
+import { rowMeta, TopologyList } from "./canvas-list";
 
 // Synthetic inventory only: a namespace with two pods that no workload owns
 // and no Service selects, beside a Ready node.
@@ -21,6 +23,10 @@ function entity(uid: string, kind: string, extra: Partial<Entity> = {}) {
     namespace: "shop",
     ...extra,
   } as Entity;
+}
+
+function edge(source: string, target: string, relation: string) {
+  return { source, target, relation, evidence: "Synthetic fixture" };
 }
 
 function view(): ClusterView {
@@ -107,6 +113,77 @@ describe("topology list rows", () => {
     );
     expect(rowText(views, "debug-shell")).toBe(
       "Pod · shop · CrashLoopBackOff · 0/1 ready · 4 restarts · on node-a"
+    );
+  });
+
+  it("reads a namespace row as its card does, finished pods named once", () => {
+    const views = [view()];
+    views[0].inventory.entities.push(
+      entity("job-1", "Pod", { status: "Succeeded", ready: 0, desired: 1 }),
+      entity("job-2", "Pod", { status: "Failed", ready: 0, desired: 1 })
+    );
+    const graph = serviceGraph(views, { ...options, namespace: "all" });
+    const html = renderToStaticMarkup(
+      createElement(TopologyList, {
+        graph,
+        expanded: [],
+        now,
+        onExpand: () => undefined,
+        onInspect: () => undefined,
+        onNamespace: () => undefined,
+      })
+    );
+    expect(html).toContain(
+      "Namespace · 1 of 1 pod need attention · 3 finished (2 failed)"
+    );
+    expect(html).not.toContain("with failures");
+  });
+
+  it("names why a routed Service without endpoint pods is a problem", () => {
+    const views = [view()];
+    views[0].inventory.entities.push(
+      entity("api-in", "Ingress", { hosts: ["api.synthetic.test"] }),
+      entity("api-svc", "Service", {
+        serviceType: "ClusterIP",
+        ports: [{ port: 80, protocol: "TCP" }],
+      }),
+      entity("api-slice", "EndpointSlice")
+    );
+    views[0].inventory.edges.push(
+      edge("api-in", "api-svc", "routes_to"),
+      edge("api-slice", "api-svc", "owned_by")
+    );
+    const problems = { ...options, problems: true };
+    const graph = serviceGraph(views, problems);
+    // A child of its Ingress in the tree, so read from the graph's items.
+    const service = graph.items.find((item) => item.entity.uid === "api-svc");
+    if (!service) {
+      throw new Error("Problems only keeps the routed Service");
+    }
+    // The same words as its canvas card, never a bare "Observed".
+    expect(rowMeta(service, now)).toBe(
+      "Service · shop · :80 · Routed Service has no endpoint pods · configuration observed, traffic not measured"
+    );
+    const html = renderToStaticMarkup(
+      createElement(TopologyList, {
+        graph,
+        expanded: [],
+        now,
+        onExpand: () => undefined,
+        onInspect: () => undefined,
+        onNamespace: () => undefined,
+      })
+    );
+    expect(html).toContain("Routed Service has no endpoint pods");
+    // An endpoint pod, ready or not, takes the Service off the problem list.
+    const served = view();
+    served.inventory.entities.push(...views[0].inventory.entities.slice(4));
+    served.inventory.edges.push(
+      ...views[0].inventory.edges,
+      edge("api-svc", "debug-shell", "has_endpoint")
+    );
+    expect(rowMeta({ ...service, view: served }, now)).toBe(
+      "Service · shop · :80 · Observed"
     );
   });
 

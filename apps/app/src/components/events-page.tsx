@@ -19,8 +19,9 @@ import {
   activityEntries,
   filterActivity,
   groupByDay,
+  listedChanges,
   receivedLate,
-  rolloutSteps,
+  replicaSetSteps,
 } from "./activity-model";
 import { EmptyState } from "./page";
 import { TimeText } from "./time";
@@ -69,7 +70,7 @@ function CategoryFilter({
   );
 }
 
-function RolloutToggle({
+function ReplicaSetToggle({
   count,
   checked,
   onChange,
@@ -89,23 +90,28 @@ function RolloutToggle({
         size="sm"
       />
       <Label className="font-normal text-xs" htmlFor={id}>
-        Include rollout steps
+        Include ReplicaSet changes
         <span className="text-muted-foreground tabular-nums">{count}</span>
       </Label>
       <span className="sr-only" id={`${id}-note`}>
-        ReplicaSet steps of Deployment rollouts, not scaling decisions.
+        ReplicaSet replica counts. When a Deployment owns the ReplicaSet, these
+        change during its rollouts and scaling; the Deployment's own replica
+        changes are listed separately.
       </span>
     </div>
   );
 }
 
+// The headline already states the leading change when it is the replica
+// count, so the chips list only what it does not.
 function Changes({ entry }: { entry: ActivityEntry }) {
-  if (!entry.summary.changes.length) {
+  const changes = listedChanges(entry);
+  if (!changes.length) {
     return null;
   }
   return (
     <ul className="mt-2 flex flex-wrap gap-1.5">
-      {entry.summary.changes.map((change) => (
+      {changes.map((change) => (
         <li
           className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
           key={change.label}
@@ -223,7 +229,9 @@ function EntryActions({
   );
 }
 
-function TimelineItem({
+// Exported for its markup tests: a ReplicaSet row's badge shows only once
+// the page's switch includes it.
+export function TimelineItem({
   entry,
   view,
   showCluster,
@@ -258,14 +266,14 @@ function TimelineItem({
                 {headline.context.join(" · ")}
               </span>
             )}
-            {summary.rolloutStep && (
+            {summary.replicaSetStep && (
               <Badge className="ml-2 align-middle" variant="outline">
-                Rollout step
+                ReplicaSet
               </Badge>
             )}
           </p>
           <p className="shrink-0 text-muted-foreground text-xs tabular-nums">
-            <TimeText label="Observed" value={event.observedAt} />
+            <TimeText label={summary.timeLabel} value={event.observedAt} />
             <span aria-hidden>
               {" "}
               · {formatClock(event.observedAt, timeZone)}
@@ -273,7 +281,15 @@ function TimelineItem({
           </p>
         </div>
         {headline.action && (
-          <p className="mt-0.5 text-sm leading-snug">{headline.action}</p>
+          <p className="mt-0.5 text-sm leading-snug">
+            {headline.action}
+            {summary.subjectCreatedAt && (
+              <span className="text-muted-foreground text-xs">
+                {" · created "}
+                <TimeText label="Created" value={summary.subjectCreatedAt} />
+              </span>
+            )}
+          </p>
         )}
         <Changes entry={entry} />
         <Provenance entry={entry} showCluster={showCluster} view={view} />
@@ -410,13 +426,13 @@ export function EventsPage({
 }) {
   const { at, timeZone } = useDisplay();
   const [category, setCategory] = useState<ActivityFilter>("all");
-  const [rollouts, setRollouts] = useState(false);
+  const [replicaSets, setReplicaSets] = useState(false);
   const entries = useMemo(
     () => activityEntries(events.data ?? []),
     [events.data]
   );
-  const steps = rolloutSteps(entries);
-  const visible = filterActivity(entries, category, rollouts);
+  const steps = replicaSetSteps(entries);
+  const visible = filterActivity(entries, category, replicaSets);
   const days = groupByDay(visible, timeZone);
   const byCluster = new Map(views.map((view) => [view.cluster.id, view]));
   // The previous range's changes stay while the new range loads; an empty
@@ -431,15 +447,15 @@ export function EventsPage({
       </p>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <CategoryFilter
-          counts={activityCounts(entries, rollouts)}
+          counts={activityCounts(entries, replicaSets)}
           onChange={setCategory}
           value={category}
         />
         {steps > 0 && (
-          <RolloutToggle
-            checked={rollouts}
+          <ReplicaSetToggle
+            checked={replicaSets}
             count={steps}
-            onChange={setRollouts}
+            onChange={setReplicaSets}
           />
         )}
       </div>
@@ -466,7 +482,7 @@ export function EventsPage({
           onRange={onRange}
           onReset={() => {
             setCategory("all");
-            setRollouts(true);
+            setReplicaSets(true);
           }}
           range={range}
         />

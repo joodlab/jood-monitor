@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { metricsApiUnavailable } from "./collection-state";
+import { metricsApiUnavailable, profileKnown } from "./collection-state";
 import {
   isFinished,
   nodeConditionProblems,
@@ -8,16 +8,18 @@ import {
   percent,
   podPhase,
   resourceStatus,
+  routedServiceWithoutEndpoints,
   workloadKinds,
 } from "./infrastructure";
 import { freshness, inventoryFreshness, observedUsage } from "./metrics";
 
 // Attention items describe observed conditions, one row per real problem:
-// a cluster's observer, a node, a workload with its affected pods, or an
-// unowned pod. Missing measurements stay "missing", never healthy or zero.
+// a cluster's observer, a node, a workload with its affected pods, a routed
+// Service with no endpoint pods, or an unowned pod. Missing measurements
+// stay "missing", never healthy or zero.
 
 export type Severity = "critical" | "warning" | "info";
-type AttentionScope = "cluster" | "node" | "workload" | "pod";
+type AttentionScope = "cluster" | "node" | "workload" | "service" | "pod";
 
 export interface Attention {
   // Subject entity; absent for cluster-scoped observer problems.
@@ -186,8 +188,9 @@ function clusterCondition(
   }
 }
 
-// A saved observation keeps inventory source times but not observer
-// heartbeats, so only inventory coverage is judged against the selected time.
+// A saved observation captures the observer heartbeat with its inventory,
+// but that heartbeat is not judged against the selected time; only inventory
+// coverage is.
 function savedCondition(
   view: ClusterView,
   at: number
@@ -240,30 +243,25 @@ function clusterItems(
   ];
 }
 
-// A saved observation carries the profile and heartbeat only when they were
-// archived with it; otherwise the view holds current metadata, never its own.
-function metadata(
-  view: ClusterView,
-  frozen: boolean,
-  field: "heartbeat" | "profile"
-) {
-  return !frozen || view.observationMetadataAvailable?.[field] === true;
-}
-
 // Why every node lacks usage, said once for the cluster instead of once per
 // node. Info only: these explain missing samples, they are not problems. The
-// Metrics API report counts only from a fresh heartbeat, as the usage gaps
-// read it, so an old report never explains today's missing samples.
+// collection settings and observer report count by Settings' rule: always
+// live, and in a saved observation only where they were captured with it.
+// The Metrics API report counts only from a heartbeat fresh when it was read
+// (live) or when the saved inventory arrived, as the usage gaps read it, so
+// an old report never explains missing samples.
 function collectionNotes(
   view: ClusterView,
   now: number,
   frozen: boolean
 ): Attention[] {
   const notes: { key: string; title: string }[] = [];
-  if (view.profile.paused && metadata(view, frozen, "profile")) {
+  if (view.profile.paused && profileKnown(view, frozen)) {
     notes.push({
       key: "collection:paused",
-      title: "Collection is paused by an operator; history is preserved",
+      title: frozen
+        ? "Collection was paused when this observation was captured; history is preserved"
+        : "Collection is paused by an operator; history is preserved",
     });
   }
   if (metricsApiUnavailable(view, now, frozen)) {
@@ -459,6 +457,34 @@ function workloadItems(view: ClusterView, now: number): Attention[] {
   return items;
 }
 
+// An Ingress routes to the Service and it has no endpoint pods at all. The
+// route is configuration and no traffic is measured, so no cause or impact
+// is claimed; not-ready endpoint pods stay with their workload and pod rows.
+function serviceItems(
+  view: ClusterView,
+  now: number,
+  frozen: boolean
+): Attention[] {
+  return view.inventory.entities
+    .filter((entity) =>
+      routedServiceWithoutEndpoints(view, entity, now, frozen)
+    )
+    .map(
+      (service): Attention => ({
+        view,
+        entity: service,
+        id: `${view.cluster.id}:${service.uid}:service`,
+        scope: "service",
+        severity: "warning",
+        title: "Routed Service has no endpoint pods",
+        reason: "Configuration observed, traffic not measured",
+        location: [view.cluster.name, service.namespace ?? ""].filter(Boolean),
+        members: [],
+        terminal: false,
+      })
+    );
+}
+
 const severityRank: Record<Severity, number> = {
   critical: 0,
   warning: 1,
@@ -468,7 +494,8 @@ const scopeRank: Record<AttentionScope, number> = {
   cluster: 0,
   node: 1,
   workload: 2,
-  pod: 3,
+  service: 3,
+  pod: 4,
 };
 
 export function attentionItems(
@@ -493,6 +520,7 @@ export function attentionItems(
       }
     }
     items.push(...workloadItems(view, now));
+    items.push(...serviceItems(view, now, frozen));
   }
   return items.sort(
     (a, b) =>

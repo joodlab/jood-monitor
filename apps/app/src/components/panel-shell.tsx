@@ -8,17 +8,19 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { closingFocus, escapeConsumed, focusedOutside } from "./panel-focus";
+import { closingFocus, escapeConsumed, switchFocus } from "./panel-focus";
 
 // Railway's service panel: docked to the right of the page from the md
 // breakpoint, under the project bar, with the canvas or table on the left
 // crisp and usable. Opening another resource there (a card or row, by click
 // or Enter) switches the panel and announces it while focus stays on that
-// card. Escape or the close button closes it and returns focus to the card
-// or row that last opened or switched it, unless the operator has moved
-// focus elsewhere. An Escape another control already handled, such as a
-// search clearing its text, leaves it open. On phones the panel is a
-// full-screen modal sheet.
+// card. A switch from inside the panel (a pod, Back, browser history) moves
+// focus to the panel's title and announces it, so focus is never lost.
+// Escape or the close button closes it and returns focus to the card or row
+// that last opened or switched it, unless the operator has moved focus
+// elsewhere. An Escape another control already handled, such as a search
+// clearing its text, leaves it open. On phones the panel is a full-screen
+// modal sheet.
 
 export const dockedQuery = "(min-width: 768px)";
 // Space between the project bar and the panel's rounded top edge.
@@ -73,41 +75,75 @@ function useBarBottom(enabled: boolean) {
   return bottom;
 }
 
+interface ElementRef {
+  current: HTMLElement | null;
+}
+
+// Whether focus is in a dialog other than the panel, such as the finder.
+function inOtherDialog(active: Element | null, panel: HTMLElement | null) {
+  const dialog = active?.closest('[role="dialog"], [role="alertdialog"]');
+  return !!dialog && dialog !== panel;
+}
+
 // The element outside the panel that opened it, updated each time another
-// resource switches it, with an announcement for those switches. It runs as
-// a layout effect, before Base UI moves focus into the panel on first open.
+// resource switches it, with an announcement for every switch. A switch
+// with focus in the panel or on the body leaves focus pending for the title,
+// taken as soon as the title is there. A switch from another dialog, such as
+// the finder, leaves focus to that dialog as it closes and keeps the element
+// Escape returns to. It runs as a layout effect, before Base UI moves focus
+// into the panel on first open.
 function useInvoker(
   open: boolean,
-  popup: { current: HTMLElement | null },
+  popup: ElementRef,
+  title: ElementRef | undefined,
   resource?: { key: string; label: string }
 ) {
   const invoker = useRef<HTMLElement | null>(null);
-  const shown = useRef(false);
+  const shown = useRef<string | undefined>(undefined);
+  const pending = useRef(false);
   const [announcement, setAnnouncement] = useState("");
   const key = resource?.key;
   const label = resource?.label;
+  const takeFocus = () => {
+    const heading = title?.current;
+    if (pending.current && heading?.isConnected) {
+      pending.current = false;
+      heading.focus({ preventScroll: true });
+    }
+  };
   useLayoutEffect(() => {
     if (!(open && key)) {
-      shown.current = false;
+      shown.current = undefined;
+      pending.current = false;
       setAnnouncement("");
       return;
     }
-    const switching = shown.current;
-    shown.current = true;
-    const outside = focusedOutside(
-      document.activeElement,
+    const previous = shown.current;
+    shown.current = key;
+    if (previous === key) {
+      pending.current = false;
+      return;
+    }
+    const active = document.activeElement;
+    const target = switchFocus(
+      previous !== undefined,
+      active,
       document.body,
-      popup.current
+      popup.current,
+      inOtherDialog(active, popup.current)
     );
-    if (outside instanceof HTMLElement) {
-      invoker.current = outside;
-      if (switching) {
-        setAnnouncement(`Showing ${label}`);
-      }
-    } else if (!switching) {
+    if (target === "invoker" && active instanceof HTMLElement) {
+      invoker.current = active;
+    } else if (previous === undefined) {
       invoker.current = null;
     }
+    pending.current = target === "title";
+    if (previous !== undefined) {
+      setAnnouncement(`Showing ${label}`);
+    }
   }, [open, key, label, popup]);
+  // After every commit, so a title that mounts late still takes focus.
+  useLayoutEffect(takeFocus);
   return { invoker, announcement };
 }
 
@@ -120,6 +156,7 @@ export function PanelShell({
   open,
   onClose,
   resource,
+  title,
   children,
 }: {
   open: boolean;
@@ -127,6 +164,9 @@ export function PanelShell({
   // The inspected resource: its key detects a switch to another resource
   // and its label (kind and name) is announced.
   resource?: { key: string; label: string };
+  // The panel's title (focusable with tabIndex -1), which takes focus when
+  // a switch from inside the panel would otherwise lose it.
+  title?: ElementRef;
   children: ReactNode;
 }) {
   const docked = useDocked();
@@ -134,7 +174,7 @@ export function PanelShell({
   // Opening focuses the panel itself, so assistive technology announces its
   // title and description before the first control.
   const popup = useRef<HTMLDivElement>(null);
-  const { invoker, announcement } = useInvoker(open, popup, resource);
+  const { invoker, announcement } = useInvoker(open, popup, title, resource);
   return (
     <Sheet
       // Docked, the page beside the panel stays interactive: no focus trap,

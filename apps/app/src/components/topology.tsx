@@ -26,6 +26,7 @@ import {
   useState,
 } from "react";
 import { useDisplay } from "../hooks/display";
+import { routedEmptyText } from "../lib/canvas-cards";
 import { measuredChanges } from "../lib/canvas-node-changes";
 import {
   drawsResource,
@@ -40,6 +41,7 @@ import {
   restoredCanvasView,
 } from "../lib/canvas-view-memory";
 import { inventoryCoverage, silentClusters } from "../lib/coverage";
+import { routedServiceWithoutEndpoints } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
 import {
   activatedCard,
@@ -315,6 +317,19 @@ interface CardInputs {
   positions: Record<string, Point>;
 }
 
+// The card's accessible name says why it is a problem where its status line
+// does: a routed Service with no endpoint pods, configuration only.
+function cardLabel(item: GraphItem, state: CardState) {
+  let problem = "";
+  if (state.problem) {
+    problem = routedServiceWithoutEndpoints(item.view, item.entity, state.now)
+      ? `, ${routedEmptyText}`
+      : ", has a problem";
+  }
+  const stale = state.stale ? ", stale inventory" : "";
+  return `${item.entity.kind} ${item.entity.name}${problem}${stale}`;
+}
+
 function nodeType(kind: string): CardNode["type"] {
   if (kind === "Pod") {
     return "pod";
@@ -347,7 +362,7 @@ function cardNode(
     className: cardClass,
     connectable: false,
     draggable: false,
-    ariaLabel: `${item.entity.kind} ${item.entity.name}${state.problem ? ", has a problem" : ""}${state.stale ? ", stale inventory" : ""}`,
+    ariaLabel: cardLabel(item, state),
   };
 }
 

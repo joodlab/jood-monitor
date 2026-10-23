@@ -1,8 +1,19 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@jood-monitor/ui/popover";
 import { cn } from "@jood-monitor/ui/utils";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CircleCheck, CircleHelp, Clock, TriangleAlert } from "lucide-react";
+import {
+  CircleCheck,
+  CircleHelp,
+  Clock,
+  Info,
+  TriangleAlert,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import {
   compactCpu,
@@ -11,15 +22,25 @@ import {
   podReady,
   resourceStatus,
 } from "../lib/infrastructure";
+import {
+  type ConfiguredText,
+  limitScope,
+  notUsage,
+  type PodRequestText,
+  podRequestText,
+} from "../lib/pod-requests";
 import { usageShare } from "../lib/resource-servers";
 import {
+  endpointTitle,
   type ResourceRow,
+  selectorOnly,
   type TablePreset,
   usageDisplay,
 } from "../lib/resource-table";
 import {
   MetricBar,
   StatusBadge,
+  type StatusDetail,
   staleTitle,
   UsageValue,
 } from "./resource-status";
@@ -92,6 +113,14 @@ function statusRank(row: ResourceRow) {
   return row.stale ? 1 : 2;
 }
 
+// What a problem row's status cannot say. A Service reports "Observed", so
+// the row names why the shared Service rule (serviceStatusDetail) flagged
+// it, in the words of the panel header it opens. A warning badge never reads
+// "Observed" without a reason.
+export function rowStatusDetail(row: ResourceRow): StatusDetail | undefined {
+  return row.problem ? row.statusDetail : undefined;
+}
+
 const statusColumn: Column = {
   id: "status",
   header: "Status",
@@ -100,6 +129,7 @@ const statusColumn: Column = {
     `${statusRank(row)}${resourceStatus(row.entity).toLowerCase()}`,
   cell: ({ row }) => (
     <StatusBadge
+      detail={rowStatusDetail(row.original)}
       entity={row.original.entity}
       problem={row.original.problem}
       stale={row.original.stale}
@@ -143,6 +173,106 @@ function usageColumn(field: "cpu" | "memory"): Column {
       />
     ),
   };
+}
+
+// An absolute configured amount. Unknown is a dash with its reason, never 0.
+function Configured({ value }: { value: ConfiguredText }) {
+  if (value.reason) {
+    return (
+      <span className="text-muted-foreground tabular-nums" title={value.reason}>
+        {value.text}
+        <span className="sr-only"> ({value.reason})</span>
+      </span>
+    );
+  }
+  return <span className="tabular-nums">{value.text}</span>;
+}
+
+// The configured amounts the pod table and cards show.
+type ConfiguredColumn = "cpuRequest" | "memoryLimit" | "memoryRequest";
+
+const configuredLabels: Record<ConfiguredColumn, string> = {
+  cpuRequest: "CPU request",
+  memoryRequest: "Memory request",
+  memoryLimit: "Memory limit",
+};
+
+function isConfiguredField(id: string): id is ConfiguredColumn {
+  return Object.hasOwn(configuredLabels, id);
+}
+
+// The words a configured label carries for screen readers, from the note
+// the table and the cards share (lib/pod-requests).
+function configuredNote(field: ConfiguredColumn) {
+  return `, configured, ${notUsage(field)}`;
+}
+
+// Configured requests and limits sit beside measured usage, so the header
+// says which they are. The sort button's accessible name carries the note;
+// sighted users read it from the note button beside it (ColumnNote).
+function ConfiguredHeader({ field }: { field: ConfiguredColumn }) {
+  return (
+    <>
+      {configuredLabels[field]}
+      <span className="sr-only">{configuredNote(field)}</span>
+    </>
+  );
+}
+
+// The note for a column header that needs one, as a button of its own beside
+// the sort button: tapping it on a touch screen, hovering it or pressing
+// Enter on it shows the note, and none of those re-sorts the column. Other
+// columns have no note.
+export function ColumnNote({ column }: { column: string }) {
+  if (!isConfiguredField(column)) {
+    return null;
+  }
+  return (
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        render={
+          <Button
+            aria-label={`About ${configuredLabels[column]}`}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            size="icon-sm"
+            variant="ghost"
+          />
+        }
+      >
+        <Info aria-hidden className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-3 text-xs" side="top">
+        {`Configured, ${notUsage(column)}`}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function configuredColumn(field: ConfiguredColumn): Column {
+  return {
+    id: field,
+    header: () => <ConfiguredHeader field={field} />,
+    accessorFn: (row) => podRequestText(row.entity)[field].sort,
+    sortUndefined: "last",
+    cell: ({ row }) => (
+      <Configured value={podRequestText(row.original.entity)[field]} />
+    ),
+  };
+}
+
+// A card is one button, so it holds no note button: each configured label
+// carries the table header's note for screen readers, and a finite summed
+// limit names its scope in sight.
+function configuredFacts(text: PodRequestText): CardFact[] {
+  return (["cpuRequest", "memoryRequest", "memoryLimit"] as const).map(
+    (field) => ({
+      label: configuredLabels[field],
+      note: configuredNote(field),
+      hint: limitScope(field, text[field]),
+      value: <Configured value={text[field]} />,
+    })
+  );
 }
 
 function Restarts({ value }: { value?: number }) {
@@ -351,12 +481,38 @@ const portsColumn: Column = {
   ),
 };
 
-function EndpointReadiness({ row }: { row: ResourceRow }) {
-  const selector = row.view.inventory.capabilities.includes(
-    "endpointslices_unavailable"
+// A routed Service with no endpoint pods is a problem and says so, as on its
+// canvas card; staleness never hides a last reported problem. Nothing names
+// a cause or measures traffic.
+function RoutedEmpty({
+  detail,
+  stale,
+}: {
+  detail: StatusDetail;
+  stale: boolean;
+}) {
+  const text = "No endpoint pods";
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-warning-text text-xs"
+      title={stale ? `${staleTitle} ${detail.title}` : detail.title}
+    >
+      <TriangleAlert aria-hidden className="size-3.5 shrink-0" />
+      {stale ? `Stale · ${text}` : text}
+      <span className="sr-only">. {detail.title}</span>
+    </span>
   );
+}
+
+function EndpointReadiness({ row }: { row: ResourceRow }) {
+  const selector = selectorOnly(row.view);
   const { ready, desired } = row.summary;
   if (desired === 0) {
+    // With no active endpoint pods, a problem row is the routed-empty one.
+    const detail = rowStatusDetail(row);
+    if (detail) {
+      return <RoutedEmpty detail={detail} stale={row.stale} />;
+    }
     const none = selector ? "No selected pods" : "No endpoints";
     return row.stale ? (
       <StaleValue>{none}</StaleValue>
@@ -365,13 +521,7 @@ function EndpointReadiness({ row }: { row: ResourceRow }) {
     );
   }
   return (
-    <span
-      title={
-        selector
-          ? "Endpoint discovery is unavailable; counts selector-matched pods."
-          : "Ready endpoint pods / active endpoint pods"
-      }
-    >
+    <span title={endpointTitle(selector)}>
       <ReplicaCount
         desired={desired}
         ready={ready}
@@ -464,6 +614,9 @@ export function resourceColumns(
         nodeColumn(context),
         usageColumn("cpu"),
         usageColumn("memory"),
+        configuredColumn("cpuRequest"),
+        configuredColumn("memoryRequest"),
+        configuredColumn("memoryLimit"),
         ageColumn,
       ];
     case "workloads":
@@ -493,8 +646,31 @@ export function resourceColumns(
 }
 
 export interface CardFact {
+  // A short visible qualifier under the value, e.g. a summed limit's scope.
+  hint?: string;
   label: string;
+  // Words that follow the label for screen readers only.
+  note?: string;
   value: ReactNode;
+}
+
+// One fact on a stacked card. The value truncates; the hint wraps under it,
+// so the words that qualify a value are never cut off.
+export function CardFactItem({ fact }: { fact: CardFact }) {
+  return (
+    <span className="min-w-0">
+      <span className="block text-muted-foreground">
+        {fact.label}
+        {fact.note && <span className="sr-only">{fact.note}</span>}
+      </span>
+      <span className="block truncate">{fact.value ?? "—"}</span>
+      {fact.hint && (
+        <span className="block break-words text-muted-foreground">
+          {fact.hint}
+        </span>
+      )}
+    </span>
+  );
 }
 
 // Key facts for the stacked mobile card of each preset.
@@ -515,6 +691,7 @@ export function cardFacts(row: ResourceRow, preset: TablePreset): CardFact[] {
         { label: "Node", value: row.node?.name ?? "Not scheduled" },
         { label: "CPU", value: usage("cpu") },
         { label: "Memory", value: usage("memory") },
+        ...configuredFacts(podRequestText(entity)),
       ];
     case "workloads":
       return [

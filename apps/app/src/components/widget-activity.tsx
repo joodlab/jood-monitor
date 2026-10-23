@@ -10,12 +10,13 @@ import {
   hiddenStepsText,
   quietActivityText,
   recentActivity,
-  rolloutSteps,
+  replicaSetSteps,
 } from "./activity-model";
 import { Widget, WidgetLink } from "./widget-card";
 
-// Latest observed changes, in the style of Railway's Activity panel. Rollout
-// steps are left to the Activity page, which also holds the raw evidence.
+// Latest observed changes, in the style of Railway's Activity panel.
+// ReplicaSet changes are left to the Activity page, which also holds the raw
+// evidence.
 
 const PREVIEW = 6;
 
@@ -48,7 +49,7 @@ function Body({
     const entries = activityEntries(events.data ?? []);
     return {
       recent: recentActivity(entries, PREVIEW),
-      steps: rolloutSteps(entries),
+      steps: replicaSetSteps(entries),
     };
   }, [events.data]);
   // The previous range stands in while a new range loads; an empty stand-in

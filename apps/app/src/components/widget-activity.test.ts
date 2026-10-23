@@ -77,7 +77,7 @@ describe("Recent activity widget", () => {
     expect(html).toContain("Showing the last loaded changes.");
     expect(html).toContain("node-a");
   });
-  it("counts hidden rollout steps instead of saying nothing changed", () => {
+  it("counts hidden ReplicaSet changes instead of saying nothing changed", () => {
     const html = render(
       query("success", [
         event(
@@ -93,10 +93,11 @@ describe("Recent activity widget", () => {
       ])
     );
     expect(html).not.toContain(quiet);
-    expect(html).toContain("besides 2 Deployment rollout steps");
+    expect(html).toContain("besides 2 ReplicaSet changes");
+    expect(html.toLowerCase()).not.toContain("rollout");
     expect(html).not.toContain('role="alert"');
   });
-  it("notes rollout steps left out of a non-empty list", () => {
+  it("notes ReplicaSet changes left out of a non-empty list", () => {
     const html = render(
       query("success", [
         event("node_join", {}, node),
@@ -108,7 +109,31 @@ describe("Recent activity widget", () => {
       ])
     );
     expect(html).toContain("node-a");
-    expect(html).toContain("1 Deployment rollout step not shown");
+    expect(html).toContain("1 ReplicaSet change not shown");
+  });
+  it("labels each time by what it measures", () => {
+    const resize = {
+      ...event("receipt_resize", null, null),
+      before: "4 vCPU",
+      after: "8 vCPU",
+      attribution: "reported",
+      evidence: JSON.stringify({ serverId: "srv-1", nodeUid: "n" }),
+    };
+    const html = render(
+      query("success", [
+        resize,
+        event("node_join", {}, { ...node, createdAt: "2026-09-12T12:00:00Z" }),
+      ])
+    );
+    expect(html).toContain("Reported time: ");
+    expect(html).toContain(
+      "Reported by automation · not independently verified"
+    );
+    expect(html).not.toContain("· reported by automation");
+    expect(html).toContain("First observed in inventory: ");
+    expect(html).toContain("First observed in inventory</p>");
+    expect(html).toContain(" · created ");
+    expect(html).not.toContain("(Observed: ");
   });
   it("says the range was quiet only after a successful empty load", () => {
     expect(render(query("success", []))).toContain(quiet);

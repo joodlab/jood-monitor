@@ -1,16 +1,22 @@
-import type { Lifecycle } from "@jood-monitor/api-client";
+import type { ClusterView, Lifecycle } from "@jood-monitor/api-client";
+import type { UseQueryResult } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { DisplayProvider } from "../hooks/display";
 import {
   activityCounts,
   activityEntries,
   filterActivity,
   groupByDay,
   hiddenStepsText,
+  listedChanges,
   quietActivityText,
   receivedLate,
   recentActivity,
-  rolloutSteps,
+  replicaSetSteps,
 } from "./activity-model";
+import { EventsPage, TimelineItem } from "./events-page";
 
 let sequence = 0;
 function event(
@@ -54,12 +60,18 @@ describe("activity headlines", () => {
     });
   });
   it("keeps node capacity in the action", () => {
-    const [entry] = activityEntries([
-      event("node_join", {}, { ...node, capacityCpu: 4 }),
+    const [joined, seen] = activityEntries([
+      event(
+        "node_join",
+        {},
+        { ...node, capacityCpu: 4, createdAt: "2026-10-22T11:59:30Z" }
+      ),
+      event("node_join", {}, { ...node, createdAt: "2026-09-12T12:00:00Z" }),
     ]);
-    expect(entry.headline.subject).toBe("node-a");
-    expect(entry.headline.action).toBe("Joined (4.00 cores)");
-    expect(entry.headline.context).toEqual(["Node"]);
+    expect(joined.headline.subject).toBe("node-a");
+    expect(joined.headline.action).toBe("Joined (4.00 cores)");
+    expect(joined.headline.context).toEqual(["Node"]);
+    expect(seen.headline.action).toBe("First observed in inventory");
   });
   it("uses the verb when the title does not start with the subject", () => {
     const [entry] = activityEntries([
@@ -69,8 +81,28 @@ describe("activity headlines", () => {
       }),
     ]);
     expect(entry.headline.subject).toBe("srv-1");
+    expect(entry.headline.context).toEqual(["Server"]);
     expect(entry.headline.action).toBe("Drain reported");
     expect(entry.summary.attribution).toContain("not independently verified");
+  });
+  it("lists only the changes the headline does not already state", () => {
+    const [scaled, resized] = activityEntries([
+      event(
+        "workload_horizontal",
+        { ...web, desired: 2, requestedCpu: 0.1 },
+        { ...web, desired: 3, requestedCpu: 0.2 }
+      ),
+      event(
+        "workload_vertical",
+        { ...web, requestedCpu: 0.1 },
+        { ...web, requestedCpu: 0.2 }
+      ),
+    ]);
+    expect(scaled.summary.changes).toHaveLength(2);
+    expect(listedChanges(scaled)).toEqual([
+      { label: "CPU request", before: "100m", after: "200m" },
+    ]);
+    expect(listedChanges(resized)).toEqual(resized.summary.changes);
   });
   it("shows the whole title when no subject is known", () => {
     const [entry] = activityEntries([
@@ -99,8 +131,8 @@ describe("activity filters", () => {
       { ...web, requestedCpu: 0.2 }
     ),
   ]);
-  it("hides rollout steps unless asked", () => {
-    expect(rolloutSteps(entries)).toBe(1);
+  it("hides ReplicaSet changes unless asked", () => {
+    expect(replicaSetSteps(entries)).toBe(1);
     expect(filterActivity(entries, "all", false)).toHaveLength(3);
     expect(filterActivity(entries, "all", true)).toHaveLength(4);
     expect(filterActivity(entries, "scaling", false)).toHaveLength(1);
@@ -115,13 +147,13 @@ describe("activity filters", () => {
     });
     expect(activityCounts(entries, true).scaling).toBe(2);
   });
-  it("leaves rollout steps out of recent activity", () => {
+  it("leaves ReplicaSet changes out of recent activity", () => {
     expect(recentActivity(entries, 2).map((entry) => entry.event.kind)).toEqual(
       ["workload_horizontal", "node_join"]
     );
   });
-  it("counts hidden rollout steps instead of claiming no changes", () => {
-    const rollout = activityEntries([
+  it("counts hidden ReplicaSet changes instead of claiming no changes", () => {
+    const replicaSets = activityEntries([
       event(
         "workload_horizontal",
         { ...rs, desired: 0 },
@@ -133,21 +165,22 @@ describe("activity filters", () => {
         { ...rs, name: "web-5d1", desired: 0 }
       ),
     ]);
-    expect(recentActivity(rollout, 6)).toHaveLength(0);
-    expect(rolloutSteps(rollout)).toBe(2);
-    expect(quietActivityText(rolloutSteps(rollout))).toBe(
-      "No node, scaling or resource changes besides 2 Deployment rollout steps were observed in the selected range. Rollout steps are on the Activity page."
+    expect(recentActivity(replicaSets, 6)).toHaveLength(0);
+    expect(replicaSetSteps(replicaSets)).toBe(2);
+    expect(quietActivityText(replicaSetSteps(replicaSets))).toBe(
+      "No node, scaling or resource changes besides 2 ReplicaSet changes were observed in the selected range. ReplicaSet changes are on the Activity page."
     );
-    expect(quietActivityText(1)).toContain(
-      "besides 1 Deployment rollout step "
-    );
+    expect(quietActivityText(1)).toContain("besides 1 ReplicaSet change ");
     expect(quietActivityText(0)).toBe(
       "No node, scaling or resource changes were observed in the selected range."
     );
     expect(hiddenStepsText(1)).toBe(
-      "1 Deployment rollout step not shown; see the Activity page."
+      "1 ReplicaSet change not shown; see the Activity page."
     );
-    expect(hiddenStepsText(3)).toContain("3 Deployment rollout steps");
+    expect(hiddenStepsText(3)).toContain("3 ReplicaSet changes");
+    for (const text of [quietActivityText(2), hiddenStepsText(2)]) {
+      expect(text.toLowerCase()).not.toContain("rollout");
+    }
   });
 });
 
@@ -175,5 +208,103 @@ describe("activity grouping and timing", () => {
     expect(
       receivedLate(event("node_join", {}, node, { receivedAt: "not a time" }))
     ).toBe(false);
+  });
+});
+
+// Server-rendered markup of the Activity page's timeline. Synthetic events
+// and a synthetic cluster only.
+describe("Activity page rows", () => {
+  const synthetic = {
+    cluster: { id: "c1", name: "synthetic-a" },
+    inventory: {
+      entities: [{ uid: "n", kind: "Node", name: "node-a", status: "True" }],
+      edges: [],
+    },
+  } as unknown as ClusterView;
+  const markup = (element: ReactNode) =>
+    renderToStaticMarkup(createElement(DisplayProvider, null, element));
+  const reported = event("receipt_resize", "", "", {
+    before: "4 vCPU",
+    after: "8 vCPU",
+    attribution: "reported",
+    evidence: JSON.stringify({ serverId: "srv-1", nodeUid: "n" }),
+  });
+  const joined = event("node_join", null, {
+    ...node,
+    createdAt: "2026-09-12T12:00:00Z",
+  });
+  const resized = event(
+    "workload_horizontal",
+    { ...web, desired: 2, requestedMemory: 128 * 1024 ** 2 },
+    { ...web, desired: 3, requestedMemory: 256 * 1024 ** 2 }
+  );
+  const step = event(
+    "workload_horizontal",
+    { ...rs, desired: 0 },
+    { ...rs, desired: 1 }
+  );
+  const page = () =>
+    markup(
+      createElement(EventsPage, {
+        events: {
+          data: [reported, joined, resized, step],
+          isPending: false,
+          isError: false,
+          isSuccess: true,
+          isPlaceholderData: false,
+          refetch: () => Promise.resolve(),
+        } as unknown as UseQueryResult<Lifecycle[], Error>,
+        views: [synthetic],
+        range: "24",
+        onRange: () => undefined,
+        onInspect: () => undefined,
+      })
+    );
+
+  it("labels each time by what it measures", () => {
+    const html = page();
+    expect(html).toContain("Reported time: ");
+    expect(html).toContain("First observed in inventory: ");
+    expect(html).not.toContain("Observed: ");
+    // The node existed weeks before the hub saw it: never "joined".
+    expect(html).toContain('">First observed in inventory<span');
+    expect(html).toContain(" · created ");
+    expect(html).not.toContain("Joined");
+  });
+
+  it("states the replica change once and lists only the other fields", () => {
+    const html = page();
+    expect(html).toContain("Replicas 2 → 3");
+    expect(html).toContain("Memory request");
+    expect(html).not.toContain("Replicas (desired)");
+  });
+
+  it("opens a receipt's server by its inventory node", () => {
+    const html = page();
+    expect(html).toContain("Inspect node");
+    expect(html).not.toContain("Inspect server");
+  });
+
+  it("offers ReplicaSet changes behind a switch, worded without rollout", () => {
+    const html = page();
+    expect(html).toContain("Include ReplicaSet changes");
+    expect(html).toContain(
+      "ReplicaSet replica counts. When a Deployment owns the ReplicaSet, these change during its rollouts and scaling; the Deployment&#x27;s own replica changes are listed separately."
+    );
+    // Hidden until the switch includes it.
+    expect(html).not.toContain("web-7c9");
+    const [entry] = activityEntries([step]);
+    const row = markup(
+      createElement(TimelineItem, {
+        entry,
+        last: true,
+        onInspect: () => undefined,
+        showCluster: false,
+        view: synthetic,
+      })
+    );
+    expect(row).toContain(">ReplicaSet</span>");
+    expect(row).toContain("web-7c9");
+    expect(row.toLowerCase()).not.toContain("rollout");
   });
 });

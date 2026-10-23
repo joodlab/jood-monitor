@@ -25,6 +25,16 @@ export function fetchEvents(search: SearchState) {
     },
   });
 }
+// One cluster's latest recorded changes up to `at` (live: up to now), over
+// the hub's default 180-day window. The hub returns at most 300; the
+// service panel's Changes tab picks one resource's rows from them.
+export function fetchClusterChanges(
+  workspace: string,
+  cluster: string,
+  at?: string
+) {
+  return getEventsFn({ data: { workspace, cluster, to: at } });
+}
 
 // The hub's archival backlog changes with each five-minute flush, so polling
 // once a minute keeps it current without the stream.

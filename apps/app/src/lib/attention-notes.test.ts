@@ -72,12 +72,38 @@ describe("Metrics API note", () => {
     expect(nodeUsageGap(view, server, now)).toBeUndefined();
   });
 
-  it("reads a saved observation's report only from its archived heartbeat", () => {
-    const saved = reporting(ago(10));
-    saved.observationMetadataAvailable = { profile: true, heartbeat: true };
-    expect(titles(saved, true)).toContain(metricsNote);
-    const old = reporting(ago(150));
-    old.observationMetadataAvailable = { profile: true, heartbeat: true };
+  // A saved observation: the heartbeat captured with the inventory the hub
+  // received `receivedAgo` seconds before the selected time.
+  function saved(heartbeatAgo: number, receivedAgo: number) {
+    const view = reporting(ago(heartbeatAgo));
+    view.cluster.receivedAt = ago(receivedAgo);
+    view.inventory.sourceTime = ago(receivedAgo + 1);
+    view.observationMetadataAvailable = { profile: true, heartbeat: true };
+    return view;
+  }
+
+  it("reads a saved report as of the inventory's receipt, not the selected time", () => {
+    // 4 min before the selected time, but 10 s before the inventory arrived:
+    // the report was current when it was captured.
+    expect(titles(saved(240, 230), true)).toContain(metricsNote);
+    // Already 170 s old when the inventory arrived.
+    expect(titles(saved(400, 230), true)).not.toContain(metricsNote);
+  });
+
+  it("explains nothing from a saved inventory older than the selected time", () => {
+    const old = saved(605, 600);
+    expect(titles(old, true)).toContain(
+      "Saved inventory is older than the selected time"
+    );
     expect(titles(old, true)).not.toContain(metricsNote);
+  });
+
+  it("reads no report from a saved observation without its heartbeat", () => {
+    const view = saved(240, 230);
+    view.observationMetadataAvailable = { profile: true, heartbeat: false };
+    expect(titles(view, true)).not.toContain(metricsNote);
+    // A heartbeat after the inventory's receipt is not the captured one.
+    const leaked = saved(5, 230);
+    expect(titles(leaked, true)).not.toContain(metricsNote);
   });
 });

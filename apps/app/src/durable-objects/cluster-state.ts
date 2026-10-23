@@ -45,7 +45,7 @@ import {
 } from "../lib/server/rollups";
 import { compareMetrics, decodeTelemetry } from "../lib/server/telemetry";
 import { bucketStart, nanoTimestamp, timestampNano } from "../lib/server/time";
-import { profileSchema } from "../schemas/clusters";
+import { historyCommandSchema, profileSchema } from "../schemas/clusters";
 import {
   archiveImportSchema,
   archivesImportSchema,
@@ -244,21 +244,7 @@ export class ClusterState extends DurableObject<Env> {
         };
       }
       if (kind === "history") {
-        const query = input as {
-          from: string;
-          to: string;
-          entity?: string;
-          name?: string;
-        };
-        return {
-          ok: true,
-          value: this.db.history(
-            query.from,
-            query.to,
-            query.entity,
-            query.name
-          ),
-        };
+        return { ok: true, value: this.history(input) };
       }
       if (kind === "events") {
         const query = input as { from: string; to: string };
@@ -353,6 +339,24 @@ export class ClusterState extends DurableObject<Env> {
     } catch (error) {
       return this.failure(error);
     }
+  }
+
+  // A set query is marked filtered, so the Worker can tell it from an earlier
+  // object's unfiltered array. Without sets the reply stays the array REST
+  // history and frozen snapshots read, capped at 10,001 rows.
+  private history(input: unknown) {
+    const query = historyCommandSchema.parse(input);
+    if (query.entities || query.names) {
+      return {
+        rows: this.db.history(query.from, query.to, {
+          entities: query.entities,
+          names: query.names,
+          limit: 30_001,
+        }),
+        filtered: true,
+      };
+    }
+    return this.db.history(query.from, query.to, query.entity, query.name);
   }
 
   private failure(error: unknown): {

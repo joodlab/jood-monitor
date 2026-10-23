@@ -1,9 +1,21 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import {
+  type CounterWatch,
+  type DeliveryWatch,
+  latestChange,
+  recentRise,
+} from "../lib/delivery-watch";
+import {
   freshness,
   inventoryFreshness,
   nodeProfileOutcome,
 } from "../lib/metrics";
+import {
+  formatClock,
+  formatDateTime,
+  knownTime,
+  timeZoneLabel,
+} from "../lib/time";
 
 // Pure collection-settings logic: drafts, change summaries, validation and
 // acknowledgment progress. The hub's profile stays the source of truth.
@@ -23,12 +35,12 @@ export const profileChoices: Record<
   standard: {
     label: "Standard",
     detail:
-      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s, stored and available through the history API but not yet charted in the dashboard.",
+      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s: host CPU and memory are charted in each node's Metrics tab; network, disk and filesystem counters are stored and available through the history API but not yet charted.",
   },
   diagnostic: {
     label: "Diagnostic",
     detail:
-      "Selected host sources every 5s on one node, bounded in time. Host samples are stored and available through the history API but not yet charted in the dashboard. Upstream pod Metrics API resolution stays unchanged.",
+      "Selected host sources every 5s on one node, bounded in time. Host CPU and memory are charted in that node's Metrics tab; network, disk and filesystem samples are stored and available through the history API but not yet charted. Upstream pod Metrics API resolution stays unchanged.",
   },
 };
 
@@ -654,21 +666,47 @@ export function observationFreshness(
     : freshness(at, now);
 }
 
+// How a delivery counter reads: zero, a total worth noticing, or one that
+// needs attention (stale, still buffering, or seen rising recently).
+type DeliveryTone = "ok" | "notice" | "warn";
+
 export interface DeliveryStat {
   definition: string;
   term: string;
+  tone: DeliveryTone;
   value: string;
-  warn: boolean;
+}
+
+interface DeliveryOptions {
+  // A saved observation: whether its heartbeat was captured. Its view's
+  // heartbeatAt must already be the captured one (capturedHeartbeatAt).
+  captured?: boolean;
+  timeZone?: string;
+  // What this page has seen of the live totals.
+  watch?: DeliveryWatch;
 }
 
 type Heartbeat = ClusterView["heartbeat"];
+type Freshness = ReturnType<typeof freshness>;
+type CapturedFreshness = Freshness | "not evaluated";
 
-const deliveryTerms: {
-  term: string;
+const countFormat = new Intl.NumberFormat("en-US");
+
+export function formatCount(value: number) {
+  return countFormat.format(value);
+}
+
+interface DeliveryTerm {
+  // The running total this counter is watched as, and what it counts.
+  counter?: "dropped" | "rejectedPoints";
   definition: string;
-  read: (heartbeat: Heartbeat) => number;
+  events?: string;
   format: (value: number) => string;
-}[] = [
+  read: (heartbeat: Heartbeat) => number;
+  term: string;
+}
+
+const deliveryTerms: DeliveryTerm[] = [
   {
     term: "Buffered on agent",
     definition:
@@ -677,22 +715,130 @@ const deliveryTerms: {
     format: (value) => formatBytes(value),
   },
   {
-    term: "Dropped",
+    term: "Dropped batches",
     definition:
-      "Batches the observer or node collectors discarded because a bounded buffer was full or entries expired. Dropped samples are missing, not zero.",
+      "Batches (inventory, cluster metrics, node host metrics forwarded by the observer, or heartbeats) the observer discarded since its process last started: its local spool was full or could not be written, an ID or token could not be made, a spooled batch was corrupt and could not be decoded, or the hub refused it outright (HTTP 400, 404, 413 or 422, for example a metrics batch over the hub's 10,000-point limit). The total resets when the observer restarts. Every dropped batch is missing data, never zero. Node collectors count batches lost before the observer accepted them in Node acknowledgments.",
     read: (heartbeat) => heartbeat.dropped,
-    format: String,
+    format: formatCount,
+    counter: "dropped",
+    events: "drops",
   },
   {
     term: "Rejected points",
     definition:
-      "Data points the hub refused, for example with an unknown unit, entity or an out-of-range time.",
+      "Data points the hub reported as refused in its acknowledgements of accepted metrics batches since the observer last started, for example with an unknown unit, entity or an out-of-range time. A retried batch can be counted again, so this is not a count of distinct points.",
     read: (heartbeat) => heartbeat.rejectedPoints,
-    format: String,
+    format: formatCount,
+    counter: "rejectedPoints",
+    events: "rejections",
   },
 ];
 
-function deliveryNote(state: ReturnType<typeof freshness>) {
+function zonedClock(time: string | number, timeZone: string) {
+  return `${formatClock(time, timeZone)} ${timeZoneLabel(timeZone, knownTime(time))}`;
+}
+
+// What this page saw a counter do: rise, reset, or hold still. The observer
+// reports totals only, so a change is placed by the heartbeat it was first
+// seen in, never by when the drops happened. A reset's new total counts from
+// zero, so the rise includes it.
+function watchedChange(
+  counter: CounterWatch,
+  term: DeliveryTerm,
+  timeZone: string
+) {
+  const change = latestChange(counter);
+  if (change === "reset") {
+    return `the total went down (${term.format(counter.resetFrom ?? 0)} → ${term.format(counter.lastValue)}) in the heartbeat received ${zonedClock(counter.resetAt ?? "", timeZone)}; the observer's counter reset, usually after a restart`;
+  }
+  if (change === "rise") {
+    const counted = counter.resetAt
+      ? ", counting from zero after the counter reset"
+      : "";
+    return `rose by ${term.format(counter.risenBy)} since this page opened${counted} (first new ${term.events} seen in the heartbeat the hub received at ${zonedClock(counter.firstHigherHeartbeatAt ?? "", timeZone)})`;
+  }
+  if (counter.lastValue > 0) {
+    const opened = formatClock(counter.firstSeen.at, timeZone).slice(0, 5);
+    return `watching since this page opened at ${opened} ${timeZoneLabel(timeZone, counter.firstSeen.at)}; no rise seen (the observer does not report when ${term.events} happened)`;
+  }
+  return;
+}
+
+const backlogText =
+  "the observer is draining a backlog, so whether the total is still rising is unconfirmed";
+
+function watchText(
+  term: DeliveryTerm,
+  counter: CounterWatch | undefined,
+  backlog: boolean,
+  timeZone: string
+) {
+  const change = counter && watchedChange(counter, term, timeZone);
+  const quiet = !counter || latestChange(counter) === undefined;
+  // With a backlog the reports may lag, so "no rise seen" is not claimed.
+  const parts = [quiet && backlog ? undefined : change, backlog && backlogText];
+  return parts.filter(Boolean).join("; ");
+}
+
+function liveStat(
+  term: DeliveryTerm,
+  heartbeat: Heartbeat,
+  state: Freshness,
+  now: number,
+  options: DeliveryOptions
+): Pick<DeliveryStat, "tone" | "value"> {
+  const raw = term.read(heartbeat);
+  if (state === "unknown") {
+    return { tone: "ok", value: "Not reported" };
+  }
+  if (state !== "fresh") {
+    return { tone: "warn", value: `${term.format(raw)} (last reported)` };
+  }
+  const backlog = heartbeat.queueBytes > 0;
+  const counter = term.counter && options.watch?.[term.counter];
+  const watched = term.counter
+    ? watchText(term, counter, backlog, options.timeZone ?? "UTC")
+    : "";
+  let tone: DeliveryTone = raw > 0 ? "notice" : "ok";
+  if (backlog || recentRise(counter, now)) {
+    tone = "warn";
+  }
+  return {
+    tone,
+    value: watched ? `${term.format(raw)} · ${watched}` : term.format(raw),
+  };
+}
+
+// A saved observation's counters, from the heartbeat captured with it and
+// judged at its inventory's receipt. Nothing here is current.
+function capturedStat(
+  term: DeliveryTerm,
+  view: ClusterView,
+  state: CapturedFreshness,
+  options: DeliveryOptions
+): Pick<DeliveryStat, "tone" | "value"> {
+  if (!options.captured) {
+    return { tone: "ok", value: "Not captured with this observation" };
+  }
+  if (state === "unknown") {
+    return { tone: "ok", value: "No heartbeat before this inventory" };
+  }
+  const raw = term.read(view.heartbeat);
+  const timeZone = options.timeZone ?? "UTC";
+  const received = knownTime(view.cluster.receivedAt);
+  const value =
+    received == null
+      ? `${term.format(raw)} (as captured)`
+      : `${term.format(raw)} as captured at ${formatDateTime(received, timeZone, { year: "auto" })} ${timeZoneLabel(timeZone, received)}`;
+  const judged = state === "fresh" || state === "not evaluated";
+  let tone: DeliveryTone = raw > 0 ? "notice" : "ok";
+  if (!judged || view.heartbeat.queueBytes > 0) {
+    tone = "warn";
+  }
+  return { tone, value };
+}
+
+function liveNote(state: Freshness) {
   if (state === "stale") {
     return "The heartbeat is stale, so these are the last values the observer reported. Current buffering, drops and rejections are unknown.";
   }
@@ -702,28 +848,57 @@ function deliveryNote(state: ReturnType<typeof freshness>) {
   return;
 }
 
+function capturedNote(state: CapturedFreshness) {
+  if (state === "stale") {
+    return "The heartbeat was already stale when this inventory arrived, so these are the last values the observer had reported by then.";
+  }
+  if (state === "clock skew") {
+    return "The heartbeat time was ahead of the hub's receipt of this inventory, so these values cannot be confirmed for that time.";
+  }
+  if (state === "not evaluated") {
+    return "The hub's receipt time of this inventory was not retained, so the heartbeat's freshness was not evaluated.";
+  }
+  return;
+}
+
 // Delivery counters from the latest heartbeat. Without a fresh heartbeat they
-// are last-reported values, never a verified current zero.
-export function deliveryHealth(view: ClusterView, now: number) {
+// are last-reported values, never a verified current zero. Live, a total this
+// page saw rise recently needs attention; one it never saw move is a running
+// total since the observer started, worth noticing but not dated. A saved
+// observation's counters are judged at `now`, its inventory's receipt, and
+// are never compared with the browser's clock or current values.
+export function deliveryHealth(
+  view: ClusterView,
+  now: number,
+  options: DeliveryOptions = {}
+) {
   const state = freshness(view.cluster.heartbeatAt, now);
-  const reported = state !== "unknown";
-  const current = state === "fresh";
-  const stats: DeliveryStat[] = deliveryTerms.map(
-    ({ term, definition, read, format }) => {
-      const raw = read(view.heartbeat);
-      let value = "Not reported";
-      if (reported) {
-        value = current ? format(raw) : `${format(raw)} (last reported)`;
-      }
-      return {
-        term,
-        definition,
-        value,
-        warn: reported && (!current || raw > 0),
-      };
-    }
-  );
-  return { stats, note: deliveryNote(state) };
+  const stat = (
+    term: DeliveryTerm,
+    values: Pick<DeliveryStat, "tone" | "value">
+  ) => ({
+    term: term.term,
+    definition: term.definition,
+    ...values,
+  });
+  if (options.captured === undefined) {
+    return {
+      stats: deliveryTerms.map((term) =>
+        stat(term, liveStat(term, view.heartbeat, state, now, options))
+      ),
+      note: liveNote(state),
+    };
+  }
+  const judged: CapturedFreshness =
+    state !== "unknown" && knownTime(view.cluster.receivedAt) == null
+      ? "not evaluated"
+      : state;
+  return {
+    stats: deliveryTerms.map((term) =>
+      stat(term, capturedStat(term, view, judged, options))
+    ),
+    note: options.captured ? capturedNote(judged) : undefined,
+  };
 }
 
 export function formatBytes(value: number) {

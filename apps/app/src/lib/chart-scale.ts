@@ -60,12 +60,43 @@ export function isolatedSamples(samples: readonly Sample[], gap = GAP_MS) {
   });
 }
 
+// A chart row with a value, whose neighbours are gaps or the edge: it draws
+// no line segment and needs a dot.
+export function isolatedRows<T extends ChartRow>(rows: readonly T[]) {
+  return rows.filter(
+    (row, index) =>
+      row.value != null &&
+      rows[index - 1]?.value == null &&
+      rows[index + 1]?.value == null
+  );
+}
+
 export interface SampleStats {
   count: number;
   gaps: number;
   latest?: Sample;
   max?: number;
   min?: number;
+}
+
+// The same summary from chart rows, where each null row is one break.
+export function rowStats(rows: readonly ChartRow[]): SampleStats {
+  const samples: Sample[] = [];
+  let gaps = 0;
+  for (const row of rows) {
+    if (row.value == null) {
+      gaps++;
+    } else {
+      samples.push({ time: row.time, value: row.value });
+    }
+  }
+  let min: number | undefined;
+  let max: number | undefined;
+  for (const { value } of samples) {
+    min = min == null ? value : Math.min(min, value);
+    max = max == null ? value : Math.max(max, value);
+  }
+  return { count: samples.length, gaps, latest: samples.at(-1), min, max };
 }
 
 export function sampleStats(
@@ -127,6 +158,14 @@ export function displayUnit(field: UsageField, max: number | undefined) {
     return value < 1 ? millicores : cores;
   }
   return value < GIB ? mebibytes : gibibytes;
+}
+
+// The base unit a chart's values are in: CPU cores (or CPU seconds per
+// second) and bytes.
+export type UnitFamily = "cores" | "bytes";
+
+export function displayUnitFor(family: UnitFamily, max: number | undefined) {
+  return displayUnit(family === "cores" ? "cpu" : "memory", max);
 }
 
 const significant = new Intl.NumberFormat("en", {
@@ -279,11 +318,23 @@ export function tickLabel(time: number, timeZone: string, withDate: boolean) {
   return `${date} ${clock}`;
 }
 
+export interface TooltipRow {
+  label: string;
+  value: string;
+}
+
+// A row a multi-series chart draws: the series it belongs to, and readings
+// taken at the same source time for the tooltip.
+export interface MetricRow extends ChartRow {
+  detail?: readonly TooltipRow[];
+  label?: string;
+}
+
 // Tooltip for one sample: its source time in the display zone, the value in
 // the chart's unit, and its share of the reference (e.g. the limit). A gap
 // row has no value and produces no rows.
 export function tooltipContent(
-  row: ChartRow | undefined,
+  row: MetricRow | undefined,
   {
     unit,
     timeZone,
@@ -304,10 +355,69 @@ export function tooltipContent(
   return {
     title: `Source time ${formatDateTime(row.time, timeZone)} ${timeZoneLabel(timeZone, row.time)}`,
     rows: [
-      { label: title, value: formatInUnit(base, unit) },
+      { label: row.label ?? title, value: formatInUnit(base, unit) },
       ...(share && percentBase
         ? [{ label: `Of ${percentBase.label}`, value: share }]
         : []),
+      ...(row.detail ?? []),
     ],
+  };
+}
+
+// The charted interval in words, e.g. "Oct 22, 12:00:00 to Oct 22,
+// 13:00:00 UTC".
+export function intervalText(from: number, to: number, timeZone: string) {
+  return `${formatDateTime(from, timeZone)} to ${formatDateTime(to, timeZone)} ${timeZoneLabel(timeZone, to)}`;
+}
+
+// What a chart's rows count: samples, or rates taken between two samples.
+export interface CountNoun {
+  one: string;
+  other: string;
+}
+
+export const sampleNoun: CountNoun = { one: "sample", other: "samples" };
+
+// "1 sample", "59 rates".
+export function countText(count: number, noun: CountNoun = sampleNoun) {
+  return `${count} ${count === 1 ? noun.one : noun.other}`;
+}
+
+function statsSentence(stats: SampleStats, unit: DisplayUnit, noun: CountNoun) {
+  return `Latest ${formatInUnit(stats.latest?.value, unit)}, minimum ${formatInUnit(stats.min, unit)}, maximum ${formatInUnit(stats.max, unit)}, ${countText(stats.count, noun)}`;
+}
+
+// The chart's accessible name and description. A zoomed time axis is named
+// after the fixed sentences, because the summary still covers the whole
+// interval; extra sentences, such as Diagnostic periods, follow.
+export function chartAria({
+  title,
+  subject,
+  unit,
+  stats,
+  interval,
+  count = sampleNoun,
+  zoom,
+  extra = [],
+}: {
+  title: string;
+  subject: string;
+  unit: DisplayUnit;
+  stats: SampleStats;
+  interval: string;
+  count?: CountNoun;
+  // The zoomed axis in words, as intervalText gives it.
+  zoom?: string;
+  extra?: readonly string[];
+}) {
+  return {
+    label: `${title} for ${subject}, in ${unit.label}`,
+    description: [
+      `${statsSentence(stats, unit, count)}. Interval ${interval}. Gaps longer than ${GAP_MS / 1000} seconds are left blank.`,
+      ...(zoom
+        ? [`Time axis zoomed to ${zoom}; the summary covers the full interval.`]
+        : []),
+      ...extra,
+    ].join(" "),
   };
 }

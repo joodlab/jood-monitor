@@ -3,6 +3,7 @@ import { Button } from "@jood-monitor/ui/button";
 import { cn } from "@jood-monitor/ui/utils";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
+import { useDeliveryWatch } from "../hooks/delivery";
 import { useDisplay } from "../hooks/display";
 import {
   type Attention,
@@ -11,13 +12,17 @@ import {
   type Severity,
 } from "../lib/attention";
 import { rowsNoun } from "../lib/attention-noun";
+import type { DeliveryWatch } from "../lib/delivery-watch";
+import { formatClock, timeZoneLabel } from "../lib/time";
 import { type AttentionActions, AttentionList } from "./attention-list";
+import { formatCount } from "./collection-model";
 import { SeverityIcon } from "./severity";
 import { Widget } from "./widget-card";
 
 // The "Needs attention" widget: live problems with a severity filter, a
-// bounded list that expands in place, and finished-pod history collapsed
-// beneath. It replaces the separate Attention page.
+// bounded list that expands in place, delivery notes from what this page saw
+// the observers report, and finished-pod history collapsed beneath. It
+// replaces the separate Attention page.
 
 const PREVIEW = 6;
 
@@ -140,8 +145,9 @@ function FinishedHistory({
             Finished pods with failures · {items.length}
           </span>
           <span className="mt-0.5 block text-muted-foreground text-xs">
-            Stopped pods retained by Kubernetes until deleted. History, not a
-            current outage, and not counted above.
+            Stopped pods retained by Kubernetes until deleted; not counted
+            above. The hub does not inventory Jobs or CronJobs, so it cannot
+            tell whether a failed scheduled run is still a problem.
           </span>
         </span>
         <ChevronDown
@@ -172,6 +178,122 @@ function severityText(summary: ReturnType<typeof attentionSummary>) {
     .join(" · ");
 }
 
+interface DeliveryNote {
+  text: string;
+  view: ClusterView;
+}
+
+// Live observers this page saw discard more batches since it opened,
+// counting a restarted observer's new total from zero. The observer reports
+// only a running total, so the note places the drops by the heartbeat they
+// were first seen in. Info only: notes never change a count, the project
+// bar's badge or a cluster's health.
+function deliveryNotes(
+  views: ClusterView[],
+  watches: ReadonlyMap<string, DeliveryWatch>,
+  timeZone: string
+): DeliveryNote[] {
+  return views.flatMap((view) => {
+    const dropped = watches.get(view.cluster.id)?.dropped;
+    const first = dropped?.firstHigherHeartbeatAt;
+    if (!(dropped && first && dropped.risenBy > 0)) {
+      return [];
+    }
+    const batches = `${formatCount(dropped.risenBy)} more batch${dropped.risenBy === 1 ? "" : "es"}`;
+    const seen = `${formatClock(first, timeZone)} ${timeZoneLabel(timeZone, Date.parse(first))}`;
+    return [
+      {
+        view,
+        text: `Observer on ${view.cluster.name} discarded ${batches} since this page opened (first new drops seen in the heartbeat received ${seen}). Some samples or saved observations may be missing.`,
+      },
+    ];
+  });
+}
+
+function DeliveryNotes({
+  notes,
+  actions,
+}: {
+  notes: DeliveryNote[];
+  actions: AttentionActions;
+}) {
+  return (
+    <ul aria-label="Delivery notes" className="border-t first:border-t-0">
+      {notes.map((note) => (
+        <li
+          className="flex flex-wrap items-start gap-3 border-b px-4 py-3 last:border-b-0 sm:px-5"
+          key={note.view.cluster.id}
+        >
+          <SeverityIcon className="mt-0.5" severity="info" />
+          <p className="min-w-0 flex-1 text-sm leading-snug">{note.text}</p>
+          <Button
+            aria-label={`Open Settings for ${note.view.cluster.name}`}
+            className="h-8 text-xs"
+            onClick={() => actions.onCluster(note.view)}
+            size="sm"
+            variant="outline"
+          >
+            Open Settings
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ShowAll({
+  count,
+  noun,
+  expanded,
+  onToggle,
+}: {
+  count: number;
+  noun: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="border-t px-2 py-1.5">
+      <Button
+        aria-expanded={expanded}
+        className="h-8 w-full text-xs"
+        onClick={onToggle}
+        size="sm"
+        variant="ghost"
+      >
+        {expanded ? `Show fewer ${noun}` : `Show all ${count} ${noun}`}
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            "size-3.5 transition-transform",
+            expanded && "rotate-180"
+          )}
+        />
+      </Button>
+    </div>
+  );
+}
+
+// The rows shown at a chosen severity, and whether delivery notes (info rows
+// outside the counts) show beside them. The filter is offered only beside
+// live rows; once they clear, a severity chosen earlier has no control left
+// to change it, so it no longer applies and every note shows again.
+export function attentionRows(
+  attention: Attention[],
+  severity: Severity | "all"
+) {
+  const live = attention.filter((item) => !item.terminal);
+  const active = live.length ? severity : "all";
+  return {
+    live,
+    finished: attention.filter((item) => item.terminal),
+    visible: live.filter(
+      (item) => active === "all" || item.severity === active
+    ),
+    withNotes: active === "all" || active === "info",
+  };
+}
+
 export function AttentionWidget({
   attention,
   views,
@@ -184,17 +306,21 @@ export function AttentionWidget({
   actions: AttentionActions;
   className?: string;
 }) {
-  const { frozen, referenceTime } = useDisplay();
+  const { frozen, referenceTime, timeZone } = useDisplay();
   const [severity, setSeverity] = useState<Severity | "all">("all");
   const [expanded, setExpanded] = useState(false);
+  const watches = useDeliveryWatch(views);
   const summary = attentionSummary(attention);
   const coverage = observationCoverage(views, referenceTime);
-  const live = attention.filter((item) => !item.terminal);
-  const finished = attention.filter((item) => item.terminal);
-  const visible = live.filter(
-    (item) => severity === "all" || item.severity === severity
+  const { live, finished, visible, withNotes } = attentionRows(
+    attention,
+    severity
   );
   const shown = expanded ? visible : visible.slice(0, PREVIEW);
+  // Delivery notes are only for the live view. Any note rules out the
+  // all-clear, whichever filter is chosen.
+  const allNotes = frozen ? [] : deliveryNotes(views, watches, timeZone);
+  const notes = withNotes ? allNotes : [];
   // The visible rows are notes, problems or a mix of both (items).
   const noun = rowsNoun(visible);
   const counts: Record<string, number> = {
@@ -220,17 +346,18 @@ export function AttentionWidget({
       className={className}
       description={
         frozen
-          ? "Conditions in the saved observation. Observer heartbeats are not retained historically and are not evaluated."
+          ? "Conditions in the saved observation. The observer heartbeat captured with it is shown in Settings and is not judged against the selected time."
           : "Observed now, one row per cluster, server, workload or unowned pod. Select a row to inspect it."
       }
       title={
         <>
+          {/* A delivery note rules out the green all-clear. */}
           <SeverityIcon
             covered={!coverage.missing}
             decorative
-            severity={summary.worst}
+            severity={summary.worst ?? (allNotes.length ? "info" : undefined)}
           />
-          {heading(coverage, summary.actionable, live.length)}
+          {heading(coverage, summary.actionable, live.length + allNotes.length)}
           {live.length > 0 && (
             <span className="font-normal text-muted-foreground text-sm">
               {severityText(summary)}
@@ -239,9 +366,8 @@ export function AttentionWidget({
         </>
       }
     >
-      {shown.length > 0 ? (
-        <AttentionList actions={actions} items={shown} />
-      ) : (
+      {shown.length > 0 && <AttentionList actions={actions} items={shown} />}
+      {shown.length === 0 && notes.length === 0 && (
         <NothingVisible
           coverage={coverage}
           frozen={frozen}
@@ -249,27 +375,14 @@ export function AttentionWidget({
         />
       )}
       {visible.length > PREVIEW && (
-        <div className="border-t px-2 py-1.5">
-          <Button
-            aria-expanded={expanded}
-            className="h-8 w-full text-xs"
-            onClick={() => setExpanded((value) => !value)}
-            size="sm"
-            variant="ghost"
-          >
-            {expanded
-              ? `Show fewer ${noun}`
-              : `Show all ${visible.length} ${noun}`}
-            <ChevronDown
-              aria-hidden
-              className={cn(
-                "size-3.5 transition-transform",
-                expanded && "rotate-180"
-              )}
-            />
-          </Button>
-        </div>
+        <ShowAll
+          count={visible.length}
+          expanded={expanded}
+          noun={noun}
+          onToggle={() => setExpanded((value) => !value)}
+        />
       )}
+      {notes.length > 0 && <DeliveryNotes actions={actions} notes={notes} />}
       {finished.length > 0 && (
         <FinishedHistory actions={actions} items={finished} />
       )}

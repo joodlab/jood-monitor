@@ -8,9 +8,9 @@ import {
   DialogTitle,
 } from "@jood-monitor/ui/dialog";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
+import { CalendarClock, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchEvents,
   fetchSnapshot,
@@ -19,23 +19,52 @@ import {
 } from "../hooks/api/clusters";
 import { DisplayProvider, useDisplay } from "../hooks/display";
 import { attentionItems, attentionSummary } from "../lib/attention";
-import { type SearchState, scopeReset } from "../schemas/monitor";
+import {
+  backStep,
+  inspectFrom,
+  inspectState,
+  panelRest,
+} from "../lib/panel-history";
+import { INVENTORY_RETENTION_DAYS } from "../lib/retention";
+import { linkedOffer } from "../lib/share-link";
+import {
+  formatDateTime,
+  type HubClock,
+  hubNow,
+  observationMs,
+  timeZoneLabel,
+} from "../lib/time";
+import {
+  type PanelTab,
+  type SearchState,
+  scopeReset,
+  validateMonitorSearch,
+} from "../schemas/monitor";
 import { Architecture } from "./architecture";
 import type { AttentionActions } from "./attention-list";
 import { CommandPalette } from "./command-palette";
 import {
+  closePatch,
+  clusterFilterPatch,
+  clusterServersPatch,
   eventsEnabled,
   eventsKey,
+  inspectPatch,
   linkedSettingsView,
+  openClusterPatch,
+  pagePatch,
   rangeOnlyChange,
   settingsLink,
-  settingsSection,
+  unreadableLinkTime,
+  workspacePatch,
 } from "./dashboard-navigation";
 import { EnrollForm } from "./enroll-form";
 import { EventsPage } from "./events-page";
+import type { Crumb } from "./inspector-model";
 import { NewWorkspace } from "./new-workspace";
 import { Observability } from "./observability";
-import { PageHeader } from "./page";
+import { ObservationTime } from "./observation-time";
+import { EmptyState, PageHeader } from "./page";
 import { PageState, retrySnapshot } from "./page-state";
 import { ProjectBar, projectTabs } from "./project-bar";
 import { RangeSelect } from "./range-select";
@@ -62,28 +91,6 @@ const pageDescriptions: Record<string, string> = {
   workspaces: "Workspaces group clusters and scope what you see.",
 };
 
-// Components written for the previous navigation still ask for its views;
-// translate them to the project tabs.
-function routeFor(view: string, extra: Partial<SearchState>) {
-  if (view === "infrastructure") {
-    if (extra.mode === "servers") {
-      return { view: "resources", tab: "servers" };
-    }
-    return extra.mode === "list"
-      ? { view: "resources", tab: "all" }
-      : { view: "architecture" };
-  }
-  if (view === "workloads") {
-    return { view: "resources", tab: extra.tab ?? "workloads" };
-  }
-  const legacy: Record<string, string> = {
-    overview: "observability",
-    attention: "observability",
-    events: "activity",
-  };
-  return { view: legacy[view] ?? view };
-}
-
 export function Dashboard() {
   const search = useSearch({ from: "/" });
   return (
@@ -101,6 +108,8 @@ function useMonitorData(search: SearchState) {
   const snapshot = useQuery({
     queryKey: ["snapshot", scope, search.at ?? "live"],
     queryFn: () => fetchSnapshot(scope, search.at),
+    // An unreadable link time is explained by the page, not sent.
+    enabled: !unreadableLinkTime(search.at),
     refetchInterval: search.at ? false : refreshInterval,
     retry: retrySnapshot,
   });
@@ -176,26 +185,43 @@ function useMonitorData(search: SearchState) {
   };
 }
 
+type UpdateOptions =
+  | boolean
+  | { replace?: boolean; resetScroll?: boolean; state?: true | object };
+
+// `true` alone means replace. A replace keeps the entry's history state, so
+// the panel's Back marker survives tab, range and filter changes; a push
+// starts a fresh entry unless it brings its own.
+function navigationOptions(options: UpdateOptions = false) {
+  const {
+    replace = false,
+    resetScroll,
+    state,
+  } = typeof options === "boolean" ? { replace: options } : options;
+  return { replace, resetScroll, state: state ?? (replace || undefined) };
+}
+
+// The search the router is committing or showing, validated like the
+// route's own.
+function latestSearch(router: ReturnType<typeof useRouter>) {
+  return validateMonitorSearch({ ...router.latestLocation.search });
+}
+
 function useDashboardNavigation(scope: string) {
   const navigate = useNavigate({ from: "/" });
+  const router = useRouter();
   const update = useCallback(
-    (next: Partial<SearchState>, replace = false) => {
-      navigate({ search: (old) => ({ ...old, ...next }), replace });
+    (next: Partial<SearchState>, options?: UpdateOptions) => {
+      navigate({
+        search: (old) => ({ ...old, ...next }),
+        ...navigationOptions(options),
+      });
     },
     [navigate]
   );
   const go = useCallback(
-    (view: string, extra: Partial<SearchState> = {}) => {
-      const next = settingsSection(view, extra);
-      update({
-        resource: undefined,
-        resourceCluster: undefined,
-        settingsCluster: undefined,
-        diagnosticNode: undefined,
-        ...next,
-        ...routeFor(view, next),
-      });
-    },
+    (view: string, extra: Partial<SearchState> = {}) =>
+      update(pagePatch(view, extra)),
     [update]
   );
   const openSettings = useCallback(
@@ -203,34 +229,44 @@ function useDashboardNavigation(scope: string) {
       go("settings", settingsLink(scope, view, node)),
     [go, scope]
   );
+  // Opening a resource from an open one marks the new entry so Back can
+  // follow history. The panel covers the page, so the page does not scroll.
+  // Re-opening the resource on screen adds no entry.
   const inspect = useCallback(
-    (view: ClusterView, entity: Entity) =>
-      update({ resource: entity.uid, resourceCluster: view.cluster.id }),
-    [update]
+    (view: ClusterView, entity: Entity, extra?: { panel?: PanelTab }) => {
+      const current = latestSearch(router);
+      if (
+        current.resource === entity.uid &&
+        current.resourceCluster === view.cluster.id
+      ) {
+        return;
+      }
+      update(inspectPatch(view, entity, extra), {
+        state: inspectState(current),
+        resetScroll: false,
+      });
+    },
+    [router, update]
   );
   const closeInspector = useCallback(
-    () => update({ resource: undefined, resourceCluster: undefined }),
+    () => update(closePatch(), { resetScroll: false }),
     [update]
   );
-  const openCluster = useCallback(
-    (view: ClusterView) =>
-      go("architecture", {
-        ...scopeReset,
-        workspace: view.cluster.workspaceId,
-        cluster: view.cluster.id,
-      }),
-    [go]
+  // A tab is a view of the same resource: it replaces the entry and keeps
+  // the page behind the panel where it is.
+  const onPanel = useCallback(
+    (panel: PanelTab) =>
+      update({ panel }, { replace: true, resetScroll: false }),
+    [update]
   );
-  // The finder promises a cluster's servers.
+  const onBack = useBack(router, update);
+  const openCluster = useCallback(
+    (view: ClusterView) => update(openClusterPatch(view)),
+    [update]
+  );
   const openClusterServers = useCallback(
-    (view: ClusterView) =>
-      go("resources", {
-        ...scopeReset,
-        tab: "servers",
-        workspace: view.cluster.workspaceId,
-        cluster: view.cluster.id,
-      }),
-    [go]
+    (view: ClusterView) => update(clusterServersPatch(view)),
+    [update]
   );
   const actions: AttentionActions = useMemo(
     () => ({ onInspect: inspect, onCluster: (view) => openSettings(view) }),
@@ -241,11 +277,99 @@ function useDashboardNavigation(scope: string) {
     go,
     inspect,
     closeInspector,
+    onPanel,
+    onBack,
     openCluster,
     openClusterServers,
     openSettings,
     actions,
   };
+}
+
+// The panel's Back: the browser's Back when the previous entry is that
+// resource on the same page (see panel-history), otherwise the resource in
+// place. Clicks while that history step is underway are ignored.
+function useBack(
+  router: ReturnType<typeof useRouter>,
+  update: (next: Partial<SearchState>, options?: UpdateOptions) => void
+) {
+  const pending = useRef(false);
+  useEffect(
+    () =>
+      router.subscribe("onBeforeLoad", () => {
+        pending.current = false;
+      }),
+    [router]
+  );
+  return useCallback(
+    (crumb: Crumb) => {
+      if (pending.current) {
+        return;
+      }
+      const location = router.latestLocation;
+      const step = backStep({
+        marker: inspectFrom(location.state),
+        crumbKey: crumb.key,
+        canGoBack: router.history.canGoBack(),
+        currentRest: panelRest(latestSearch(router)),
+      });
+      if (step === "history") {
+        pending.current = true;
+        router.history.back();
+        return;
+      }
+      update(inspectPatch(crumb.view, crumb.entity), {
+        replace: true,
+        resetScroll: false,
+      });
+    },
+    [router, update]
+  );
+}
+
+// The page's main region takes focus once, when the control that opened a
+// dialog is gone.
+function focusMain() {
+  const main = document.querySelector<HTMLElement>("main");
+  if (main && !main.hasAttribute("tabindex")) {
+    main.setAttribute("tabindex", "-1");
+    main.addEventListener("blur", () => main.removeAttribute("tabindex"), {
+      once: true,
+    });
+  }
+  return main;
+}
+
+// The saved-observation picker the page opens for a link time it could not
+// read or the hub refused. Escape returns focus to the button that opened
+// it; choosing a time replaces that button, so focus moves to the page.
+// The button is passed in, because Safari and Firefox on macOS do not focus
+// a button that is clicked.
+function useTimeChooser() {
+  const [open, setOpen] = useState(false);
+  const opener = useRef<HTMLElement | null>(null);
+  const chosen = useRef(false);
+  const show = useCallback((button?: HTMLElement) => {
+    const active = document.activeElement;
+    opener.current =
+      button ??
+      (active instanceof HTMLElement && active !== document.body
+        ? active
+        : null);
+    chosen.current = false;
+    setOpen(true);
+  }, []);
+  const choose = useCallback(() => {
+    chosen.current = true;
+  }, []);
+  // `true` leaves it to Base UI: the element focused before it opened.
+  const finalFocus = useCallback(() => {
+    if (chosen.current) {
+      return focusMain() ?? true;
+    }
+    return opener.current?.isConnected ? opener.current : true;
+  }, []);
+  return { open, setOpen, show, choose, finalFocus };
 }
 
 // ⌘K / Ctrl+K opens the finder. There is no single-key shortcut, so speech
@@ -365,6 +489,192 @@ function PageBody({
   }
 }
 
+// A link time the page could not read, explained from the URL alone so the
+// server and browser render the same markup. Nothing is asked of the hub.
+function UnreadableTime({
+  at,
+  onChoose,
+}: {
+  at: string;
+  onChoose: (button: HTMLElement) => void;
+}) {
+  const written = at.length > 40 ? `${at.slice(0, 40)}…` : at;
+  return (
+    // The actions row is centred to fit its content; below sm it stretches
+    // so the button can take the phone's width.
+    <EmptyState
+      className="m-4 [&>div:last-child]:self-stretch sm:[&>div:last-child]:self-center"
+      description={`Saved observation links carry a time with a zone, such as 2026-10-22T12:00:00Z. This link has “${written}”.`}
+      icon={CalendarClock}
+      title="Choose a saved observation time"
+    >
+      <Button
+        className="w-full sm:w-auto"
+        onClick={(event) => onChoose(event.currentTarget)}
+      >
+        Choose a time…
+      </Button>
+    </EmptyState>
+  );
+}
+
+// The page under the project bar: the unreadable-time explanation, or the
+// snapshot's state and the view itself.
+function PageContent({
+  search,
+  data,
+  loading,
+  navigation,
+  referenceTime,
+  onConnect,
+  onNewWorkspace,
+  onChooseTime,
+}: {
+  search: SearchState;
+  data: ReturnType<typeof useMonitorData>;
+  loading: boolean;
+  navigation: ReturnType<typeof useDashboardNavigation>;
+  referenceTime: number;
+  onConnect: () => void;
+  onNewWorkspace: () => void;
+  onChooseTime: (button?: HTMLElement) => void;
+}) {
+  const { snapshot } = data;
+  if (unreadableLinkTime(search.at)) {
+    return <UnreadableTime at={search.at ?? ""} onChoose={onChooseTime} />;
+  }
+  return (
+    <>
+      <PageState
+        loading={loading}
+        onChooseTime={onChooseTime}
+        onRetry={() => snapshot.refetch()}
+        snapshot={snapshot}
+      />
+      {!loading && (snapshot.data || !snapshot.isError) && (
+        <PageBody
+          data={data}
+          navigation={navigation}
+          onConnect={onConnect}
+          onNewWorkspace={onNewWorkspace}
+          referenceTime={referenceTime}
+          search={search}
+        />
+      )}
+    </>
+  );
+}
+
+function PageActions({
+  search,
+  updating,
+  connectDisabled,
+  onRange,
+  onConnect,
+}: {
+  search: SearchState;
+  updating: boolean;
+  connectDisabled: boolean;
+  onRange: (range: string) => void;
+  onConnect: () => void;
+}) {
+  return (
+    <>
+      {(search.view === "observability" || search.view === "activity") && (
+        <>
+          {/* The previous range's changes stay on screen while the new
+              range loads, and this says so. */}
+          <span className="text-muted-foreground text-xs" role="status">
+            {updating ? "Updating…" : ""}
+          </span>
+          <RangeSelect onRange={onRange} range={search.range} />
+        </>
+      )}
+      {search.view === "settings" && (
+        <Button
+          className="h-8"
+          disabled={connectDisabled}
+          onClick={onConnect}
+          size="sm"
+          variant="outline"
+        >
+          <Plus className="size-3.5" />
+          Connect cluster
+        </Button>
+      )}
+    </>
+  );
+}
+
+function exactTime(time: number, timeZone: string) {
+  return `${formatDateTime(time, timeZone)} ${timeZoneLabel(timeZone, time)}`;
+}
+
+// Absence is only claimed against a loaded snapshot; while the hub is
+// unreachable the link stays in the URL and Retry reopens it. A live link
+// remembers the time of the observation it was copied from, not when it
+// was copied, and offers that saved observation.
+function MissingResource({
+  linkedAt,
+  hubClock,
+  onClose,
+  onOpenSaved,
+  onLive,
+}: {
+  linkedAt?: string;
+  hubClock?: HubClock;
+  onClose: () => void;
+  onOpenSaved: (at: string) => void;
+  onLive: () => void;
+}) {
+  const { now, frozen, timeZone } = useDisplay();
+  const offer = frozen ? "none" : linkedOffer(linkedAt, hubNow(hubClock, now));
+  const linked = observationMs(linkedAt);
+  return (
+    <Dialog
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+        }
+      }}
+      open
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Resource not in this observation</DialogTitle>
+          <DialogDescription>
+            The linked resource is absent from the selected snapshot. It may
+            have been deleted or replaced, or historical coverage may be
+            incomplete.
+          </DialogDescription>
+        </DialogHeader>
+        {offer === "retained" && linked != null && (
+          <p className="text-sm">
+            {`This link remembers the observation at ${exactTime(linked, timeZone)}.`}
+          </p>
+        )}
+        {offer === "expired" && (
+          <p className="text-sm">
+            This link's time is outside the {INVENTORY_RETENTION_DAYS}-day
+            retention.
+          </p>
+        )}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button onClick={onClose} variant="outline">
+            Close
+          </Button>
+          {frozen && <Button onClick={onLive}>Return to live</Button>}
+          {offer === "retained" && linked != null && linkedAt && (
+            <Button onClick={() => onOpenSaved(linkedAt)}>
+              Open as saved at {formatDateTime(linked, timeZone)}
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function DashboardContent() {
   const search = useSearch({ from: "/" });
   const { now, referenceTime, frozen } = useDisplay();
@@ -384,6 +694,7 @@ function DashboardContent() {
   } = data;
   const summary = attentionSummary(attention);
   const [newWorkspace, setNewWorkspace] = useState(false);
+  const chooser = useTimeChooser();
   const dashboardNavigation = useDashboardNavigation(scope);
   const { update, go, inspect, closeInspector, openSettings } =
     dashboardNavigation;
@@ -396,17 +707,8 @@ function DashboardContent() {
     }
   }, [search.view]);
   usePaletteShortcut(openPalette);
-  function changeWorkspace(workspace: string) {
-    update({
-      ...scopeReset,
-      workspace,
-      cluster: undefined,
-      resource: undefined,
-      resourceCluster: undefined,
-      settingsCluster: undefined,
-      diagnosticNode: undefined,
-    });
-  }
+  const changeWorkspace = (workspace: string) =>
+    update(workspacePatch(workspace));
   const pageTargets = useMemo(
     () =>
       [...projectTabs, { id: "workspaces", name: "Workspaces" }].map(
@@ -420,12 +722,20 @@ function DashboardContent() {
   );
   const loading = snapshot.isLoading || !now;
   const counts = countSummary(views, !!snapshot.data, workspaceName);
-  const canvas = search.view === "architecture";
-  const state = (
-    <PageState
+  const hubClock = snapshot.data && {
+    serverTime: snapshot.data.serverTime,
+    receivedAt: snapshot.dataUpdatedAt,
+  };
+  const content = (
+    <PageContent
+      data={data}
       loading={loading}
-      onRetry={() => snapshot.refetch()}
-      snapshot={snapshot}
+      navigation={dashboardNavigation}
+      onChooseTime={chooser.show}
+      onConnect={() => setEnroll(true)}
+      onNewWorkspace={() => setNewWorkspace(true)}
+      referenceTime={referenceTime}
+      search={search}
     />
   );
   return (
@@ -435,9 +745,7 @@ function DashboardContent() {
         cluster={search.cluster}
         clusters={allViews}
         connection={connection}
-        onCluster={(cluster) =>
-          update({ ...scopeReset, cluster, settingsCluster: undefined })
-        }
+        onCluster={(cluster) => update(clusterFilterPatch(cluster))}
         onFreeze={(at) => update({ at })}
         onNavigate={(view) => go(view)}
         onNewWorkspace={() => setNewWorkspace(true)}
@@ -448,55 +756,21 @@ function DashboardContent() {
         workspaceName={workspaceName}
         workspaces={workspaces.data ?? []}
       />
-      {canvas ? (
-        <main className="relative flex min-h-0 flex-1 flex-col">
-          {state}
-          {!loading && (snapshot.data || !snapshot.isError) && (
-            <PageBody
-              data={data}
-              navigation={dashboardNavigation}
-              onConnect={() => setEnroll(true)}
-              onNewWorkspace={() => setNewWorkspace(true)}
-              referenceTime={referenceTime}
-              search={search}
-            />
-          )}
+      {search.view === "architecture" ? (
+        <main className="relative flex min-h-0 flex-1 flex-col outline-none">
+          {content}
         </main>
       ) : (
-        <main className="mx-auto w-full min-w-0 max-w-[1600px] space-y-6 p-4 md:p-6">
+        <main className="mx-auto w-full min-w-0 max-w-[1600px] space-y-6 p-4 outline-none md:p-6">
           <PageHeader
             actions={
-              <>
-                {(search.view === "observability" ||
-                  search.view === "activity") && (
-                  <>
-                    {/* The previous range's changes stay on screen while the
-                        new range loads, and this says so. */}
-                    <span
-                      className="text-muted-foreground text-xs"
-                      role="status"
-                    >
-                      {data.events.isPlaceholderData ? "Updating…" : ""}
-                    </span>
-                    <RangeSelect
-                      onRange={(range) => update({ range }, true)}
-                      range={search.range}
-                    />
-                  </>
-                )}
-                {search.view === "settings" && (
-                  <Button
-                    className="h-8"
-                    disabled={frozen || snapshot.isError}
-                    onClick={() => setEnroll(true)}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <Plus className="size-3.5" />
-                    Connect cluster
-                  </Button>
-                )}
-              </>
+              <PageActions
+                connectDisabled={frozen || snapshot.isError}
+                onConnect={() => setEnroll(true)}
+                onRange={(range) => update({ range }, true)}
+                search={search}
+                updating={data.events.isPlaceholderData}
+              />
             }
             description={
               <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -507,17 +781,7 @@ function DashboardContent() {
             }
             title={pageTitles[search.view] ?? "Observability"}
           />
-          {state}
-          {!loading && (snapshot.data || !snapshot.isError) && (
-            <PageBody
-              data={data}
-              navigation={dashboardNavigation}
-              onConnect={() => setEnroll(true)}
-              onNewWorkspace={() => setNewWorkspace(true)}
-              referenceTime={referenceTime}
-              search={search}
-            />
-          )}
+          {content}
         </main>
       )}
       <Dialog onOpenChange={setNewWorkspace} open={newWorkspace}>
@@ -560,49 +824,44 @@ function DashboardContent() {
           />
         </DialogContent>
       </Dialog>
+      <ObservationTime
+        at={search.at}
+        finalFocus={chooser.finalFocus}
+        onOpenChange={chooser.setOpen}
+        onSelect={(at) => {
+          chooser.choose();
+          update({ at });
+        }}
+        open={chooser.open}
+        trigger={false}
+      />
       <ResourceInspector
         at={search.at}
         connection={connection}
-        hubClock={
-          snapshot.data && {
-            serverTime: snapshot.data.serverTime,
-            receivedAt: snapshot.dataUpdatedAt,
-          }
-        }
+        hubClock={hubClock}
         inspected={inspected}
+        onBack={dashboardNavigation.onBack}
         onClose={closeInspector}
         onCollection={openSettings}
         onInspect={inspect}
-        onRange={(range) => update({ range }, true)}
+        onPanel={dashboardNavigation.onPanel}
+        onRange={(range) =>
+          update({ range }, { replace: true, resetScroll: false })
+        }
+        panel={search.panel}
         range={search.range}
         referenceTime={referenceTime}
         scope={search.workspace}
+        search={search}
       />
-      {/* Absence is only claimed against a loaded snapshot; while the hub is
-          unreachable the link stays in the URL and Retry reopens it. */}
       {search.resource && !inspected && snapshot.isSuccess && (
-        <Dialog
-          onOpenChange={(open) => {
-            if (!open) {
-              closeInspector();
-            }
-          }}
-          open
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Resource not in this observation</DialogTitle>
-              <DialogDescription>
-                The linked resource is absent from the selected snapshot. It may
-                have been deleted or replaced, or historical coverage may be
-                incomplete.
-              </DialogDescription>
-            </DialogHeader>
-            <Button onClick={closeInspector} variant="outline">
-              Close
-            </Button>
-          </DialogContent>
-        </Dialog>
+        <MissingResource
+          hubClock={hubClock}
+          linkedAt={search.linkedAt}
+          onClose={closeInspector}
+          onLive={() => update({ at: undefined })}
+          onOpenSaved={(at) => update({ at, linkedAt: undefined })}
+        />
       )}
     </div>
   );

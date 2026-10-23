@@ -1,0 +1,112 @@
+import type { ClusterView } from "@jood-monitor/api-client";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import { clusterCrumb } from "../lib/collection-state";
+import { settleLiveFocus } from "./collection-captured";
+import { ClusterCrumbRow, keepFocusOnReturn } from "./project-bar";
+
+// The project bar's words and focus for keyboard, screen-reader and
+// colour-blind users. Synthetic clusters and times only. The bar's
+// staged-changes badge reaches the hub's server functions, which a unit
+// test cannot load; these parts use none of them.
+vi.mock("../functions/clusters", () => ({}));
+vi.mock("../hooks/api/clusters", () => ({}));
+
+const selected = Date.parse("2026-10-23T14:22:13Z");
+const saved = {
+  cluster: { environment: "synthetic fixture" },
+  inventory: { sourceTime: "2026-10-23T14:14:19Z" },
+} as unknown as ClusterView;
+
+function row(now: number) {
+  return renderToStaticMarkup(
+    createElement(ClusterCrumbRow, {
+      name: "Synthetic history (staged)",
+      crumb: clusterCrumb(saved, now, true, "UTC"),
+    })
+  );
+}
+
+// The class list of the span whose text starts with `text`.
+function classOf(markup: string, text: string) {
+  return new RegExp(`<span class="([^"]*)">${text}`).exec(markup)?.[1];
+}
+
+describe("cluster crumb rows", () => {
+  it("keeps a stale saved inventory's words in sight, never the dot alone", () => {
+    const stale = row(selected);
+    expect(stale).toContain("bg-warning");
+    // The state leads the line, and the line wraps within the menu rather
+    // than cutting the state or the saved time off with an ellipsis.
+    const line = classOf(stale, "Stale at this time");
+    expect(line).toContain("break-words");
+    expect(line).not.toContain("truncate");
+    const text = stale.replace(/<[^>]+>/g, "|");
+    expect(text).toContain(
+      "|Stale at this time · synthetic fixture · saved inventory Oct 23, 14:14:19 UTC|"
+    );
+    expect(text.indexOf("Stale")).toBeLessThan(text.indexOf("14:14:19"));
+    // A long name still truncates on its own line.
+    expect(classOf(stale, "Synthetic history")).toBe("block truncate");
+  });
+
+  it("wraps a fresh saved inventory's time too", () => {
+    // Selected 41 s after the inventory was saved.
+    const fresh = row(Date.parse("2026-10-23T14:15:00Z"));
+    expect(fresh).toContain("bg-info");
+    expect(fresh).not.toContain("Stale");
+    expect(classOf(fresh, "synthetic fixture · saved inventory")).toContain(
+      "break-words"
+    );
+  });
+});
+
+// Stand-ins for the page and the Settings tabs: the unit tests have no DOM.
+function page() {
+  const body = {};
+  const tab = { focus: vi.fn() };
+  const document = {
+    body,
+    activeElement: body as unknown,
+    querySelector: vi.fn(() => null),
+  };
+  const sections = { querySelector: vi.fn(() => tab) };
+  return {
+    tab,
+    // The live Settings page's settle step, after the banner unmounted.
+    settle: () =>
+      settleLiveFocus(
+        false,
+        sections as unknown as HTMLElement,
+        document as unknown as Document
+      ),
+  };
+}
+
+describe("the frozen banner's Return to live", () => {
+  it("moves focus to the live toggle before the banner goes", () => {
+    const toggle = { focus: vi.fn() };
+    keepFocusOnReturn("architecture", toggle);
+    expect(toggle.focus).toHaveBeenCalledTimes(1);
+    // No Settings hand-off is left waiting for a later Settings page.
+    const { tab, settle } = page();
+    settle();
+    expect(tab.focus).not.toHaveBeenCalled();
+  });
+
+  it("hands Settings to its selected section, never also the toggle", () => {
+    const toggle = { focus: vi.fn() };
+    keepFocusOnReturn("settings", toggle);
+    // Focusing the toggle would cancel the hand-off, which moves only focus
+    // lost to the body.
+    expect(toggle.focus).not.toHaveBeenCalled();
+    const { tab, settle } = page();
+    settle();
+    expect(tab.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("tolerates a toggle not yet mounted", () => {
+    expect(() => keepFocusOnReturn("overview", null)).not.toThrow();
+  });
+});

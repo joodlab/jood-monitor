@@ -2,7 +2,7 @@ import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import { attentionItems, attentionSummary } from "./attention";
 import { cardStatus, podDetail, toneOf } from "./canvas-cards";
-import { summarize } from "./infrastructure";
+import { routedServiceWithoutEndpoints, summarize } from "./infrastructure";
 import {
   activatedCard,
   type CardState,
@@ -318,7 +318,7 @@ describe("problems-only topology", () => {
       stale: false,
     });
     expect(status.tone).toBe("neutral");
-    expect(status.text).toBe("2/2 ready · 1 finished with failures");
+    expect(status.text).toBe("2/2 ready · 1 finished (1 failed)");
   });
 
   it("seeds a ready node whose network is unavailable", () => {
@@ -379,6 +379,7 @@ describe("problems-only topology", () => {
     view.inventory.edges.push(edge("report-2", "cart-rs", "owned_by"));
     const graph = serviceGraph([view], { ...options, problems: true });
     expect(graph.items).toHaveLength(0);
+    expect(graph.finished).toBe(3);
     expect(graph.finishedFailed).toBe(2);
     expect(
       emptyTopology(
@@ -395,6 +396,7 @@ describe("problems-only topology", () => {
     expect(live.finishedFailed).toBe(2);
     // Outside Problems only nothing is left out, so nothing is counted.
     expect(serviceGraph([view], options).finishedFailed).toBeUndefined();
+    expect(serviceGraph([view], options).finished).toBeUndefined();
   });
 
   it("keeps a pod inside its start-up grace out of the problem view", () => {
@@ -820,6 +822,167 @@ describe("standalone pods", () => {
     expect(
       uids(expanded.items.filter((item) => item.parent === "synthetic:cart"))
     ).toEqual(["cart-1", "cart-2"]);
+  });
+});
+
+describe("bare-pod namespaces", () => {
+  // A synthetic batch namespace: one Service that selects nothing beside ten
+  // finished Job pods that no inventoried workload owns.
+  function batchFixture() {
+    const view = fixture();
+    view.inventory.entities.push(
+      entity("ns-batch", "Namespace", { name: "batch", namespace: undefined }),
+      entity("batch-svc", "Service", { namespace: "batch" }),
+      ...Array.from({ length: 10 }, (_, index) =>
+        pod(`job-${index}`, {
+          namespace: "batch",
+          status: "Succeeded",
+          ready: 0,
+        })
+      )
+    );
+    return view;
+  }
+
+  it("packs standalone pods as chip columns beside the other cards", () => {
+    const graph = serviceGraph([batchFixture()], {
+      ...options,
+      namespace: "batch",
+    });
+    expect(graph.items).toHaveLength(11);
+    const pods = graph.items.filter((item) => item.entity.kind === "Pod");
+    expect(pods.every((item) => item.lane === 2 && !item.parent)).toBe(true);
+    const positions = stablePositions(graph.items, {}, graph.links);
+    const boxes = graph.items.map((item) => box(positions[item.id], item));
+    const left = Math.min(...boxes.map((item) => item.x));
+    const top = Math.min(...boxes.map((item) => item.y));
+    const right = Math.max(...boxes.map((item) => item.x + item.width));
+    const bottom = Math.max(...boxes.map((item) => item.y + item.height));
+    // One Service card, then two columns of six and four pod chips.
+    expect(right - left).toBeLessThanOrEqual(844);
+    expect(bottom - top).toBeLessThanOrEqual(516);
+    expect(new Set(pods.map((item) => positions[item.id].x)).size).toBe(2);
+    for (const [index, a] of boxes.entries()) {
+      for (const b of boxes.slice(index + 1)) {
+        expect(overlaps(a, b)).toBe(false);
+      }
+    }
+  });
+
+  it("keeps standalone pods right of the workload cards", () => {
+    const view = batchFixture();
+    for (const item of view.inventory.entities) {
+      if (item.namespace === "batch") {
+        item.namespace = "shop";
+      }
+    }
+    const graph = serviceGraph([view], options);
+    const positions = stablePositions(graph.items, {}, graph.links);
+    const cards = graph.items.filter((item) => item.entity.kind !== "Pod");
+    const edge = Math.max(
+      ...cards.map((item) => positions[item.id].x + cardSize.width)
+    );
+    for (const item of graph.items.filter(
+      (entry) => entry.entity.kind === "Pod"
+    )) {
+      expect(positions[item.id].x).toBeGreaterThan(edge);
+    }
+  });
+});
+
+describe("routed Services without endpoint pods", () => {
+  // An Ingress routes to api-svc, whose controller-managed EndpointSlice
+  // lists no pod.
+  function routedEmpty() {
+    const view = healthyFixture();
+    view.inventory.entities.push(
+      entity("api-in", "Ingress", { hosts: ["api.synthetic.test"] }),
+      entity("api-svc", "Service", { serviceType: "ClusterIP" }),
+      entity("api-slice", "EndpointSlice")
+    );
+    view.inventory.edges.push(
+      edge("api-in", "api-svc", "routes_to"),
+      edge("api-slice", "api-svc", "owned_by")
+    );
+    return view;
+  }
+  const problem = (view: ClusterView) =>
+    itemProblem({ view, entity: find(view, "api-svc") }, now);
+
+  it("flags a routed selector Service whose EndpointSlice lists no pod", () => {
+    const view = routedEmpty();
+    expect(problem(view)).toBe(true);
+    const graph = serviceGraph([view], { ...options, problems: true });
+    expect(uids(graph.items)).toEqual(["api-in", "api-svc"]);
+    const map = serviceGraph([view], { ...options, namespace: "all" });
+    expect(itemProblem(map.items[0], now)).toBe(true);
+    // Routed Services with endpoint pods stay quiet.
+    expect(itemProblem({ view, entity: find(view, "cart-svc") }, now)).toBe(
+      false
+    );
+  });
+
+  it("is not a problem while endpoint pods exist, ready or not", () => {
+    const view = routedEmpty();
+    view.inventory.entities.push(pod("api-1", { ready: 0 }));
+    view.inventory.edges.push(edge("api-svc", "api-1", "has_endpoint"));
+    expect(problem(view)).toBe(false);
+  });
+
+  it("leaves ExternalName, manual-endpoint and unrouted Services alone", () => {
+    const external = routedEmpty();
+    find(external, "api-svc").serviceType = "ExternalName";
+    expect(problem(external)).toBe(false);
+    // No EndpointSlice owned by the Service: endpoints managed by hand.
+    const manual = routedEmpty();
+    manual.inventory.edges = manual.inventory.edges.filter(
+      (item) => item.source !== "api-slice"
+    );
+    expect(problem(manual)).toBe(false);
+    // The API server's own Service: no Ingress routes to it.
+    const unrouted = routedEmpty();
+    unrouted.inventory.entities.push(
+      entity("kubernetes", "Service", { namespace: "default" }),
+      entity("kubernetes-slice", "EndpointSlice", { namespace: "default" })
+    );
+    unrouted.inventory.edges.push(
+      edge("kubernetes-slice", "kubernetes", "owned_by")
+    );
+    expect(
+      itemProblem({ view: unrouted, entity: find(unrouted, "kubernetes") }, now)
+    ).toBe(false);
+  });
+
+  it("skips selector-only clusters, where endpoints are not observed", () => {
+    const view = routedEmpty();
+    view.inventory.capabilities.push("endpointslices_unavailable");
+    expect(problem(view)).toBe(false);
+  });
+
+  it("judges stale live inventory as unknown and saved observations as captured", () => {
+    const stale = routedEmpty();
+    stale.inventory.sourceTime = old;
+    expect(problem(stale)).toBe(false);
+    // A saved observation, recognised by its capture record.
+    stale.observationMetadataAvailable = { profile: true, heartbeat: true };
+    expect(problem(stale)).toBe(true);
+    const frozen = routedEmpty();
+    frozen.inventory.sourceTime = old;
+    expect(
+      routedServiceWithoutEndpoints(frozen, find(frozen, "api-svc"), now, true)
+    ).toBe(true);
+  });
+});
+
+describe("hostname search", () => {
+  it("finds an Ingress by a configured host on the canvas", () => {
+    const graph = serviceGraph([fixture()], {
+      ...options,
+      search: "CART.synthetic.test",
+    });
+    expect(uids(graph.items)).toContain("cart-in");
+    expect(uids(graph.items)).toContain("cart-svc");
+    expect(uids(graph.items)).not.toContain("checkout-in");
   });
 });
 

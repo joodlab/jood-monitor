@@ -158,6 +158,9 @@ export function requestError(error: unknown): RequestError {
 }
 
 export interface ReadError {
+  // Another saved-observation time can succeed, so the page offers a picker
+  // where Retry would be.
+  chooseTime?: true;
   detail: string;
   // Repeating the same request can succeed; otherwise Retry is hidden.
   retryable: boolean;
@@ -172,25 +175,27 @@ const readErrors: [string, ReadError][] = [
     "snapshot outside retention",
     {
       title: `This time is outside the ${INVENTORY_RETENTION_DAYS}-day retention`,
-      detail: `Saved inventory and events cover the last ${INVENTORY_RETENTION_DAYS} days. Choose a time within them, or use Return to live above.`,
+      detail: `Saved inventory and events cover the last ${INVENTORY_RETENTION_DAYS} days. Choose a time within them, or return to live.`,
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
     "invalid timestamp",
     {
       title: "This link's time could not be read",
-      detail:
-        "Choose a saved observation time instead, or use Return to live above.",
+      detail: "Choose a saved observation time instead, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
     "precision boundary too broad",
     {
       title: "The saved inventory at this time could not be resolved",
-      detail: "Choose a nearby time, or use Return to live above.",
+      detail: "Choose a nearby time, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   // The hub caps the current series it loads per cluster, live or frozen,
@@ -210,8 +215,9 @@ const readErrors: [string, ReadError][] = [
     "query too broad",
     {
       title: "The saved samples at this time are too many to load",
-      detail: "Choose another time, or use Return to live above.",
+      detail: "Choose another time, or return to live.",
       retryable: false,
+      chooseTime: true,
     },
   ],
   [
@@ -271,22 +277,46 @@ const rawRetention: ReadError = {
   retryable: false,
 };
 
+// The shortest history range the range control offers, in hours.
+const SHORTEST_RANGE = "1";
+
 // Why a history chart could not load. Frozen, the hub's 7-day refusal (or
 // the dashboard's own, raised before asking) means the saved time is past
 // the raw window. Live it can only mean the clocks disagreed, which a retry
-// may outlast.
-export function historyError(error: unknown, frozen: boolean): ReadError {
+// may outlast. `range` is the chart's range in hours, when the caller knows
+// it; `period` marks a Diagnostic period read on its own, which has no
+// shorter window to offer.
+export function historyError(
+  error: unknown,
+  frozen: boolean,
+  range?: string,
+  { period = false }: { period?: boolean } = {}
+): ReadError {
   const message = errorText(error);
   if (frozen && message.includes(rawRetentionMessage)) {
     return rawRetention;
   }
-  // History is already one entity and metric; only a shorter window helps.
-  if (message.includes("query too broad")) {
+  if (period && message.includes("query too broad")) {
     return {
-      title: "This window holds too many samples to load",
-      detail: "Choose a shorter range.",
+      title: "This Diagnostic period holds too many samples to load",
+      detail:
+        "Even on its own, with a minute either side, it holds more samples than the hub reads in one request, so it cannot be shown. The full range leaves it blank.",
       retryable: false,
     };
   }
-  return readError(error, "History unavailable");
+  // History is already one entity and metric, and the read is refused whole;
+  // only a shorter window can help, unless this is already the shortest.
+  if (message.includes("query too broad")) {
+    return {
+      title: "This window holds too many samples to load",
+      detail:
+        range === SHORTEST_RANGE
+          ? "One hour is already the shortest range, and this window still holds more samples than the hub reads in one request. Longer or denser views need summaries, which are not available yet."
+          : "Choose a shorter range.",
+      retryable: false,
+    };
+  }
+  // A chart has no time picker of its own; the page's banner offers one.
+  const { title, detail, retryable } = readError(error, "History unavailable");
+  return { title, detail, retryable };
 }

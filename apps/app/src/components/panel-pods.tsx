@@ -14,6 +14,14 @@ import {
   readinessLabel,
 } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
+import {
+  memoryShareText,
+  type NodeRequestShares,
+  nodeRequestShares,
+  rankByShare,
+  requestLine,
+  requestTotalText,
+} from "../lib/pod-requests";
 import { type Coverage, podGroups } from "./inspector-model";
 import { CoverageNote } from "./inspector-sections";
 import { StatusBadge } from "./resource-status";
@@ -25,9 +33,33 @@ type Inspect = (view: ClusterView, entity: Entity) => void;
 // needing attention are always listed in full.
 const ROW_LIMIT = 50;
 
+// The Pods sections. On a node, live pods are ranked by their share of the
+// node's memory reserved by configured requests; finished pods reserve
+// nothing and keep their order.
+function podSections(
+  pods: readonly Entity[],
+  now: number,
+  shares?: NodeRequestShares
+) {
+  const groups = podGroups(pods, now);
+  const rank = (list: Entity[]) =>
+    shares ? rankByShare(list, shares.memory) : list;
+  return [
+    {
+      id: "attention",
+      title: "Needs attention",
+      pods: rank(groups.attention),
+      capped: false,
+    },
+    { id: "active", title: "Running", pods: rank(groups.active), capped: true },
+    { id: "finished", title: "Finished", pods: groups.finished, capped: true },
+  ];
+}
+
 // Member pods in the role of Railway's Deployments list: one row per pod
-// with its status pill, where it runs, restarts, age and current usage.
-// Problems lead, then running pods, then finished history.
+// with its status pill, where it runs, restarts, age, configured requests
+// and current usage. Problems lead, then running pods, then finished
+// history.
 export function PodsTab({
   view,
   entity,
@@ -61,20 +93,17 @@ export function PodsTab({
       </p>
     );
   }
-  const groups = podGroups(pods, now);
-  const sections = [
-    {
-      id: "attention",
-      title: "Needs attention",
-      pods: groups.attention,
-      capped: false,
-    },
-    { id: "active", title: "Running", pods: groups.active, capped: true },
-    { id: "finished", title: "Finished", pods: groups.finished, capped: true },
-  ];
+  const shares =
+    entity.kind === "Node" ? nodeRequestShares(view, entity) : undefined;
+  const sections = podSections(pods, now, shares);
   return (
     <div className="space-y-6">
       <div className="space-y-2">
+        {shares && (
+          <p className="text-muted-foreground text-xs tabular-nums">
+            {requestTotalText(shares.totals, stale)}
+          </p>
+        )}
         <p className="text-muted-foreground text-sm">
           <span className="font-medium text-foreground">
             {pods.length} pod{pods.length === 1 ? "" : "s"}
@@ -104,6 +133,7 @@ export function PodsTab({
               now={now}
               onInspect={onInspect}
               pods={section.pods}
+              shares={shares}
               stale={stale}
               subject={entity}
               title={section.title}
@@ -125,6 +155,7 @@ function PodSection({
   now,
   stale,
   frozen,
+  shares,
   onInspect,
 }: {
   id: string;
@@ -136,6 +167,7 @@ function PodSection({
   now: number;
   stale: boolean;
   frozen: boolean;
+  shares?: NodeRequestShares;
   onInspect: Inspect;
 }) {
   const [all, setAll] = useState(false);
@@ -166,6 +198,7 @@ function PodSection({
             now={now}
             onInspect={onInspect}
             pod={pod}
+            shares={shares}
             stale={stale}
             subject={subject}
             view={view}
@@ -233,6 +266,32 @@ function placementText(view: ClusterView, pod: Entity, subject: Entity) {
   return pod.nodeUid ? "on an unlisted node" : "not scheduled on a node";
 }
 
+// A live pod's configured requests, in neutral text: on a node, the memory
+// request and its share of allocatable; elsewhere, absolute requests only.
+// Finished pods reserve nothing, so they show none.
+function PodRequests({
+  pod,
+  shares,
+}: {
+  pod: Entity;
+  shares?: NodeRequestShares;
+}) {
+  if (isFinished(pod)) {
+    return null;
+  }
+  const share = shares?.memory.get(pod.uid);
+  const text = share ? memoryShareText(share) : requestLine(pod);
+  return (
+    <span className="block text-muted-foreground text-xs tabular-nums">
+      <span aria-hidden>{text}</span>
+      <span className="sr-only">
+        {share ? text.replace(" req ", " memory request ") : text}, configured,
+        not usage
+      </span>
+    </span>
+  );
+}
+
 function PodRow({
   view,
   pod,
@@ -240,6 +299,7 @@ function PodRow({
   now,
   stale,
   frozen,
+  shares,
   onInspect,
 }: {
   view: ClusterView;
@@ -248,6 +308,7 @@ function PodRow({
   now: number;
   stale: boolean;
   frozen: boolean;
+  shares?: NodeRequestShares;
   onInspect: Inspect;
 }) {
   const usage = podUsage(view, pod, now, frozen);
@@ -287,6 +348,7 @@ function PodRow({
               created <TimeText label="Created" value={pod.createdAt} />
             </span>
           </span>
+          <PodRequests pod={pod} shares={shares} />
         </span>
         <PodUsage usage={usage} />
         <ChevronRight

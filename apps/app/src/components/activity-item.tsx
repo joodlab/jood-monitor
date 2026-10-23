@@ -12,7 +12,7 @@ import {
   ServerPlus,
 } from "lucide-react";
 import type { EventCategory } from "../lib/events";
-import type { ActivityEntry } from "./activity-model";
+import { type ActivityEntry, listedChanges } from "./activity-model";
 import { TimeText } from "./time";
 
 // Railway-style activity rows: an icon in a circle, the subject in bold,
@@ -33,7 +33,7 @@ const categoryIcons: Record<EventCategory, LucideIcon> = {
 };
 
 function iconFor(event: Lifecycle, entry: ActivityEntry) {
-  if (entry.summary.rolloutStep) {
+  if (entry.summary.replicaSetStep) {
     return Layers;
   }
   return kindIcons[event.kind] ?? categoryIcons[entry.summary.category];
@@ -72,6 +72,7 @@ export function ActivityCompactItem({
   clusterName?: string;
 }) {
   const { headline, summary, event } = entry;
+  const changes = listedChanges(entry);
   return (
     <li className="flex gap-3 px-4 py-3 sm:px-5">
       <ActivityIcon entry={entry} />
@@ -87,9 +88,9 @@ export function ActivityCompactItem({
         {headline.action && (
           <p className="mt-0.5 text-sm leading-snug">{headline.action}</p>
         )}
-        {summary.changes.length > 0 && (
+        {changes.length > 0 && (
           <p className="mt-0.5 truncate text-muted-foreground text-xs">
-            {summary.changes
+            {changes
               .map(
                 (change) => `${change.label} ${change.before} → ${change.after}`
               )
@@ -97,10 +98,22 @@ export function ActivityCompactItem({
           </p>
         )}
         <p className="mt-1 text-muted-foreground text-xs">
-          <TimeText label="Observed" value={event.observedAt} />
-          {summary.category === "automation" ? " · reported by automation" : ""}
+          <TimeText label={summary.timeLabel} value={event.observedAt} />
+          {summary.subjectCreatedAt && (
+            <>
+              {" · created "}
+              <TimeText label="Created" value={summary.subjectCreatedAt} />
+            </>
+          )}
           {clusterName && ` · ${clusterName}`}
         </p>
+        {/* Compact rows have no provenance line, so a reported row carries
+            its attribution here; observed rows need no extra words. */}
+        {summary.evidence === "reported" && (
+          <p className="mt-0.5 text-muted-foreground text-xs">
+            {summary.attribution}
+          </p>
+        )}
       </div>
     </li>
   );

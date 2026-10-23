@@ -6,12 +6,24 @@ import {
   SheetTitle,
 } from "@jood-monitor/ui/sheet";
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
-import { useState } from "react";
+import { type Ref, useState } from "react";
 import { liveNodeProblem } from "../lib/attention";
+import { summarize } from "../lib/infrastructure";
 import { inventoryFreshness } from "../lib/metrics";
-import { CopyButton } from "./inspector-copy";
+import { serviceStatusDetail } from "../lib/resource-table";
+import type { HubClock } from "../lib/time";
+import type { PanelTab, SearchState } from "../schemas/monitor";
+import { CopyButton, CopyLinkMenu } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
-import { KindTile, StatusBadge } from "./resource-status";
+import { KindTile, StatusBadge, type StatusDetail } from "./resource-status";
+
+// What the link menu needs: the page's search, the tab on screen and the
+// hub clock that bounds a pinned moment.
+export interface LinkContext {
+  hubClock?: HubClock;
+  panel: PanelTab;
+  search: SearchState;
+}
 
 // The trail of recently inspected resources for this open panel. It resets
 // when the panel closes so a new inspection starts a new trail.
@@ -36,24 +48,59 @@ export function useInspectionTrail(
 const iconButton =
   "size-9 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
+// The header badge's verdict, as on the Resources row that opens it: nodes
+// follow the attention rule (memory near full included), and a Service
+// follows the shared Service rule, naming its reason (routed with no
+// endpoint pods, or endpoint pods not all ready). Every other kind keeps the
+// badge's own rule.
+export function headerStatus(
+  view: ClusterView,
+  entity: Entity,
+  referenceTime: number
+): { detail?: StatusDetail; problem?: boolean } {
+  if (entity.kind === "Node") {
+    return { problem: liveNodeProblem(view, entity, referenceTime) };
+  }
+  if (entity.kind === "Service") {
+    const detail = serviceStatusDetail(
+      view,
+      entity,
+      summarize(view, entity, referenceTime),
+      referenceTime
+    );
+    return detail ? { detail, problem: true } : {};
+  }
+  return {};
+}
+
 // Railway's service header: a large kind tile and name, the status pill and
-// where the resource lives, with copy actions and close on the right.
+// where the resource lives, with copy actions and close on the right. Back
+// follows browser history when the previous entry is that resource (see
+// panel-history).
 export function InspectorHeader({
   view,
   entity,
   trail,
   referenceTime,
   onInspect,
+  onBack,
+  titleRef,
+  link,
 }: {
   view: ClusterView;
   entity: Entity;
   trail: readonly Crumb[];
   referenceTime: number;
   onInspect: (view: ClusterView, entity: Entity) => void;
+  onBack: (crumb: Crumb) => void;
+  // The title takes focus when a switch from inside the panel would lose it.
+  titleRef?: Ref<HTMLHeadingElement>;
+  link: LinkContext;
 }) {
   const back = trail.at(-2);
   const stale =
     inventoryFreshness(view.inventory.sourceTime, referenceTime) !== "fresh";
+  const status = headerStatus(view, entity, referenceTime);
   return (
     <header className="space-y-3 px-4 pt-3 sm:px-6 sm:pt-4">
       {back && (
@@ -61,7 +108,7 @@ export function InspectorHeader({
           <Button
             aria-label={`Back to ${back.entity.kind} ${back.entity.name}`}
             className="h-9 shrink-0 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
-            onClick={() => onInspect(back.view, back.entity)}
+            onClick={() => onBack(back)}
             size="sm"
             title={`Back to ${back.entity.name}`}
             variant="ghost"
@@ -79,18 +126,18 @@ export function InspectorHeader({
           kind={entity.kind}
         />
         <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-          <SheetTitle className="font-semibold text-xl leading-tight tracking-tight [overflow-wrap:anywhere] sm:text-2xl">
+          <SheetTitle
+            className="font-semibold text-xl leading-tight tracking-tight outline-none [overflow-wrap:anywhere] sm:text-2xl"
+            ref={titleRef}
+            tabIndex={-1}
+          >
             {entity.name}
           </SheetTitle>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <StatusBadge
+              detail={status.detail}
               entity={entity}
-              // Nodes follow the attention rule, memory near full included.
-              problem={
-                entity.kind === "Node"
-                  ? liveNodeProblem(view, entity, referenceTime)
-                  : undefined
-              }
+              problem={status.problem}
               stale={stale}
             />
             <SheetDescription className="min-w-0 text-xs">
@@ -125,11 +172,12 @@ export function InspectorHeader({
             label={`Copy name ${entity.name}`}
             value={entity.name}
           />
-          <CopyButton
+          <CopyLinkMenu
             className={iconButton}
-            label="Copy link to this resource"
-            link
-            value={() => window.location.href}
+            hubClock={link.hubClock}
+            panel={link.panel}
+            search={link.search}
+            sourceTime={view.inventory.sourceTime}
           />
           <SheetClose
             render={

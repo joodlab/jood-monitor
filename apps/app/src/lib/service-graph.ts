@@ -3,14 +3,16 @@ import { liveNodeProblem, livePodProblem } from "./attention";
 import {
   filterResources,
   hasProblem,
+  isFinished,
   isSystem,
   isSystemNamespace,
+  matchesText,
   owningWorkload,
   podPhase,
   type ResourceItem,
   relatedPods,
   resourceId,
-  resourceStatus,
+  routedServiceWithoutEndpoints,
   workloadKinds,
 } from "./infrastructure";
 
@@ -44,8 +46,10 @@ export interface ServiceGraphOptions {
   showSystem: boolean;
 }
 export interface ServiceGraph {
-  // Problems only: finished pods that failed, in scope and matching, left out
-  // as history rather than drawn as problems. Absent outside Problems only.
+  // Problems only: finished pods, in scope and matching, left out as history
+  // rather than drawn as problems, and how many of them failed. Absent
+  // outside Problems only.
+  finished?: number;
   finishedFailed?: number;
   grouped: boolean;
   // Cards this filter would draw from hidden system namespaces: matching or
@@ -193,13 +197,17 @@ export function graphSubject(
 // A problem now, as the attention model's actionable items: pods use its live
 // rule (start-up grace; finished pods, failed ones included, are history),
 // nodes its node rule (conditions and memory near full on a fresh sample),
-// every other kind its reported status.
+// Services its routed-without-endpoints rule, every other kind its reported
+// status.
 function liveProblem(view: ClusterView, entity: Entity, now: number) {
   if (entity.kind === "Pod") {
     return livePodProblem(entity, now);
   }
   if (entity.kind === "Node") {
     return liveNodeProblem(view, entity, now);
+  }
+  if (entity.kind === "Service") {
+    return routedServiceWithoutEndpoints(view, entity, now);
   }
   return hasProblem(entity);
 }
@@ -220,15 +228,6 @@ export function itemProblem(item: ResourceItem, now: number) {
     liveProblem(view, entity, now) ||
     (workloadKinds.has(entity.kind) &&
       relatedPods(view, entity).some((pod) => livePodProblem(pod, now)))
-  );
-}
-
-function matches(entity: Entity, search: string) {
-  return (
-    !search ||
-    `${entity.name} ${entity.namespace ?? ""} ${entity.kind} ${resourceStatus(entity)}`
-      .toLowerCase()
-      .includes(search.toLowerCase())
   );
 }
 
@@ -405,15 +404,18 @@ function seedItems(
 ) {
   const seeds = new Set<string>();
   let unshown = 0;
+  let finished = 0;
   let finishedFailed = 0;
   for (const { view, entity } of scoped) {
-    if (!matches(entity, options.search)) {
+    // The Resources table's text match, an Ingress's host names included.
+    if (!matchesText(entity, options.search)) {
       continue;
     }
     if (options.problems && !liveProblem(view, entity, now)) {
-      // Finished pods that failed are history: counted, never a problem.
-      if (entity.kind === "Pod" && podPhase(entity) === "Failed") {
-        finishedFailed++;
+      // Finished pods are history: counted, never a problem.
+      if (entity.kind === "Pod" && isFinished(entity)) {
+        finished++;
+        finishedFailed += Number(podPhase(entity) === "Failed");
       }
       continue;
     }
@@ -424,7 +426,7 @@ function seedItems(
       unshown++;
     }
   }
-  return { seeds, unshown, finishedFailed };
+  return { seeds, unshown, finished, finishedFailed };
 }
 
 // Pods with no owning workload that are not an endpoint of a Service in view
@@ -536,7 +538,7 @@ function selectIds(
   if (!(options.search || options.problems)) {
     return { selected: new Set(candidates.keys()), unshown: 0 };
   }
-  const { seeds, unshown, finishedFailed } = seedItems(
+  const { seeds, unshown, finished, finishedFailed } = seedItems(
     scoped,
     options,
     options.now ?? Date.now()
@@ -546,6 +548,7 @@ function selectIds(
       ? problemContext(seeds, links)
       : searchContext(seeds, links),
     unshown,
+    finished: options.problems ? finished : undefined,
     finishedFailed: options.problems ? finishedFailed : undefined,
   };
 }
@@ -584,7 +587,7 @@ export function serviceGraph(
     }
   }
   const links = structuralLinks(views, [...candidates.values()]);
-  const { selected, unshown, finishedFailed } = selectIds(
+  const { selected, unshown, finished, finishedFailed } = selectIds(
     scoped,
     links,
     candidates,
@@ -622,6 +625,7 @@ export function serviceGraph(
     links: links.filter((link) => ids.has(link.source) && ids.has(link.target)),
     grouped: false,
     unshown,
+    finished,
     finishedFailed,
     hiddenSystem:
       bounded.length || !focused ? 0 : hiddenSystemSeeds(views, options),
@@ -1120,14 +1124,7 @@ function gridPositions(items: GraphItem[]) {
   );
 }
 
-function initialPositions(
-  items: GraphItem[],
-  links: GraphLink[]
-): Record<string, Point> {
-  if (items.length && items.every((item) => item.entity.kind === "Namespace")) {
-    return gridPositions(items);
-  }
-  const placed = items.filter((item) => !item.parent);
+function cardPositions(placed: GraphItem[], links: GraphLink[]) {
   const neighbours = adjacency(placed, links);
   const groups = components(placed, neighbours);
   const blocks = [
@@ -1149,6 +1146,47 @@ function initialPositions(
     }
   }
   return positions;
+}
+
+// A pod with no workload or Service in view, drawn on its own. It keeps the
+// workload lane for ordering but renders as a pod chip.
+function standaloneChip(item: GraphItem) {
+  return (
+    item.entity.kind === "Pod" && item.lane === workloadLane && !item.parent
+  );
+}
+
+// Standalone pods pack as chips in columns of chipsPerColumn, the geometry
+// expanded pods use, right of every other card. Spread one per loose row
+// they made a bare-pod namespace so wide that its fit zoom was unreadable.
+function chipPositions(chips: GraphItem[], x: number) {
+  return Object.fromEntries(
+    chips.map((item, slot) => [item.id, slotAt(x, 0, slot)])
+  );
+}
+
+function initialPositions(
+  items: GraphItem[],
+  links: GraphLink[]
+): Record<string, Point> {
+  if (items.length && items.every((item) => item.entity.kind === "Namespace")) {
+    return gridPositions(items);
+  }
+  const placed = items.filter((item) => !item.parent);
+  const chips = placed.filter(standaloneChip);
+  const cards = placed.filter((item) => !standaloneChip(item));
+  const positions = cardPositions(cards, links);
+  if (!chips.length) {
+    return positions;
+  }
+  const right = cards.length
+    ? Math.max(
+        ...cards.map(
+          (item) => (positions[item.id]?.x ?? 0) + sizeOf(item).width
+        )
+      ) + laneGap
+    : 0;
+  return { ...positions, ...chipPositions(chips, right) };
 }
 
 // The first free column right of the expanded card, skipping cards (not

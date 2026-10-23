@@ -74,21 +74,33 @@ export function activityEntries(events: Lifecycle[]): ActivityEntry[] {
   });
 }
 
+// The field chips a row lists under its headline. The leading change is
+// left out when the headline action already states it ("Replicas 2 → 3").
+export function listedChanges(entry: ActivityEntry) {
+  const [first, ...rest] = entry.summary.changes;
+  const action = entry.headline.action.toLowerCase();
+  const restated =
+    first &&
+    action.includes(`${first.before} → ${first.after}`.toLowerCase()) &&
+    action.startsWith(first.label.split(" ")[0].toLowerCase());
+  return restated ? rest : entry.summary.changes;
+}
+
 export function filterActivity(
   entries: ActivityEntry[],
   category: ActivityFilter,
-  rollouts: boolean
+  replicaSets: boolean
 ) {
   return entries.filter(
     (entry) =>
       (category === "all" || entry.summary.category === category) &&
-      (rollouts || !entry.summary.rolloutStep)
+      (replicaSets || !entry.summary.replicaSetStep)
   );
 }
 
-// Counts per filter chip, after the rollout-step choice, so each chip states
+// Counts per filter chip, after the ReplicaSet choice, so each chip states
 // how many rows selecting it shows.
-export function activityCounts(entries: ActivityEntry[], rollouts: boolean) {
+export function activityCounts(entries: ActivityEntry[], replicaSets: boolean) {
   const counts: Record<ActivityFilter, number> = {
     all: 0,
     node: 0,
@@ -97,7 +109,7 @@ export function activityCounts(entries: ActivityEntry[], rollouts: boolean) {
     automation: 0,
   };
   for (const entry of entries) {
-    if (rollouts || !entry.summary.rolloutStep) {
+    if (replicaSets || !entry.summary.replicaSetStep) {
       counts.all++;
       counts[entry.summary.category]++;
     }
@@ -105,8 +117,8 @@ export function activityCounts(entries: ActivityEntry[], rollouts: boolean) {
   return counts;
 }
 
-export function rolloutSteps(entries: ActivityEntry[]) {
-  return entries.filter((entry) => entry.summary.rolloutStep).length;
+export function replicaSetSteps(entries: ActivityEntry[]) {
+  return entries.filter((entry) => entry.summary.replicaSetStep).length;
 }
 
 // Groups in the given order (newest first from the API) by display-zone day.
@@ -135,22 +147,29 @@ export function receivedLate(event: Lifecycle) {
   );
 }
 
-// Latest changes for the dashboard widget; rollout steps are noise there.
+// Latest changes for the dashboard widget; ReplicaSet replica counts are
+// noise there.
 export function recentActivity(entries: ActivityEntry[], limit: number) {
-  return entries.filter((entry) => !entry.summary.rolloutStep).slice(0, limit);
+  return entries
+    .filter((entry) => !entry.summary.replicaSetStep)
+    .slice(0, limit);
 }
 
-// What the widget says when it has no rows to show. Hidden rollout steps were
-// still observed, so they are counted instead of reported as no change.
+function replicaSetChanges(steps: number) {
+  return `${steps} ReplicaSet change${steps === 1 ? "" : "s"}`;
+}
+
+// What the widget says when it has no rows to show. Hidden ReplicaSet
+// changes were still observed, so they are counted instead of reported as
+// no change.
 export function quietActivityText(steps: number) {
   if (steps === 0) {
     return "No node, scaling or resource changes were observed in the selected range.";
   }
-  const label = `${steps} Deployment rollout step${steps === 1 ? "" : "s"}`;
-  return `No node, scaling or resource changes besides ${label} were observed in the selected range. Rollout steps are on the Activity page.`;
+  return `No node, scaling or resource changes besides ${replicaSetChanges(steps)} were observed in the selected range. ReplicaSet changes are on the Activity page.`;
 }
 
-// Notes rollout steps left out of a non-empty widget list.
+// Notes ReplicaSet changes left out of a non-empty widget list.
 export function hiddenStepsText(steps: number) {
-  return `${steps} Deployment rollout step${steps === 1 ? "" : "s"} not shown; see the Activity page.`;
+  return `${replicaSetChanges(steps)} not shown; see the Activity page.`;
 }

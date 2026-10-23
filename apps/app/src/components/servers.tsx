@@ -24,7 +24,9 @@ import {
   compactCpu,
   compactMemory,
   podReady,
+  podTally,
   readinessLabel,
+  relatedPods,
 } from "../lib/infrastructure";
 import { observedUsage } from "../lib/metrics";
 import {
@@ -74,8 +76,9 @@ export function Servers({
   problems?: boolean;
   onRelax?: (patch: Partial<ServerFilter>) => void;
 }) {
-  // A saved observation keeps no heartbeats, so its all clear is judged on
-  // inventory alone, as on the canvas.
+  // A saved observation captures the observer heartbeat with its inventory,
+  // but that heartbeat is not judged against the selected time, so its all
+  // clear is judged on inventory alone, as on the canvas.
   const { frozen } = useDisplay();
   const filter = useMemo<ServerFilter>(
     () => ({ q: search, namespace, system: showSystem, problems }),
@@ -163,17 +166,32 @@ function PlacementSummary({ placement }: { placement: ServerPlacement }) {
       </p>
     );
   }
-  const pods = placement.servers.reduce(
-    (sum, server) =>
-      sum + server.pods.filter((pod) => !podFinished(pod)).length,
-    0
-  );
+  const pods = placedPods(placement.servers);
   return (
     <p className="text-muted-foreground text-sm">
-      {plural(servers, "server")} · {plural(pods, "active pod")}. Placement is
-      the scheduler's assignment, not traffic.
+      {plural(servers, "server")} · {plural(pods.shown, "active pod")} placed
+      {pods.hiddenSystem > 0 &&
+        ` · ${plural(pods.hiddenSystem, "active system pod")} hidden`}
+      . Placement is the scheduler's assignment, not traffic.
     </p>
   );
+}
+
+// Active pods drawn on the servers, by podTally's rule, and the active
+// system pods the filter hides there. Pods placed on no server (pending or
+// unscheduled) are in neither count, so the two need not add up to the
+// Fleet total.
+function placedPods(servers: ServerCard[]) {
+  let shown = 0;
+  let hiddenSystem = 0;
+  for (const server of servers) {
+    const drawn = podTally(server.pods);
+    shown += drawn.active;
+    hiddenSystem +=
+      podTally(relatedPods(server.view, server.node)).systemActive -
+      drawn.systemActive;
+  }
+  return { shown, hiddenSystem };
 }
 
 const tileTones = {

@@ -7,7 +7,7 @@ import { DisplayProvider } from "../hooks/display";
 import { ActivityPanel } from "./canvas-activity";
 
 // Server-rendered markup of the canvas Activity panel's Needs attention
-// line. Synthetic clusters only.
+// line and Recent changes. Synthetic clusters only.
 
 const now = Date.parse("2026-10-22T12:00:00Z");
 const fresh = new Date(now - 10_000).toISOString();
@@ -19,16 +19,18 @@ function cluster(id: string, sourceTime?: string) {
   } as unknown as ClusterView;
 }
 
-const events = {
-  data: [],
-  isPending: false,
-  isError: false,
-  isSuccess: true,
-  isPlaceholderData: false,
-  refetch: () => Promise.resolve(),
-} as unknown as UseQueryResult<Lifecycle[], Error>;
+function query(data: Lifecycle[]) {
+  return {
+    data,
+    isPending: false,
+    isError: false,
+    isSuccess: true,
+    isPlaceholderData: false,
+    refetch: () => Promise.resolve(),
+  } as unknown as UseQueryResult<Lifecycle[], Error>;
+}
 
-function render(views: ClusterView[]) {
+function render(views: ClusterView[], data: Lifecycle[] = []) {
   return renderToStaticMarkup(
     createElement(
       DisplayProvider,
@@ -36,7 +38,7 @@ function render(views: ClusterView[]) {
       createElement(ActivityPanel, {
         actions: { onCluster: () => undefined, onInspect: () => undefined },
         attention: [],
-        events,
+        events: query(data),
         onNavigate: () => undefined,
         onOpenChange: () => undefined,
         open: true,
@@ -74,5 +76,48 @@ describe("canvas Activity panel", () => {
     const html = render([cluster("synthetic-a"), cluster("synthetic-b")]);
     expect(html).toContain("Nothing to evaluate until inventory arrives");
     expect(html).not.toContain(success);
+  });
+
+  it("labels each change's time by what it measures", () => {
+    const base = {
+      clusterId: "synthetic-a",
+      attribution: "unknown",
+      evidence: "Synthetic fixture",
+      observedAt: "2026-10-22T11:50:00Z",
+      receivedAt: "2026-10-22T11:50:01Z",
+    };
+    const html = render(
+      [cluster("synthetic-a", fresh)],
+      [
+        {
+          ...base,
+          id: "1",
+          kind: "receipt_resize",
+          before: "4 vCPU",
+          after: "8 vCPU",
+          attribution: "reported",
+          evidence: JSON.stringify({ serverId: "srv-1", nodeUid: "n" }),
+        },
+        {
+          ...base,
+          id: "2",
+          kind: "node_join",
+          before: "null",
+          after: JSON.stringify({
+            uid: "n",
+            kind: "Node",
+            name: "synthetic-node-a",
+            createdAt: "2026-09-12T12:00:00Z",
+          }),
+        },
+      ]
+    );
+    expect(html).toContain("Reported time: ");
+    // Visible, not only in the tooltip, and only on the reported row.
+    expect(html.split(" · reported by automation")).toHaveLength(2);
+    expect(html).toContain("Node first observed");
+    expect(html).toContain("First observed in inventory: ");
+    expect(html).toContain(" · created ");
+    expect(html).not.toContain("(Observed: ");
   });
 });

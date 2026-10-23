@@ -316,7 +316,8 @@ function coverageGap(
 // other pod scope claims health only when servers are observed, every
 // cluster has current inventory (and, live, a current observer heartbeat),
 // and no problem pod is hidden in a system namespace. Saved observations
-// keep no heartbeats, so a frozen view judges inventory alone.
+// capture the last heartbeat before their inventory, but it is not judged
+// against the selected time, so a frozen view judges inventory alone.
 export function emptyServers(
   views: ClusterView[],
   filter: ServerFilter,

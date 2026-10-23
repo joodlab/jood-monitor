@@ -1,14 +1,18 @@
 import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
+import { podCounts } from "../components/widget-model";
 import { validateMonitorSearch } from "../schemas/monitor";
 import { attentionItems } from "./attention";
+import { namespaceSummary } from "./canvas-cards";
 import {
   hasProblem,
   isFinished,
+  matchesText,
   nodeConditionProblems,
   oomObserved,
   owningWorkload,
   podPhase,
+  podTally,
   relatedPods,
   resourceStatus,
   summarize,
@@ -827,6 +831,69 @@ describe("server placement", () => {
     expect(
       groupByOwner(view, pods).map((group) => group.owner?.uid ?? "none")
     ).toEqual(["workload", "none"]);
+  });
+});
+
+describe("pod totals", () => {
+  it("counts pods by one rule across Fleet, Servers and the canvas", () => {
+    const view = placed();
+    view.inventory.entities.push(
+      entity("failed-job", "Pod", {
+        status: "Failed / OOM observed",
+        ready: 0,
+        desired: 1,
+        nodeUid: "node-a",
+      })
+    );
+    const pods = view.inventory.entities.filter((item) => item.kind === "Pod");
+    // pod1, pod2, dns and pending are active; done and failed-job finished.
+    expect(podTally(pods)).toEqual({
+      active: 4,
+      finished: 2,
+      finishedFailed: 1,
+      systemActive: 1,
+    });
+    const fleet = podCounts([view]);
+    expect(fleet).toMatchObject({ total: 4, system: 1 });
+    // Namespace cards: unfinished and finished pods add up per namespace and
+    // to the Fleet tile across them.
+    const cards = ["app", "kube-system", "checkout"].map((namespace) =>
+      namespaceSummary(view, namespace, now)
+    );
+    const sum = (field: "activePods" | "finishedPods" | "pods") =>
+      cards.reduce((total, card) => total + card[field], 0);
+    expect(sum("activePods")).toBe(fleet.total);
+    expect(sum("finishedPods")).toBe(2);
+    expect(sum("pods")).toBe(pods.length);
+    // Servers: the pending pod sits on no server, so placed pods are fewer.
+    const placement = serverPlacement(
+      [view],
+      { ...listFilter, system: true },
+      now
+    );
+    const placedActive = placement.servers.reduce(
+      (total, server) => total + podTally(server.pods).active,
+      0
+    );
+    expect(placedActive).toBe(fleet.total - 1);
+  });
+
+  it("matches an Ingress by its configured hosts", () => {
+    const ingress = entity("entry", "Ingress", {
+      hosts: ["shop.synthetic.test", "api.synthetic.test"],
+    });
+    expect(matchesText(ingress, "API.synthetic")).toBe(true);
+    expect(matchesText(ingress, "other.synthetic.test")).toBe(false);
+    expect(matchesText(entity("service", "Service"), "synthetic.test")).toBe(
+      false
+    );
+    const view = placed();
+    Object.assign(find(view, "entry"), { hosts: ["shop.synthetic.test"] });
+    expect(
+      resourceRows([view], { ...listFilter, q: "shop.synthetic" }, now).map(
+        (row) => row.entity.uid
+      )
+    ).toEqual(["entry"]);
   });
 });
 

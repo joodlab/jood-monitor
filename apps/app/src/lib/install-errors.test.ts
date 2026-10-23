@@ -6,14 +6,44 @@ describe("snapshot errors", () => {
   it("explains a time outside retention without offering Retry", () => {
     const error = snapshotError(new Error("snapshot outside retention"));
     expect(error.title).toBe("This time is outside the 180-day retention");
-    expect(error.detail).toContain("Return to live");
+    expect(error.detail).toBe(
+      "Saved inventory and events cover the last 180 days. Choose a time within them, or return to live."
+    );
     expect(error.retryable).toBe(false);
+    expect(error.chooseTime).toBe(true);
   });
 
   it("explains an unreadable link time", () => {
     const error = snapshotError(new Error("invalid timestamp"));
     expect(error.title).toBe("This link's time could not be read");
+    expect(error.detail).toBe(
+      "Choose a saved observation time instead, or return to live."
+    );
     expect(error.retryable).toBe(false);
+    expect(error.chooseTime).toBe(true);
+  });
+
+  it("offers another time only where another time can succeed", () => {
+    for (const message of [
+      "snapshot outside retention",
+      "invalid timestamp",
+      "historical inventory precision boundary too broad",
+      "query too broad; select an entity and metric",
+    ]) {
+      const error = snapshotError(new Error(message));
+      expect(error.chooseTime).toBe(true);
+      // The banner's own button follows; nothing points "above".
+      expect(error.detail).not.toContain("above");
+      expect(error.detail.endsWith("or return to live.")).toBe(true);
+    }
+    for (const message of [
+      "snapshot too broad",
+      "archive restore in progress; retry",
+      "authentication required",
+      "Failed to fetch",
+    ]) {
+      expect(snapshotError(new Error(message)).chooseTime).toBeUndefined();
+    }
   });
 
   it("names the per-cluster series cap without advice no filter can follow", () => {
@@ -34,7 +64,7 @@ describe("snapshot errors", () => {
     expect(error.title).toBe(
       "The saved samples at this time are too many to load"
     );
-    expect(error.detail).toContain("Return to live");
+    expect(error.detail).toBe("Choose another time, or return to live.");
     expect(error.detail).not.toContain("entity");
     expect(error.retryable).toBe(false);
   });
@@ -125,6 +155,56 @@ describe("history errors", () => {
     }
   });
 
+  it("never offers a shorter range for a Diagnostic period read on its own", () => {
+    for (const frozen of [true, false]) {
+      const error = historyError(
+        new Error(
+          "query too broad; more archived samples in this window than one read parses"
+        ),
+        frozen,
+        "1",
+        { period: true }
+      );
+      expect(error.title).toBe(
+        "This Diagnostic period holds too many samples to load"
+      );
+      expect(error.detail).toContain(
+        "more samples than the hub reads in one request"
+      );
+      expect(error.detail).not.toContain("shorter range");
+      expect(error.retryable).toBe(false);
+    }
+    // Other failures read as they do for the range.
+    expect(
+      historyError(new Error("Failed to fetch"), false, "1", { period: true })
+    ).toEqual(historyError(new Error("Failed to fetch"), false, "1"));
+  });
+
+  it("asks for a shorter range only when one exists", () => {
+    for (const message of [
+      "query too broad; choose a shorter range",
+      "query too broad; more archived samples in this window than one read parses",
+    ]) {
+      for (const frozen of [true, false]) {
+        for (const range of ["6", "24"]) {
+          const error = historyError(new Error(message), frozen, range);
+          expect(error.detail).toBe("Choose a shorter range.");
+          expect(error.retryable).toBe(false);
+        }
+        // One hour is the shortest range: no shorter one to choose.
+        const shortest = historyError(new Error(message), frozen, "1");
+        expect(shortest.title).toBe(
+          "This window holds too many samples to load"
+        );
+        expect(shortest.detail).not.toContain("shorter range");
+        expect(shortest.detail).toContain(
+          "more samples than the hub reads in one request"
+        );
+        expect(shortest.retryable).toBe(false);
+      }
+    }
+  });
+
   it("falls back to the snapshot reading for other errors", () => {
     expect(
       historyError(new TypeError("Failed to fetch"), false).retryable
@@ -132,5 +212,13 @@ describe("history errors", () => {
     expect(historyError(new Error("boom"), true).title).toBe(
       "History unavailable"
     );
+  });
+
+  it("leaves the time picker to the page's banner", () => {
+    for (const message of ["invalid timestamp", "snapshot outside retention"]) {
+      const error = historyError(new Error(message), true);
+      expect(error.retryable).toBe(false);
+      expect(error).not.toHaveProperty("chooseTime");
+    }
   });
 });
