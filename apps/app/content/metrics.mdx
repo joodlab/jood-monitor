@@ -98,9 +98,11 @@ when the window:
 - holds more archived points than the hub parses in one request; or
 - would return more than 30,000 points.
 
-The hub decides from its archive index before reading any archive, so a
-refusal costs no archive reads. A chart is never drawn from a truncated read.
-A busy cluster may need a shorter range than a quiet one.
+The first two limits are decided from the archive index before any archive
+is read, so those refusals cost no archive reads. The 30,000-point limit is
+enforced while archives are read, so that refusal comes after some reads. A
+chart is never drawn from a truncated read. A busy cluster may need a
+shorter range than a quiet one.
 
 ## Limits
 
