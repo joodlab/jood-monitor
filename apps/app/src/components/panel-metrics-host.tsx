@@ -335,7 +335,7 @@ function SettingLine({
 }) {
   const { frozen } = useDisplay();
   if (frozen && !profileKnown(view, true)) {
-    return <>Collection settings not retained for this time</>;
+    return <>Collection settings not captured with this observation</>;
   }
   if (frozen) {
     return (
