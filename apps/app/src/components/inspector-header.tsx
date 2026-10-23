@@ -6,12 +6,22 @@ import {
   SheetTitle,
 } from "@jood-monitor/ui/sheet";
 import { ArrowLeft, ChevronRight, XIcon } from "lucide-react";
-import { useState } from "react";
+import { type Ref, useState } from "react";
 import { liveNodeProblem } from "../lib/attention";
 import { inventoryFreshness } from "../lib/metrics";
-import { CopyButton } from "./inspector-copy";
+import type { HubClock } from "../lib/time";
+import type { PanelTab, SearchState } from "../schemas/monitor";
+import { CopyButton, CopyLinkMenu } from "./inspector-copy";
 import { type Crumb, inspectionKey, nextTrail } from "./inspector-model";
 import { KindTile, StatusBadge } from "./resource-status";
+
+// What the link menu needs: the page's search, the tab on screen and the
+// hub clock that bounds a pinned moment.
+export interface LinkContext {
+  hubClock?: HubClock;
+  panel: PanelTab;
+  search: SearchState;
+}
 
 // The trail of recently inspected resources for this open panel. It resets
 // when the panel closes so a new inspection starts a new trail.
@@ -37,19 +47,28 @@ const iconButton =
   "size-9 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 // Railway's service header: a large kind tile and name, the status pill and
-// where the resource lives, with copy actions and close on the right.
+// where the resource lives, with copy actions and close on the right. Back
+// follows browser history when the previous entry is that resource (see
+// panel-history).
 export function InspectorHeader({
   view,
   entity,
   trail,
   referenceTime,
   onInspect,
+  onBack,
+  titleRef,
+  link,
 }: {
   view: ClusterView;
   entity: Entity;
   trail: readonly Crumb[];
   referenceTime: number;
   onInspect: (view: ClusterView, entity: Entity) => void;
+  onBack: (crumb: Crumb) => void;
+  // The title takes focus when a switch from inside the panel would lose it.
+  titleRef?: Ref<HTMLHeadingElement>;
+  link: LinkContext;
 }) {
   const back = trail.at(-2);
   const stale =
@@ -61,7 +80,7 @@ export function InspectorHeader({
           <Button
             aria-label={`Back to ${back.entity.kind} ${back.entity.name}`}
             className="h-9 shrink-0 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:h-8"
-            onClick={() => onInspect(back.view, back.entity)}
+            onClick={() => onBack(back)}
             size="sm"
             title={`Back to ${back.entity.name}`}
             variant="ghost"
@@ -79,7 +98,11 @@ export function InspectorHeader({
           kind={entity.kind}
         />
         <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-          <SheetTitle className="font-semibold text-xl leading-tight tracking-tight [overflow-wrap:anywhere] sm:text-2xl">
+          <SheetTitle
+            className="font-semibold text-xl leading-tight tracking-tight outline-none [overflow-wrap:anywhere] sm:text-2xl"
+            ref={titleRef}
+            tabIndex={-1}
+          >
             {entity.name}
           </SheetTitle>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -125,11 +148,12 @@ export function InspectorHeader({
             label={`Copy name ${entity.name}`}
             value={entity.name}
           />
-          <CopyButton
+          <CopyLinkMenu
             className={iconButton}
-            label="Copy link to this resource"
-            link
-            value={() => window.location.href}
+            hubClock={link.hubClock}
+            panel={link.panel}
+            search={link.search}
+            sourceTime={view.inventory.sourceTime}
           />
           <SheetClose
             render={

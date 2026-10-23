@@ -29,6 +29,25 @@ export function focusedOutside<T>(
   return active;
 }
 
+// What the panel does with focus when it opens or shows another resource:
+// - "invoker": focus is on a card, row or control outside the panel, which
+//   stays focused and becomes the element Escape returns to;
+// - "title": another resource replaced the one shown while focus was in the
+//   panel or had dropped to the body (a Back or pod button unmounting), so
+//   focus moves to the panel's title instead of being lost;
+// - "open": a first open from nowhere; the panel focuses itself.
+export function switchFocus<T>(
+  switching: boolean,
+  active: T | null,
+  body: T | null,
+  panel: Container<T> | null
+): "invoker" | "title" | "open" {
+  if (focusedOutside(active, body, panel)) {
+    return "invoker";
+  }
+  return switching ? "title" : "open";
+}
+
 // Where focus goes when the panel closes. When focus is in the panel, or was
 // dropped to the body (as when a focused card unmounts), it returns to the
 // element that opened or last switched the panel; `true` falls back to Base

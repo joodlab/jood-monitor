@@ -8,6 +8,7 @@ import {
   conditionGroups,
   coverageText,
   exposure,
+  hasChanges,
   historyRefetchInterval,
   inspectorTabs,
   nextTrail,
@@ -236,40 +237,88 @@ describe("history polling", () => {
 
 describe("panel tabs", () => {
   it("gives each kind Railway-style tabs that have something to show", () => {
-    expect(inspectorTabs("Deployment")).toEqual([
-      "pods",
-      "metrics",
-      "details",
-      "links",
-    ]);
+    for (const kind of [
+      "Deployment",
+      "StatefulSet",
+      "DaemonSet",
+      "Namespace",
+    ]) {
+      expect(inspectorTabs(kind)).toEqual([
+        "pods",
+        "metrics",
+        "changes",
+        "details",
+        "links",
+      ]);
+    }
     expect(inspectorTabs("Service")).toEqual([
       "pods",
       "metrics",
       "details",
       "links",
     ]);
-    expect(inspectorTabs("Node")).toEqual(["pods", "metrics", "details"]);
-    expect(inspectorTabs("Pod")).toEqual(["metrics", "details", "links"]);
+    expect(inspectorTabs("Node")).toEqual([
+      "pods",
+      "metrics",
+      "changes",
+      "details",
+    ]);
+    expect(inspectorTabs("Pod")).toEqual([
+      "metrics",
+      "changes",
+      "details",
+      "links",
+    ]);
+    for (const kind of ["ReplicaSet", "HorizontalPodAutoscaler"]) {
+      expect(inspectorTabs(kind)).toEqual(["details", "changes", "links"]);
+    }
+  });
+  it("gives kinds the hub records no changes for no Changes tab", () => {
+    for (const kind of [
+      "Service",
+      "Ingress",
+      "PersistentVolumeClaim",
+      "PersistentVolume",
+      "EndpointSlice",
+    ]) {
+      expect(inspectorTabs(kind)).not.toContain("changes");
+      expect(hasChanges(kind)).toBe(false);
+    }
     expect(inspectorTabs("Ingress")).toEqual(["details", "links"]);
   });
-  it("keeps the chosen tab where the kind has it and falls back otherwise", () => {
+  it("opens each kind on the same first tab as before", () => {
     expect(activeTab(undefined, "Deployment")).toBe("pods");
+    expect(activeTab(undefined, "Namespace")).toBe("pods");
+    expect(activeTab(undefined, "Service")).toBe("pods");
+    expect(activeTab(undefined, "Node")).toBe("pods");
+    expect(activeTab(undefined, "Pod")).toBe("metrics");
+    expect(activeTab(undefined, "ReplicaSet")).toBe("details");
+    expect(activeTab(undefined, "HorizontalPodAutoscaler")).toBe("details");
+    expect(activeTab(undefined, "Ingress")).toBe("details");
+  });
+  it("keeps the chosen tab where the kind has it and falls back otherwise", () => {
     expect(activeTab("details", "Pod")).toBe("details");
     expect(activeTab("pods", "Pod")).toBe("metrics");
     expect(activeTab("links", "Node")).toBe("pods");
     expect(activeTab("links", "Node", true)).toBe("links");
     expect(activeTab("unknown", "Ingress")).toBe("details");
+    expect(activeTab("changes", "Pod")).toBe("changes");
+    expect(activeTab("changes", "ReplicaSet")).toBe("changes");
+    expect(activeTab("changes", "Service")).toBe("pods");
+    expect(activeTab("metrics", "ReplicaSet")).toBe("details");
   });
   it("gives a Node a Links tab only for links other than pod placement", () => {
     expect(inspectorTabs("Node", true)).toEqual([
       "pods",
       "metrics",
+      "changes",
       "details",
       "links",
     ]);
     expect(inspectorTabs("Node", false)).toEqual([
       "pods",
       "metrics",
+      "changes",
       "details",
     ]);
   });

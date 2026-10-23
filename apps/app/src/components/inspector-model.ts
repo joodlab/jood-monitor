@@ -7,6 +7,7 @@ import {
   type ResourceSummary,
   workloadKinds,
 } from "../lib/infrastructure";
+import type { PanelTab } from "../schemas/monitor";
 
 // Pure helpers behind the resource inspector. Configured structure
 // (Services, Ingress routes, placement) is reported as configuration, never
@@ -15,7 +16,7 @@ import {
 type Edge = ClusterView["inventory"]["edges"][number];
 type Condition = NonNullable<Entity["conditions"]>[number];
 
-export type InspectorTab = "pods" | "metrics" | "details" | "links";
+export type InspectorTab = PanelTab;
 
 // Kinds whose member pods the inventory resolves (see relatedPods): their
 // usage is a sum over those pods.
@@ -25,6 +26,22 @@ export function isCohort(kind: string) {
   return cohortKinds.has(kind);
 }
 
+// Kinds the hub records changes for, directly or through a related
+// resource (see changeScope). Services, Ingresses, volumes and
+// EndpointSlices have none, so they get no Changes tab.
+const changeKinds = new Set([
+  ...workloadKinds,
+  "Namespace",
+  "Node",
+  "Pod",
+  "ReplicaSet",
+  "HorizontalPodAutoscaler",
+]);
+
+export function hasChanges(kind: string) {
+  return changeKinds.has(kind);
+}
+
 // Railway's service tabs, with member pods in the role of its Deployments
 // list. A Pod has no members; kinds without member pods have no usage to
 // chart. A Node's Links tab shows only its links other than pod placement
@@ -32,22 +49,27 @@ export function isCohort(kind: string) {
 // so it appears only when the Node has such a link.
 export function inspectorTabs(kind: string, hasLinks = false): InspectorTab[] {
   if (kind === "Pod") {
-    return ["metrics", "details", "links"];
+    return ["metrics", "changes", "details", "links"];
   }
   if (kind === "Node") {
     return hasLinks
-      ? ["pods", "metrics", "details", "links"]
-      : ["pods", "metrics", "details"];
+      ? ["pods", "metrics", "changes", "details", "links"]
+      : ["pods", "metrics", "changes", "details"];
   }
   if (cohortKinds.has(kind)) {
-    return ["pods", "metrics", "details", "links"];
+    return hasChanges(kind)
+      ? ["pods", "metrics", "changes", "details", "links"]
+      : ["pods", "metrics", "details", "links"];
   }
-  return ["details", "links"];
+  return hasChanges(kind)
+    ? ["details", "changes", "links"]
+    : ["details", "links"];
 }
 
-// The chosen tab follows the operator to the next resource when that kind
-// has it; otherwise the panel opens on the kind's first tab. The choice
-// itself is kept, so returning to the earlier kind restores it.
+// The chosen tab (the URL's `panel`) follows the operator to the next
+// resource when that kind has it; otherwise the panel opens on the kind's
+// first tab. The choice itself stays in the URL, so returning to the
+// earlier kind restores it.
 export function activeTab(
   chosen: string | undefined,
   kind: string,
