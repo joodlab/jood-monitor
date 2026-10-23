@@ -212,6 +212,17 @@ function staleCount(count: number, word: string, otherwise: string) {
     : otherwise;
 }
 
+// With no active pod observed the detail says so, as the Servers tile does,
+// rather than stating an observed zero.
+function podsDetail(pods: ReturnType<typeof podCounts>, known: boolean) {
+  if (!pods.total) {
+    return "No active pods observed";
+  }
+  return known
+    ? `Active pods in all namespaces, incl. ${pods.system} in system namespaces`
+    : `${pods.total - pods.known} of ${pods.total} without readiness`;
+}
+
 export function fleetTiles(
   views: ClusterView[],
   attention: Attention[],
@@ -245,13 +256,7 @@ export function fleetTiles(
       label: "Pods ready",
       value:
         readinessKnown && pods.total ? `${pods.ready} / ${pods.total}` : "—",
-      detail: staleCount(
-        stalePods,
-        "pod",
-        readinessKnown
-          ? `Active pods in all namespaces, incl. ${pods.system} in system namespaces`
-          : `${pods.total - pods.known} of ${pods.total} without readiness`
-      ),
+      detail: staleCount(stalePods, "pod", podsDetail(pods, readinessKnown)),
       tone: readinessKnown && pods.ready < pods.total ? "warning" : undefined,
     },
     usageTile("cpu", totals),

@@ -182,6 +182,29 @@ describe("fleet pod counts", () => {
       detail: "Active pods in all namespaces, incl. 1 in system namespaces",
     });
   });
+
+  it("states no observed zero when no active pod is observed", () => {
+    const pods = (views: ClusterView[], frozen = false) =>
+      fleetTiles(views, [], now, frozen).find((tile) => tile.id === "pods");
+    // No inventory yet, live or at a frozen time without a saved observation.
+    const unobserved = view("a", "w", [], {
+      inventory: "0001-01-01T00:00:00Z",
+    });
+    for (const frozen of [false, true]) {
+      expect(pods([unobserved], frozen)).toMatchObject({
+        value: "—",
+        detail: "No active pods observed",
+      });
+    }
+    // Only finished pods: observed, but none of them active.
+    const finished = view("a", "w", [
+      entity("job", "Pod", { status: "Succeeded", namespace: "batch" }),
+    ]);
+    expect(pods([finished])).toMatchObject({
+      value: "—",
+      detail: "No active pods observed",
+    });
+  });
 });
 
 describe("fleet usage", () => {
