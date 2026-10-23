@@ -612,7 +612,8 @@ function exactTime(time: number, timeZone: string) {
 
 // Absence is only claimed against a loaded snapshot; while the hub is
 // unreachable the link stays in the URL and Retry reopens it. A live link
-// copied while the resource existed offers that saved observation.
+// remembers the time of the observation it was copied from, not when it
+// was copied, and offers that saved observation.
 function MissingResource({
   linkedAt,
   hubClock,
@@ -628,7 +629,7 @@ function MissingResource({
 }) {
   const { now, frozen, timeZone } = useDisplay();
   const offer = frozen ? "none" : linkedOffer(linkedAt, hubNow(hubClock, now));
-  const copied = observationMs(linkedAt);
+  const linked = observationMs(linkedAt);
   return (
     <Dialog
       onOpenChange={(open) => {
@@ -647,9 +648,9 @@ function MissingResource({
             incomplete.
           </DialogDescription>
         </DialogHeader>
-        {offer === "retained" && copied != null && (
+        {offer === "retained" && linked != null && (
           <p className="text-sm">
-            This link was copied at {exactTime(copied, timeZone)}.
+            {`This link remembers the observation at ${exactTime(linked, timeZone)}.`}
           </p>
         )}
         {offer === "expired" && (
@@ -663,9 +664,9 @@ function MissingResource({
             Close
           </Button>
           {frozen && <Button onClick={onLive}>Return to live</Button>}
-          {offer === "retained" && copied != null && linkedAt && (
+          {offer === "retained" && linked != null && linkedAt && (
             <Button onClick={() => onOpenSaved(linkedAt)}>
-              Open as saved at {formatDateTime(copied, timeZone)}
+              Open as saved at {formatDateTime(linked, timeZone)}
             </Button>
           )}
         </div>

@@ -184,23 +184,23 @@ describe("share search", () => {
 
   it("states retention from the shared constants", () => {
     expect(shareHints.moment).toBe(
-      "Opens frozen at this time. Inventory and events are kept 180 days; raw CPU and memory samples up to 7 days."
+      "Opens frozen at this time. Inventory and events are kept 180 days; raw CPU and memory samples up to 7 days, and samples taken during a Diagnostic 1 day."
     );
   });
 });
 
 describe("linked time offer", () => {
   const hub = Date.parse("2026-10-22T12:00:00Z");
-  it("offers a copy time within retention", () => {
+  it("offers a remembered observation within retention", () => {
     expect(linkedOffer("2026-10-21T12:00:00Z", hub)).toBe("retained");
     expect(linkedOffer("2026-04-26T12:00:00Z", hub)).toBe("retained");
     // Without the hub's time the hub decides.
     expect(linkedOffer("2020-01-01T00:00:00Z", undefined)).toBe("retained");
   });
-  it("says a copy time outside retention is gone", () => {
+  it("says a remembered observation outside retention is gone", () => {
     expect(linkedOffer("2026-04-24T12:00:00Z", hub)).toBe("expired");
   });
-  it("offers nothing without a readable copy time", () => {
+  it("offers nothing without a readable remembered time", () => {
     expect(linkedOffer(undefined, hub)).toBe("none");
     expect(linkedOffer("garbage", hub)).toBe("none");
   });

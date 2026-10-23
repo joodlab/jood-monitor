@@ -8,6 +8,7 @@
 import type { PanelTab, SearchState } from "../schemas/monitor";
 import {
   DAY_MS,
+  DIAGNOSTIC_RETENTION_DAYS,
   INVENTORY_RETENTION_DAYS,
   RAW_RETENTION_DAYS,
 } from "./retention";
@@ -18,8 +19,12 @@ export type ShareMode = "moment" | "live";
 // The hub refuses an observation time this far past its own clock.
 const AHEAD_MS = 60_000;
 
+function days(count: number) {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
+
 export const shareHints = {
-  moment: `Opens frozen at this time. Inventory and events are kept ${INVENTORY_RETENTION_DAYS} days; raw CPU and memory samples up to ${RAW_RETENTION_DAYS} days.`,
+  moment: `Opens frozen at this time. Inventory and events are kept ${INVENTORY_RETENTION_DAYS} days; raw CPU and memory samples up to ${RAW_RETENTION_DAYS} days, and samples taken during a Diagnostic ${days(DIAGNOSTIC_RETENTION_DAYS)}.`,
   live: "Opens whatever is current when followed.",
   frozenLive: "Remembers this time in case the resource is gone.",
 };
@@ -103,8 +108,9 @@ export function shareSearch(
   };
 }
 
-// What a live link's copy time offers when its resource is absent: the saved
-// observation while that time is within retention by the hub's clock.
+// What a live link's remembered observation time offers when its resource is
+// absent: that saved observation while it is within retention by the hub's
+// clock.
 export function linkedOffer(
   linkedAt: string | undefined,
   hubTime: number | undefined

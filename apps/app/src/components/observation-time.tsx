@@ -14,6 +14,7 @@ import { type ComponentProps, useState } from "react";
 import { useDisplay } from "../hooks/display";
 import {
   DAY_MS,
+  DIAGNOSTIC_RETENTION_DAYS,
   INVENTORY_RETENTION_DAYS,
   RAW_RETENTION_DAYS,
 } from "../lib/retention";
@@ -195,7 +196,9 @@ function ObservationForm({
                 id="observation-time-hint"
               >
                 Inventory and events: {INVENTORY_RETENTION_DAYS} days. Raw
-                CPU/memory samples: {RAW_RETENTION_DAYS} days.
+                CPU/memory samples: {RAW_RETENTION_DAYS} days; those taken
+                during a Diagnostic: {DIAGNOSTIC_RETENTION_DAYS}{" "}
+                {DIAGNOSTIC_RETENTION_DAYS === 1 ? "day" : "days"}.
               </p>
               <p
                 className="min-h-4 text-destructive-text text-xs"
