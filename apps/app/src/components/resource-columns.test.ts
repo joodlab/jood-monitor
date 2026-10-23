@@ -1,9 +1,9 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { createElement, type ReactNode } from "react";
+import { createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { resourceRows } from "../lib/resource-table";
-import { resourceColumns } from "./resource-columns";
+import { type ResourceRow, resourceRows } from "../lib/resource-table";
+import { cardFacts, resourceColumns } from "./resource-columns";
 import { MetricBar } from "./resource-status";
 
 // Server-rendered Nodes table cells for synthetic clusters: a missing node
@@ -137,5 +137,108 @@ describe("Nodes table usage", () => {
     );
     expect(markup).toContain("42.0%");
     expect(markup).not.toContain("Paused");
+  });
+});
+
+describe("Pods table requests", () => {
+  const MiB = 1024 ** 2;
+  const pod = (name: string, extra: Partial<Entity>): Entity => ({
+    uid: name,
+    name,
+    kind: "Pod",
+    namespace: "shop",
+    status: "Running",
+    ready: 1,
+    desired: 1,
+    nodeUid: node.uid,
+    ...extra,
+  });
+  const cluster = view({});
+  cluster.inventory.entities = [
+    node,
+    pod("web", {
+      requestedCpu: 0.25,
+      requestedMemory: 512 * MiB,
+      limitedMemory: 768 * MiB,
+    }),
+    pod("best-effort", { requestedCpu: 0, requestedMemory: 0 }),
+    pod("older", {}),
+  ];
+  const rows = resourceRows(
+    [cluster],
+    { namespace: "all", problems: false, q: "", system: true },
+    now,
+    ["Pod"]
+  );
+  const row = (name: string) => {
+    const found = rows.find((item) => item.entity.name === name);
+    if (!found) {
+      throw new Error(`no row for ${name}`);
+    }
+    return found;
+  };
+  const columns = resourceColumns("pods", {
+    multiCluster: false,
+    onInspect: () => undefined,
+  });
+  function column(id: string) {
+    const found = columns.find((item) => item.id === id);
+    if (!found) {
+      throw new Error(`no column ${id}`);
+    }
+    return found as typeof found & {
+      accessorFn: (row: ResourceRow, index: number) => unknown;
+    };
+  }
+  function cell(id: string, name: string) {
+    const render = column(id).cell as (context: unknown) => ReactNode;
+    return renderToStaticMarkup(render({ row: { original: row(name) } }));
+  }
+
+  it("adds configured request and limit columns, labelled not usage", () => {
+    for (const [id, label] of [
+      ["cpuRequest", "CPU request"],
+      ["memoryRequest", "Memory request"],
+      ["memoryLimit", "Memory limit"],
+    ]) {
+      const header = column(id).header as () => ReactNode;
+      const markup = renderToStaticMarkup(header());
+      expect(markup).toContain(label);
+      expect(markup).toContain("configured, not usage");
+      expect(column(id).sortUndefined).toBe("last");
+    }
+  });
+  it("shows absolute amounts, a reported 0 and unknown values", () => {
+    expect(cell("cpuRequest", "web")).toContain(">250m<");
+    expect(cell("memoryRequest", "web")).toContain(">512 MiB<");
+    expect(cell("memoryLimit", "web")).toContain(">768 MiB<");
+    expect(cell("memoryRequest", "best-effort")).toContain("0 · none set");
+    expect(cell("memoryLimit", "best-effort")).toContain("No limit");
+    const older = cell("memoryRequest", "older");
+    expect(older).toContain("—");
+    expect(older).toContain("not reported by this observer");
+    expect(cell("memoryLimit", "older")).not.toContain("No limit");
+    for (const name of ["web", "best-effort", "older"]) {
+      expect(cell("memoryRequest", name)).not.toContain("%");
+    }
+  });
+  it("sorts unknown requests last, never as 0", () => {
+    const accessor = column("memoryRequest").accessorFn;
+    expect(accessor(row("best-effort"), 0)).toBe(0);
+    expect(accessor(row("older"), 0)).toBeUndefined();
+    expect(column("memoryLimit").accessorFn(row("best-effort"), 0)).toBe(
+      Number.POSITIVE_INFINITY
+    );
+  });
+  it("puts the same facts on the phone cards", () => {
+    const facts = cardFacts(row("web"), "pods");
+    const labels = facts.map((fact) => fact.label);
+    expect(labels).toEqual(
+      expect.arrayContaining(["CPU request", "Memory request", "Memory limit"])
+    );
+    const limit = facts.find((fact) => fact.label === "Memory limit");
+    expect(
+      renderToStaticMarkup(createElement(Fragment, null, limit?.value))
+    ).toContain("768 MiB");
   });
 });

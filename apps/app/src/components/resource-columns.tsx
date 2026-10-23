@@ -1,5 +1,10 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@jood-monitor/ui/tooltip";
 import { cn } from "@jood-monitor/ui/utils";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CircleCheck, CircleHelp, Clock, TriangleAlert } from "lucide-react";
@@ -11,6 +16,11 @@ import {
   podReady,
   resourceStatus,
 } from "../lib/infrastructure";
+import {
+  type ConfiguredText,
+  type PodRequestText,
+  podRequestText,
+} from "../lib/pod-requests";
 import { usageShare } from "../lib/resource-servers";
 import {
   type ResourceRow,
@@ -143,6 +153,63 @@ function usageColumn(field: "cpu" | "memory"): Column {
       />
     ),
   };
+}
+
+// Configured requests and limits sit beside measured usage, so the header
+// says which they are; the button's accessible name says it too.
+function ConfiguredHeader({ label }: { label: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span />}>
+        {label}
+        <span className="sr-only">, configured, not usage</span>
+      </TooltipTrigger>
+      <TooltipContent>Configured, not usage</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// An absolute configured amount. Unknown is a dash with its reason, never 0.
+function Configured({ value }: { value: ConfiguredText }) {
+  if (value.reason) {
+    return (
+      <span className="text-muted-foreground tabular-nums" title={value.reason}>
+        {value.text}
+        <span className="sr-only"> ({value.reason})</span>
+      </span>
+    );
+  }
+  return <span className="tabular-nums">{value.text}</span>;
+}
+
+type ConfiguredField = "cpuRequest" | "memoryLimit" | "memoryRequest";
+
+const configuredLabels: Record<ConfiguredField, string> = {
+  cpuRequest: "CPU request",
+  memoryRequest: "Memory request",
+  memoryLimit: "Memory limit",
+};
+
+function configuredColumn(field: ConfiguredField): Column {
+  const label = configuredLabels[field];
+  return {
+    id: field,
+    header: () => <ConfiguredHeader label={label} />,
+    accessorFn: (row) => podRequestText(row.entity)[field].sort,
+    sortUndefined: "last",
+    cell: ({ row }) => (
+      <Configured value={podRequestText(row.original.entity)[field]} />
+    ),
+  };
+}
+
+function configuredFacts(text: PodRequestText): CardFact[] {
+  return (["cpuRequest", "memoryRequest", "memoryLimit"] as const).map(
+    (field) => ({
+      label: configuredLabels[field],
+      value: <Configured value={text[field]} />,
+    })
+  );
 }
 
 function Restarts({ value }: { value?: number }) {
@@ -464,6 +531,9 @@ export function resourceColumns(
         nodeColumn(context),
         usageColumn("cpu"),
         usageColumn("memory"),
+        configuredColumn("cpuRequest"),
+        configuredColumn("memoryRequest"),
+        configuredColumn("memoryLimit"),
         ageColumn,
       ];
     case "workloads":
@@ -515,6 +585,7 @@ export function cardFacts(row: ResourceRow, preset: TablePreset): CardFact[] {
         { label: "Node", value: row.node?.name ?? "Not scheduled" },
         { label: "CPU", value: usage("cpu") },
         { label: "Memory", value: usage("memory") },
+        ...configuredFacts(podRequestText(entity)),
       ];
     case "workloads":
       return [
