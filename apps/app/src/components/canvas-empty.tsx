@@ -101,7 +101,7 @@ function emptyCopy(props: EmptyProps): EmptyCopy {
   const { graph, problems, search, showSystem, frozen } = props;
   const scope = scopeText(props.namespace);
   const system = showSystem ? "" : " System namespaces are hidden.";
-  const problemList = `No failing pods, under-replicated workloads or node problems in ${scope}.`;
+  const problemList = `No failing pods, under-replicated workloads, node problems or routed Services without endpoint pods in ${scope}.`;
   const history = historyText(graph);
   switch (emptyTopology(graph, { problems, search }, props.coverage)) {
     case "hiddenSystem":

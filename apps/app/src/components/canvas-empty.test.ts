@@ -120,7 +120,7 @@ describe("inventory coverage", () => {
     );
   });
 
-  it("names finished pods in the Problems only copy", () => {
+  it("names routed Services and finished pods in the Problems only copy", () => {
     const views = [cluster("synthetic-a", ago(10), ago(30))];
     const render = (graph: ServiceGraph) =>
       renderToStaticMarkup(
@@ -137,7 +137,7 @@ describe("inventory coverage", () => {
     const html = render({ ...emptyGraph, finished: 5, finishedFailed: 2 });
     expect(html).toContain("No live problems observed");
     expect(html).toContain(
-      "No failing pods, under-replicated workloads or node problems in batch."
+      "No failing pods, under-replicated workloads, node problems or routed Services without endpoint pods in batch."
     );
     expect(html).toContain("5 finished (2 failed) pods are kept as history.");
     expect(html).not.toContain("with failures");

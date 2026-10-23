@@ -265,6 +265,63 @@ describe("attention", () => {
         "If the one-time token was lost or expired, renew the enrollment in Settings",
     });
   });
+  it("warns once about a routed Service with no endpoint pods", () => {
+    const routed = view(
+      [
+        entity("api-in", "Ingress", { namespace: "shop" }),
+        entity("api-svc", "Service", { namespace: "shop" }),
+        entity("api-slice", "EndpointSlice", { namespace: "shop" }),
+        entity("web", "Deployment", {
+          namespace: "shop",
+          ready: 1,
+          desired: 2,
+        }),
+        entity("p1", "Pod", {
+          namespace: "shop",
+          status: "CrashLoopBackOff",
+          ready: 0,
+        }),
+      ],
+      [["api-slice", "api-svc"]]
+    );
+    routed.inventory.edges.push({
+      source: "api-in",
+      target: "api-svc",
+      relation: "routes_to",
+      evidence: "test",
+    });
+    const items = attentionItems([routed], now);
+    const service = items.find((item) => item.scope === "service");
+    expect(service).toMatchObject({
+      id: "c1:api-svc:service",
+      severity: "warning",
+      title: "Routed Service has no endpoint pods",
+      reason: "Configuration observed, traffic not measured",
+      location: ["Cluster one", "shop"],
+      terminal: false,
+    });
+    expect(service?.entity?.uid).toBe("api-svc");
+    // After workload rows, before pod rows, at the same severity.
+    expect(items.map((item) => item.scope)).toEqual([
+      "workload",
+      "service",
+      "pod",
+    ]);
+    expect(attentionSummary(items)).toMatchObject({
+      warning: 3,
+      actionable: 3,
+    });
+    // Stale live inventory cannot show it; the saved observation can.
+    routed.inventory.sourceTime = new Date(now - 10 * 60_000).toISOString();
+    expect(
+      attentionItems([routed], now).some((item) => item.scope === "service")
+    ).toBe(false);
+    expect(
+      attentionItems([routed], now, true).some(
+        (item) => item.scope === "service"
+      )
+    ).toBe(true);
+  });
   it("attaches observer staleness to the cluster even without nodes", () => {
     const stale = view([]);
     stale.cluster.heartbeatAt = new Date(now - 15 * 60_000).toISOString();

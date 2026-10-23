@@ -12,6 +12,7 @@ import {
   type ResourceItem,
   relatedPods,
   resourceId,
+  routedServiceWithoutEndpoints,
   workloadKinds,
 } from "./infrastructure";
 
@@ -196,13 +197,17 @@ export function graphSubject(
 // A problem now, as the attention model's actionable items: pods use its live
 // rule (start-up grace; finished pods, failed ones included, are history),
 // nodes its node rule (conditions and memory near full on a fresh sample),
-// every other kind its reported status.
+// Services its routed-without-endpoints rule, every other kind its reported
+// status.
 function liveProblem(view: ClusterView, entity: Entity, now: number) {
   if (entity.kind === "Pod") {
     return livePodProblem(entity, now);
   }
   if (entity.kind === "Node") {
     return liveNodeProblem(view, entity, now);
+  }
+  if (entity.kind === "Service") {
+    return routedServiceWithoutEndpoints(view, entity, now);
   }
   return hasProblem(entity);
 }

@@ -17,6 +17,7 @@ import {
   matchesText,
   type ResourceSummary,
   resourceId,
+  routedServiceWithoutEndpoints,
   summarize,
   workloadKinds,
 } from "./infrastructure";
@@ -162,12 +163,14 @@ function rowProblem(
     return liveNodeProblem(view, entity, now);
   }
   if (entity.kind === "Service") {
-    // Endpoints exist but not all are ready. No endpoints at all is reported
-    // separately and is not assumed to be a fault.
+    // Endpoints exist but not all are ready, or an Ingress routes to it and
+    // it has no endpoint pods at all (the canvas and attention rule). An
+    // unrouted Service without endpoints is not assumed to be a fault.
     return (
-      summary.ready != null &&
-      summary.desired != null &&
-      summary.ready < summary.desired
+      (summary.ready != null &&
+        summary.desired != null &&
+        summary.ready < summary.desired) ||
+      routedServiceWithoutEndpoints(view, entity, now)
     );
   }
   return hasProblem(entity);

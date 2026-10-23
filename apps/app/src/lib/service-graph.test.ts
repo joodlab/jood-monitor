@@ -2,7 +2,7 @@ import type { ClusterView, Entity, Metric } from "@jood-monitor/api-client";
 import { describe, expect, it } from "vitest";
 import { attentionItems, attentionSummary } from "./attention";
 import { cardStatus, podDetail, toneOf } from "./canvas-cards";
-import { summarize } from "./infrastructure";
+import { routedServiceWithoutEndpoints, summarize } from "./infrastructure";
 import {
   activatedCard,
   type CardState,
@@ -887,6 +887,90 @@ describe("bare-pod namespaces", () => {
     )) {
       expect(positions[item.id].x).toBeGreaterThan(edge);
     }
+  });
+});
+
+describe("routed Services without endpoint pods", () => {
+  // An Ingress routes to api-svc, whose controller-managed EndpointSlice
+  // lists no pod.
+  function routedEmpty() {
+    const view = healthyFixture();
+    view.inventory.entities.push(
+      entity("api-in", "Ingress", { hosts: ["api.synthetic.test"] }),
+      entity("api-svc", "Service", { serviceType: "ClusterIP" }),
+      entity("api-slice", "EndpointSlice")
+    );
+    view.inventory.edges.push(
+      edge("api-in", "api-svc", "routes_to"),
+      edge("api-slice", "api-svc", "owned_by")
+    );
+    return view;
+  }
+  const problem = (view: ClusterView) =>
+    itemProblem({ view, entity: find(view, "api-svc") }, now);
+
+  it("flags a routed selector Service whose EndpointSlice lists no pod", () => {
+    const view = routedEmpty();
+    expect(problem(view)).toBe(true);
+    const graph = serviceGraph([view], { ...options, problems: true });
+    expect(uids(graph.items)).toEqual(["api-in", "api-svc"]);
+    const map = serviceGraph([view], { ...options, namespace: "all" });
+    expect(itemProblem(map.items[0], now)).toBe(true);
+    // Routed Services with endpoint pods stay quiet.
+    expect(itemProblem({ view, entity: find(view, "cart-svc") }, now)).toBe(
+      false
+    );
+  });
+
+  it("is not a problem while endpoint pods exist, ready or not", () => {
+    const view = routedEmpty();
+    view.inventory.entities.push(pod("api-1", { ready: 0 }));
+    view.inventory.edges.push(edge("api-svc", "api-1", "has_endpoint"));
+    expect(problem(view)).toBe(false);
+  });
+
+  it("leaves ExternalName, manual-endpoint and unrouted Services alone", () => {
+    const external = routedEmpty();
+    find(external, "api-svc").serviceType = "ExternalName";
+    expect(problem(external)).toBe(false);
+    // No EndpointSlice owned by the Service: endpoints managed by hand.
+    const manual = routedEmpty();
+    manual.inventory.edges = manual.inventory.edges.filter(
+      (item) => item.source !== "api-slice"
+    );
+    expect(problem(manual)).toBe(false);
+    // The API server's own Service: no Ingress routes to it.
+    const unrouted = routedEmpty();
+    unrouted.inventory.entities.push(
+      entity("kubernetes", "Service", { namespace: "default" }),
+      entity("kubernetes-slice", "EndpointSlice", { namespace: "default" })
+    );
+    unrouted.inventory.edges.push(
+      edge("kubernetes-slice", "kubernetes", "owned_by")
+    );
+    expect(
+      itemProblem({ view: unrouted, entity: find(unrouted, "kubernetes") }, now)
+    ).toBe(false);
+  });
+
+  it("skips selector-only clusters, where endpoints are not observed", () => {
+    const view = routedEmpty();
+    view.inventory.capabilities.push("endpointslices_unavailable");
+    expect(problem(view)).toBe(false);
+  });
+
+  it("judges stale live inventory as unknown and saved observations as captured", () => {
+    const stale = routedEmpty();
+    stale.inventory.sourceTime = old;
+    expect(problem(stale)).toBe(false);
+    // A saved observation, recognised by its capture record.
+    stale.observationMetadataAvailable = { profile: true, heartbeat: true };
+    expect(problem(stale)).toBe(true);
+    const frozen = routedEmpty();
+    frozen.inventory.sourceTime = old;
+    expect(
+      routedServiceWithoutEndpoints(frozen, find(frozen, "api-svc"), now, true)
+    ).toBe(true);
   });
 });
 

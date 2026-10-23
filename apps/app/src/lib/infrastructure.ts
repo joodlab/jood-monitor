@@ -1,5 +1,5 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { observedUsage } from "./metrics";
+import { inventoryFreshness, observedUsage } from "./metrics";
 
 export const workloadKinds = new Set([
   "Deployment",
@@ -170,33 +170,88 @@ function findRelatedPods(view: ClusterView, entity: Entity, pods: Entity[]) {
   return [];
 }
 
-const indexes = new WeakMap<
-  ClusterView,
-  {
-    entities: Map<string, Entity>;
-    owners: Map<string, string>;
-    pods: Entity[];
-    members: Map<string, Entity[]>;
+interface ViewIndex {
+  entities: Map<string, Entity>;
+  members: Map<string, Entity[]>;
+  owners: Map<string, string>;
+  pods: Entity[];
+  // Services an Ingress routes to (configuration only).
+  routed: Set<string>;
+  // Services that own an EndpointSlice: the EndpointSlice controller manages
+  // their endpoints from a selector.
+  sliced: Set<string>;
+}
+const indexes = new WeakMap<ClusterView, ViewIndex>();
+
+function edgeIndex(view: ClusterView, entities: Map<string, Entity>) {
+  const owners = new Map<string, string>();
+  const routed = new Set<string>();
+  const sliced = new Set<string>();
+  for (const edge of view.inventory.edges) {
+    const source = entities.get(edge.source)?.kind;
+    if (edge.relation === "owned_by") {
+      owners.set(edge.source, edge.target);
+      if (source === "EndpointSlice") {
+        sliced.add(edge.target);
+      }
+    } else if (edge.relation === "routes_to" && source === "Ingress") {
+      routed.add(edge.target);
+    }
   }
->();
+  return { owners, routed, sliced };
+}
+
 function viewIndex(view: ClusterView) {
   let index = indexes.get(view);
   if (!index) {
+    const entities = new Map(
+      view.inventory.entities.map((entity) => [entity.uid, entity])
+    );
     index = {
-      entities: new Map(
-        view.inventory.entities.map((entity) => [entity.uid, entity])
-      ),
-      owners: new Map(
-        view.inventory.edges
-          .filter((edge) => edge.relation === "owned_by")
-          .map((edge) => [edge.source, edge.target])
-      ),
+      entities,
+      ...edgeIndex(view, entities),
       pods: view.inventory.entities.filter((entity) => entity.kind === "Pod"),
       members: new Map(),
     };
     indexes.set(view, index);
   }
   return index;
+}
+
+// A Service an Ingress routes to that has no endpoint pods at all: a
+// configured route with nothing observed behind it. It is judged only where
+// the inventory can show that: fresh inventory, or a saved observation
+// (recognised by its capture record, as usage gaps are) judged as captured;
+// EndpointSlice discovery available; and an EndpointSlice owned by the
+// Service, so selector-less Services with manual endpoints, ExternalName
+// Services and selector-only clusters are never flagged. Pods that exist
+// but are not ready stay with their workload and pod items. Nothing here
+// measures traffic or names a cause.
+export function routedServiceWithoutEndpoints(
+  view: ClusterView,
+  entity: Entity,
+  now: number,
+  frozen = false
+) {
+  if (entity.kind !== "Service" || entity.serviceType === "ExternalName") {
+    return false;
+  }
+  if (view.inventory.capabilities.includes("endpointslices_unavailable")) {
+    return false;
+  }
+  const saved = frozen || view.observationMetadataAvailable != null;
+  if (
+    !saved &&
+    inventoryFreshness(view.inventory.sourceTime, now) !== "fresh"
+  ) {
+    return false;
+  }
+  const { routed, sliced } = viewIndex(view);
+  return (
+    routed.has(entity.uid) &&
+    sliced.has(entity.uid) &&
+    relatedPods(view, entity).every((pod) => isFinished(pod))
+  );
 }
 
 function completeSum(values: (number | undefined)[]) {

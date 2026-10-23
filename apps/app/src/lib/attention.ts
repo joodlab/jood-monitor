@@ -8,16 +8,18 @@ import {
   percent,
   podPhase,
   resourceStatus,
+  routedServiceWithoutEndpoints,
   workloadKinds,
 } from "./infrastructure";
 import { freshness, inventoryFreshness, observedUsage } from "./metrics";
 
 // Attention items describe observed conditions, one row per real problem:
-// a cluster's observer, a node, a workload with its affected pods, or an
-// unowned pod. Missing measurements stay "missing", never healthy or zero.
+// a cluster's observer, a node, a workload with its affected pods, a routed
+// Service with no endpoint pods, or an unowned pod. Missing measurements
+// stay "missing", never healthy or zero.
 
 export type Severity = "critical" | "warning" | "info";
-type AttentionScope = "cluster" | "node" | "workload" | "pod";
+type AttentionScope = "cluster" | "node" | "workload" | "service" | "pod";
 
 export interface Attention {
   // Subject entity; absent for cluster-scoped observer problems.
@@ -186,8 +188,9 @@ function clusterCondition(
   }
 }
 
-// A saved observation keeps inventory source times but not observer
-// heartbeats, so only inventory coverage is judged against the selected time.
+// A saved observation captures the observer heartbeat with its inventory,
+// but that heartbeat is not judged against the selected time; only inventory
+// coverage is.
 function savedCondition(
   view: ClusterView,
   at: number
@@ -459,6 +462,34 @@ function workloadItems(view: ClusterView, now: number): Attention[] {
   return items;
 }
 
+// An Ingress routes to the Service and it has no endpoint pods at all. The
+// route is configuration and no traffic is measured, so no cause or impact
+// is claimed; not-ready endpoint pods stay with their workload and pod rows.
+function serviceItems(
+  view: ClusterView,
+  now: number,
+  frozen: boolean
+): Attention[] {
+  return view.inventory.entities
+    .filter((entity) =>
+      routedServiceWithoutEndpoints(view, entity, now, frozen)
+    )
+    .map(
+      (service): Attention => ({
+        view,
+        entity: service,
+        id: `${view.cluster.id}:${service.uid}:service`,
+        scope: "service",
+        severity: "warning",
+        title: "Routed Service has no endpoint pods",
+        reason: "Configuration observed, traffic not measured",
+        location: [view.cluster.name, service.namespace ?? ""].filter(Boolean),
+        members: [],
+        terminal: false,
+      })
+    );
+}
+
 const severityRank: Record<Severity, number> = {
   critical: 0,
   warning: 1,
@@ -468,7 +499,8 @@ const scopeRank: Record<AttentionScope, number> = {
   cluster: 0,
   node: 1,
   workload: 2,
-  pod: 3,
+  service: 3,
+  pod: 4,
 };
 
 export function attentionItems(
@@ -493,6 +525,7 @@ export function attentionItems(
       }
     }
     items.push(...workloadItems(view, now));
+    items.push(...serviceItems(view, now, frozen));
   }
   return items.sort(
     (a, b) =>

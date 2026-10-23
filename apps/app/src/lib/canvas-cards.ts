@@ -11,6 +11,7 @@ import {
   podTally,
   type ResourceSummary,
   resourceStatus,
+  routedServiceWithoutEndpoints,
   workloadKinds,
 } from "./infrastructure";
 import { inventoryFreshness } from "./metrics";
@@ -176,6 +177,11 @@ function historyText(pods: Entity[]) {
   return finished ? ` · ${finishedText(finished, finishedFailed)}` : "";
 }
 
+// No cause is named: a selector that matches nothing and a workload scaled
+// to zero look the same in the inventory.
+const routedEmptyText =
+  "Routed Service has no endpoint pods · configuration observed, traffic not measured";
+
 // Live failing pods out of the active ones: "CrashLoopBackOff · 1 of 3 pods".
 function failingText(failing: Entity[], active: number) {
   return `${leadingStatus(failing)} · ${failing.length} of ${plural(active, "pod")}`;
@@ -192,6 +198,12 @@ function problemText(
   }
   if (entity.kind === "Pod") {
     return resourceStatus(entity);
+  }
+  if (entity.kind === "Service") {
+    // A Service is a problem only when routed with no endpoint pods at all.
+    return summary.active
+      ? serviceText(summary, context.selectorOnly)
+      : routedEmptyText;
   }
   // Only live failures lead; a retained failure never becomes the headline.
   const failing = summary.pods.filter((pod) => livePodProblem(pod, now));
@@ -414,6 +426,8 @@ export function podDetail(pod: Entity) {
 export interface NamespaceSummary {
   // Pods that have not finished (podTally's active pods).
   activePods: number;
+  // Services an Ingress routes to that have no endpoint pods at all.
+  emptyServices: number;
   // Active pods with a live problem.
   failing: number;
   // Retained failed pods: history, as on the attention list, never a warning.
@@ -482,6 +496,9 @@ export function namespaceSummary(
   return {
     ingresses: count("Ingress"),
     services: count("Service"),
+    emptyServices: list.filter((entity) =>
+      routedServiceWithoutEndpoints(view, entity, now)
+    ).length,
     workloads: workloads.length,
     shortWorkloads: workloads.filter(shortfall).length,
     ...countPods(
@@ -540,6 +557,9 @@ function namespaceProblem(summary: NamespaceSummary) {
   }
   if (summary.shortWorkloads) {
     return `${plural(summary.shortWorkloads, "workload")} not fully ready`;
+  }
+  if (summary.emptyServices) {
+    return `${plural(summary.emptyServices, "routed Service")} without endpoint pods`;
   }
   return "Problem observed";
 }

@@ -291,6 +291,35 @@ describe("card status line", () => {
     );
   });
 
+  it("names a routed Service with no endpoint pods without naming a cause", () => {
+    const view = fixture([
+      entity("api-in", "Ingress", { hosts: ["api.synthetic.test"] }),
+      entity("api-svc", "Service", { serviceType: "ClusterIP" }),
+      entity("api-slice", "EndpointSlice"),
+    ]);
+    view.inventory.edges.push(
+      edge("api-in", "api-svc", "routes_to"),
+      edge("api-slice", "api-svc", "owned_by")
+    );
+    const service = find(view, "api-svc");
+    const status = cardStatus(service, summarize(view, service, now), {
+      ...fresh,
+      problem: true,
+    });
+    expect(status).toEqual({
+      tone: "warning",
+      text: "Routed Service has no endpoint pods · configuration observed, traffic not measured",
+    });
+    const summary = namespaceSummary(view, "shop", now);
+    expect(summary.emptyServices).toBe(1);
+    expect(
+      namespaceStatus(
+        { ...summary, failing: 0, shortWorkloads: 0 },
+        { ...fresh, problem: true }
+      ).text
+    ).toBe("1 routed Service without endpoint pods");
+  });
+
   it("reports a workload without readiness as unknown, not healthy", () => {
     const view = fixture();
     const job = entity("batch", "StatefulSet");
@@ -410,6 +439,7 @@ describe("namespace cards", () => {
     expect(namespaceSummary(fixture(), "shop", now)).toEqual({
       ingresses: 1,
       services: 1,
+      emptyServices: 0,
       workloads: 1,
       shortWorkloads: 1,
       pods: 3,
