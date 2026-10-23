@@ -9,9 +9,11 @@ import {
   gaugeRows,
   nanoMs,
   type RateRow,
+  spanExpiry,
 } from "./history-series";
 import { nodeProfileOutcome } from "./metrics";
 import { DAY_MS, DIAGNOSTIC_RETENTION_DAYS } from "./retention";
+import { formatDateTime, timeZoneLabel } from "./time";
 
 // Host CPU and memory a node collector reads from /proc, as chart rows. The
 // rules are the hub's: rates only between samples a counter can subtract,
@@ -277,4 +279,36 @@ export function endedSpans(
 export function diagnosticCutoff(windowFrom: number, now: number) {
   const cutoff = now - DIAGNOSTIC_RETENTION_DAYS * DAY_MS;
   return windowFrom < cutoff ? cutoff : undefined;
+}
+
+export const DIAGNOSTIC_RETENTION_HOURS = DIAGNOSTIC_RETENTION_DAYS * 24;
+
+// A time in the display zone, with the zone's name, as notices show it.
+export function zoneTime(time: number, timeZone: string) {
+  return `${formatDateTime(time, timeZone)} ${timeZoneLabel(timeZone, time)}`;
+}
+
+// An ended period's notice at `now`: when its samples were taken, and how
+// much of it the hub still keeps. Samples fetched before they expired stay
+// drawn until the charts read the window again.
+export function endedNotice(
+  span: DiagnosticSpan,
+  now: number,
+  timeZone: string
+) {
+  const single = span.samples === 1;
+  const what = span.cadenceSeconds
+    ? `${span.cadenceSeconds}-second Diagnostic samples from ${formatDateTime(span.start, timeZone)} to ${zoneTime(span.end, timeZone)}.`
+    : `One Diagnostic sample at ${zoneTime(span.start, timeZone)}.`;
+  const expiry = spanExpiry(span, now);
+  if (expiry === "kept" && single) {
+    return `${what} It expires at ${zoneTime(span.lastExpiresAt, timeZone)}, ${DIAGNOSTIC_RETENTION_HOURS} hours after its source time.`;
+  }
+  if (expiry === "kept") {
+    return `${what} They expire between ${formatDateTime(span.firstExpiresAt, timeZone)} and ${zoneTime(span.lastExpiresAt, timeZone)}, ${DIAGNOSTIC_RETENTION_HOURS} hours after each sample's source time.`;
+  }
+  if (expiry === "partly") {
+    return `${what} Partly expired: samples before ${zoneTime(now - DIAGNOSTIC_RETENTION_DAYS * DAY_MS, timeZone)} are gone; the rest expire by ${zoneTime(span.lastExpiresAt, timeZone)}.`;
+  }
+  return `${what} Expired: the hub no longer keeps ${single ? "this sample" : "these samples"}, so the charts drop ${single ? "it" : "them"} on their next read.`;
 }

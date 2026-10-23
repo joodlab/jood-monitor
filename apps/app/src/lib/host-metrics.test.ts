@@ -6,6 +6,7 @@ import { diagnosticSpans } from "./history-series";
 import {
   cpuStates,
   diagnosticCutoff,
+  endedNotice,
   endedSpans,
   hostCpu,
   hostEmptyReason,
@@ -297,6 +298,54 @@ describe("Diagnostic state", () => {
   it("notes the day cut only when the window reaches past it", () => {
     expect(diagnosticCutoff(t0 - 3_600_000, t0)).toBeUndefined();
     expect(diagnosticCutoff(t0 - 86_400_001, t0)).toBe(t0 - 86_400_000);
+  });
+});
+
+describe("ended Diagnostic notices", () => {
+  // Nine minutes of 5-second samples from t0.
+  const [span] = diagnosticSpans(
+    cpuSeries(
+      "user",
+      Array.from({ length: 109 }, (_, index): [number, string] => [
+        index * 5000,
+        String(index),
+      ]),
+      "diagnostic"
+    )
+  );
+  const taken =
+    "5-second Diagnostic samples from Oct 22, 12:00:00 to Oct 22, 12:09:00 UTC.";
+
+  it("says when kept samples expire", () => {
+    expect(endedNotice(span, t0 + 3_600_000, "UTC")).toBe(
+      `${taken} They expire between Oct 23, 12:00:00 and Oct 23, 12:09:00 UTC, 24 hours after each sample's source time.`
+    );
+  });
+
+  it("says which samples are gone once the first expired", () => {
+    expect(endedNotice(span, t0 + 86_460_000, "UTC")).toBe(
+      `${taken} Partly expired: samples before Oct 22, 12:01:00 UTC are gone; the rest expire by Oct 23, 12:09:00 UTC.`
+    );
+  });
+
+  it("never claims expired samples are partly kept", () => {
+    const notice = endedNotice(span, t0 + 86_940_000, "UTC");
+    expect(notice).toBe(
+      `${taken} Expired: the hub no longer keeps these samples, so the charts drop them on their next read.`
+    );
+    expect(notice).not.toContain("expire by");
+  });
+
+  it("describes a single sample on its own", () => {
+    const [single] = diagnosticSpans(
+      cpuSeries("user", [[0, "1"]], "diagnostic")
+    );
+    expect(endedNotice(single, t0 + 60_000, "UTC")).toBe(
+      "One Diagnostic sample at Oct 22, 12:00:00 UTC. It expires at Oct 23, 12:00:00 UTC, 24 hours after its source time."
+    );
+    expect(endedNotice(single, t0 + 86_400_000, "UTC")).toBe(
+      "One Diagnostic sample at Oct 22, 12:00:00 UTC. Expired: the hub no longer keeps this sample, so the charts drop it on their next read."
+    );
   });
 });
 

@@ -2,7 +2,7 @@ import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import { Skeleton } from "@jood-monitor/ui/skeleton";
 import { Info, Timer, ZoomIn, ZoomOut } from "lucide-react";
-import { lazy, type ReactNode, Suspense, useId, useMemo } from "react";
+import { lazy, type ReactNode, Suspense, useId, useMemo, useRef } from "react";
 import type { SeriesHistorySeries } from "../contracts/types";
 import {
   type SeriesRead,
@@ -21,13 +21,14 @@ import { collectionState, profileKnown } from "../lib/collection-state";
 import {
   chartSpans,
   type DiagnosticSpan,
-  spanExpiry,
   zoomDomain,
 } from "../lib/history-series";
 import {
   type BusyRow,
   cpuStates,
+  DIAGNOSTIC_RETENTION_HOURS,
   diagnosticCutoff,
+  endedNotice,
   endedSpans,
   hasHostSamples,
   hostCpu,
@@ -37,12 +38,12 @@ import {
   latestHostProfile,
   type MemoryRow,
   nodeDiagnostic,
+  zoneTime,
 } from "../lib/host-metrics";
 import { minutesLeft } from "../lib/install-enrollment";
 import { historyError } from "../lib/install-errors";
 import { nodeProfileOutcome } from "../lib/metrics";
-import { DIAGNOSTIC_RETENTION_DAYS } from "../lib/retention";
-import { formatDateTime, hubNow, timeZoneLabel } from "../lib/time";
+import { formatDateTime, hubNow } from "../lib/time";
 import { profileLabel } from "./collection-model";
 import type { ChartSpan } from "./resource-chart";
 
@@ -53,8 +54,6 @@ const MetricChart = lazy(() =>
     default: module.MetricChart,
   }))
 );
-
-const RETENTION_HOURS = DIAGNOSTIC_RETENTION_DAYS * 24;
 
 export function ChartSkeleton({
   title,
@@ -114,10 +113,6 @@ export function toChartSpans(spans: readonly DiagnosticSpan[]): ChartSpan[] {
   }));
 }
 
-function when(time: number, timeZone: string) {
-  return `${formatDateTime(time, timeZone)} ${timeZoneLabel(timeZone, time)}`;
-}
-
 // Samples taken during a Diagnostic are kept a day, so a window reaching
 // further back can show earlier periods as gaps.
 export function RetentionFootnote({
@@ -137,8 +132,9 @@ export function RetentionFootnote({
   }
   return (
     <p className="text-muted-foreground text-xs" role="note">
-      Samples taken during a Diagnostic are kept {RETENTION_HOURS} hours, so
-      Diagnostic periods before {when(cutoff, timeZone)} may show as gaps.
+      Samples taken during a Diagnostic are kept {DIAGNOSTIC_RETENTION_HOURS}{" "}
+      hours, so Diagnostic periods before {zoneTime(cutoff, timeZone)} may show
+      as gaps.
     </p>
   );
 }
@@ -154,17 +150,7 @@ function runningText(
   if (state.status === "waiting") {
     return "Diagnostic requested for this node; waiting for the node collector to acknowledge it.";
   }
-  return `Diagnostic running: host samples every 5 s until ${when(state.expiresAt, timeZone)} (${minutesLeft(state.expiresAt, now)} left), then ${state.returnTo}. Charts refresh about every 30 s while this tab is visible.`;
-}
-
-function endedText(span: DiagnosticSpan, now: number, timeZone: string) {
-  const what = span.cadenceSeconds
-    ? `${span.cadenceSeconds}-second Diagnostic samples from ${formatDateTime(span.start, timeZone)} to ${when(span.end, timeZone)}.`
-    : `One Diagnostic sample at ${when(span.start, timeZone)}.`;
-  if (spanExpiry(span, now) === "kept") {
-    return `${what} ${span.samples === 1 ? "It expires" : "They expire"} between ${formatDateTime(span.firstExpiresAt, timeZone)} and ${when(span.lastExpiresAt, timeZone)}, ${RETENTION_HOURS} hours after each sample's source time.`;
-  }
-  return `${what} Partly expired: samples before ${when(now - RETENTION_HOURS * 3_600_000, timeZone)} are gone; the rest expire by ${when(span.lastExpiresAt, timeZone)}.`;
+  return `Diagnostic running: host samples every 5 s until ${zoneTime(state.expiresAt, timeZone)} (${minutesLeft(state.expiresAt, now)} left), then ${state.returnTo}. Charts refresh about every 30 s while this tab is visible.`;
 }
 
 function ZoomButton({
@@ -175,14 +161,15 @@ function ZoomButton({
 }: {
   span: DiagnosticSpan;
   window: { from: number; to: number };
-  onZoom: (domain: [number, number]) => void;
+  onZoom: (domain: [number, number], button: HTMLButtonElement) => void;
   timeZone: string;
 }) {
   return (
     <Button
-      aria-label={`Zoom to Diagnostic from ${formatDateTime(span.start, timeZone)} to ${when(span.end, timeZone)}`}
+      aria-label={`Zoom to Diagnostic from ${formatDateTime(span.start, timeZone)} to ${zoneTime(span.end, timeZone)}`}
       className="h-8 focus-visible:ring-2 focus-visible:ring-ring max-sm:h-9"
-      onClick={() => onZoom(zoomDomain(span, window))}
+      data-zoom
+      onClick={(event) => onZoom(zoomDomain(span, window), event.currentTarget)}
       size="sm"
       variant="outline"
     >
@@ -239,6 +226,21 @@ export function DiagnosticNotices({
     () => chartSpans(host.data?.response.series ?? []),
     [host.data]
   );
+  const box = useRef<HTMLDivElement>(null);
+  const origin = useRef<HTMLButtonElement | null>(null);
+  const zoom = (domain: [number, number], button: HTMLButtonElement) => {
+    origin.current = button;
+    onZoom(domain);
+  };
+  // Show full range leaves with the zoom, so focus returns to the button
+  // that zoomed, or another zoom button, instead of falling to the page.
+  const reset = () => {
+    const target = origin.current?.isConnected
+      ? origin.current
+      : box.current?.querySelector<HTMLButtonElement>("[data-zoom]");
+    target?.focus();
+    onReset();
+  };
   // The display clock is zero until hydration; times wait for it.
   if (!clock) {
     return null;
@@ -255,7 +257,10 @@ export function DiagnosticNotices({
     return null;
   }
   return (
-    <div className="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs">
+    <div
+      className="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs"
+      ref={box}
+    >
       <ul className="space-y-2">
         {state && (
           <NoticeRow
@@ -263,7 +268,7 @@ export function DiagnosticNotices({
               current &&
               fetched && (
                 <ZoomButton
-                  onZoom={onZoom}
+                  onZoom={zoom}
                   span={current}
                   timeZone={timeZone}
                   window={fetched}
@@ -280,7 +285,7 @@ export function DiagnosticNotices({
             <NoticeRow
               action={
                 <ZoomButton
-                  onZoom={onZoom}
+                  onZoom={zoom}
                   span={span}
                   timeZone={timeZone}
                   window={fetched}
@@ -289,14 +294,14 @@ export function DiagnosticNotices({
               icon={<Info aria-hidden className={noticeIcon} />}
               key={span.start}
             >
-              {endedText(span, now, timeZone)}
+              {endedNotice(span, now, timeZone)}
             </NoticeRow>
           ))}
       </ul>
       {zoomed && (
         <Button
           className="mt-2 h-8 focus-visible:ring-2 focus-visible:ring-ring max-sm:h-9"
-          onClick={onReset}
+          onClick={reset}
           size="sm"
           variant="outline"
         >
@@ -404,6 +409,15 @@ function HostCharts({
     [cpu]
   );
   const memoryRows = useMemo(() => memory.rows.map(memoryDetail), [memory]);
+  // Stable series, so the display clock's ticks do not redraw the charts.
+  const cpuSeries = useMemo(
+    () => [{ id: "busy", label: "Busy", rows: cpuRows }],
+    [cpuRows]
+  );
+  const memorySeries = useMemo(
+    () => [{ id: "used", label: "In use", rows: memoryRows }],
+    [memoryRows]
+  );
   const capacity = useMemo(
     () =>
       references([
@@ -449,7 +463,7 @@ function HostCharts({
             height={height}
             percentBase={capacity[0]}
             references={capacity}
-            series={[{ id: "busy", label: "Busy", rows: cpuRows }]}
+            series={cpuSeries}
             spans={spans}
             subject={subject}
             title="Host CPU busy"
@@ -483,7 +497,7 @@ function HostCharts({
             height={height}
             percentBase={memTotal[0] as Reference | undefined}
             references={memTotal}
-            series={[{ id: "used", label: "In use", rows: memoryRows }]}
+            series={memorySeries}
             spans={spans}
             subject={subject}
             title="Host memory in use"
