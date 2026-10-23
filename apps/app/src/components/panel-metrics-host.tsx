@@ -11,6 +11,7 @@ import {
 } from "../hooks/api/history";
 import { useDisplay } from "../hooks/display";
 import {
+  type CountNoun,
   formatUsage,
   type MetricRow,
   type Reference,
@@ -385,6 +386,10 @@ function memoryDetail(row: MemoryRow): MetricRow {
       };
 }
 
+// Each busy row is a rate between two samples, so the chart counts rates:
+// a run of samples gives one rate fewer, and a gap or reset one fewer again.
+const rateNoun: CountNoun = { one: "rate", other: "rates" };
+
 function HostCharts({
   entity,
   series,
@@ -447,6 +452,7 @@ function HostCharts({
         >
           <MetricChart
             breaks={{ gaps: cpu.gaps, resets: cpu.resets }}
+            countLabel={rateNoun}
             domain={domain}
             emptyReason={
               emptyReason ??

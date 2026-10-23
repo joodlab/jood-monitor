@@ -1,5 +1,5 @@
 import { cn } from "@jood-monitor/ui/utils";
-import { defineChart, dot, lineY, rect, ruleY, text } from "@tanstack/charts";
+import { defineChart, dot, lineY, rect, ruleY } from "@tanstack/charts";
 import { crosshair } from "@tanstack/charts/crosshair";
 import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react";
@@ -9,7 +9,9 @@ import { TriangleAlert } from "lucide-react";
 import { type CSSProperties, type ReactNode, useMemo } from "react";
 import { useDisplay } from "../hooks/display";
 import {
+  type CountNoun,
   chartAria,
+  countText,
   type DisplayUnit,
   displayUnitFor,
   formatInUnit,
@@ -25,6 +27,7 @@ import {
   type Reference,
   rowStats,
   type SampleStats,
+  sampleNoun,
   tickLabel,
   timeTicks,
   tooltipContent,
@@ -146,7 +149,9 @@ export interface ChartBreaks {
 }
 
 // Raw history for one subject, one or more series in one unit family. The
-// time axis is the fetched window, or a narrower client-side domain.
+// time axis is the fetched window, or a narrower client-side domain; the
+// summary always covers the fetched window. `countLabel` names what the
+// rows are, e.g. rates taken between two samples.
 export function MetricChart({
   title,
   subject,
@@ -163,6 +168,7 @@ export function MetricChart({
   breaks,
   heading: Title = "h3",
   footnote,
+  countLabel = sampleNoun,
 }: {
   title: string;
   subject: string;
@@ -179,13 +185,16 @@ export function MetricChart({
   breaks?: ChartBreaks;
   heading?: Heading;
   footnote?: ReactNode;
+  countLabel?: CountNoun;
 }) {
   const { timeZone, frozen } = useDisplay();
   const primary = series[0]?.rows;
   const stats = useMemo(() => rowStats(primary ?? []), [primary]);
   const max = useMemo(() => seriesMax(series), [series]);
   const unit = displayUnitFor(family, max);
-  const [start, end] = domain ?? [from, to];
+  // A zoom narrows only the time axis; the rows stay the fetched window.
+  const view = domain && domain[0] < domain[1] ? domain : undefined;
+  const [start, end] = view ?? [from, to];
   const shown = useMemo(
     () => visibleSpans(spans, start, end),
     [spans, start, end]
@@ -195,9 +204,9 @@ export function MetricChart({
       chartDefinition({
         series,
         unit,
-        from: start,
-        to: end,
-        clip: !!domain,
+        from,
+        to,
+        view,
         timeZone,
         title,
         references,
@@ -208,9 +217,9 @@ export function MetricChart({
     [
       series,
       unit,
-      start,
-      end,
-      domain,
+      from,
+      to,
+      view,
       timeZone,
       title,
       references,
@@ -226,6 +235,8 @@ export function MetricChart({
     unit,
     stats,
     interval,
+    count: countLabel,
+    zoom: view ? intervalText(start, end, timeZone) : undefined,
     extra: spanSentences(shown, timeZone),
   });
   return (
@@ -237,8 +248,13 @@ export function MetricChart({
             ({unit.label})
           </span>
         </Title>
-        {references.length > 0 && (
-          <ReferenceLegend family={family} references={references} />
+        {(references.length > 0 || shown.length > 0) && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {references.length > 0 && (
+              <ReferenceLegend family={family} references={references} />
+            )}
+            {shown.length > 0 && <SpanLegend spans={shown} />}
+          </div>
         )}
       </figcaption>
       {stats.count ? (
@@ -252,7 +268,7 @@ export function MetricChart({
         </div>
       ) : (
         <div className="flex h-36 flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 text-center">
-          <p className="text-sm">No samples in this interval</p>
+          <p className="text-sm">No {countLabel.other} in this interval</p>
           <p className="text-muted-foreground text-xs">
             {interval}. Missing samples are not zero usage.
           </p>
@@ -266,11 +282,13 @@ export function MetricChart({
       {stats.count > 0 && (
         <ChartSummary
           breaks={breaks}
+          countLabel={countLabel}
           frozen={frozen}
           percentBase={percentBase}
           stats={stats}
           to={to}
           unit={unit}
+          zoomed={!!view}
         />
       )}
       {footnote}
@@ -346,6 +364,25 @@ function ReferenceLegend({
   );
 }
 
+// What the shaded periods are. The shading itself is decorative; the chart's
+// description names each period with its times.
+function SpanLegend({ spans }: { spans: readonly ChartSpan[] }) {
+  const labels = [...new Set(spans.map((item) => item.label))];
+  return (
+    <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
+      {labels.map((label) => (
+        <li className="flex items-center gap-1.5" key={label}>
+          <span
+            aria-hidden="true"
+            className="h-2.5 w-5 rounded-xs bg-info/15"
+          />
+          <span>{label}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function BreakCounts({
   stats,
   breaks,
@@ -384,6 +421,8 @@ function ChartSummary({
   to,
   frozen,
   breaks,
+  countLabel,
+  zoomed,
 }: {
   stats: SampleStats;
   unit: DisplayUnit;
@@ -391,6 +430,8 @@ function ChartSummary({
   to: number;
   frozen: boolean;
   breaks?: ChartBreaks;
+  countLabel: CountNoun;
+  zoomed: boolean;
 }) {
   const latest = stats.latest;
   const share = percentOf(latest?.value, percentBase?.value);
@@ -414,9 +455,7 @@ function ChartSummary({
       <span aria-hidden>·</span>
       <span className="tabular-nums">max {formatInUnit(stats.max, unit)}</span>
       <span aria-hidden>·</span>
-      <span className="tabular-nums">
-        {stats.count} sample{stats.count === 1 ? "" : "s"}
-      </span>
+      <span className="tabular-nums">{countText(stats.count, countLabel)}</span>
       <span aria-hidden>·</span>
       <span className={cn(silent && "text-warning-text")}>
         {silent && (
@@ -434,6 +473,12 @@ function ChartSummary({
         {silent && " · none since"}
       </span>
       <BreakCounts breaks={breaks} stats={stats} />
+      {zoomed && (
+        <>
+          <span aria-hidden>·</span>
+          <span>summary covers the full range, not only the zoomed axis</span>
+        </>
+      )}
     </p>
   );
 }
@@ -451,6 +496,8 @@ function scaledRows(
   }));
 }
 
+// Shading only. Labels drawn in the plot would widen its margins and overlap
+// one another, so the legend and the description name each period instead.
 function spanMarks(spans: readonly ChartSpan[], top: number) {
   if (!spans.length) {
     return [];
@@ -468,28 +515,18 @@ function spanMarks(spans: readonly ChartSpan[], top: number) {
         inset: 0,
       })
     ),
-    decorative(
-      text(spans, {
-        id: "span-labels",
-        x: "start",
-        y: () => top,
-        text: "label",
-        anchor: "start",
-        dx: 4,
-        dy: 9,
-        fill: "var(--info-text)",
-        fontSize: 11,
-      })
-    ),
   ];
 }
 
-function chartDefinition({
+// The x scale spans the fetched window. A zoom is a viewport on it, so the
+// axis shows the zoomed interval and keyboard and pointer focus reach only
+// the samples drawn inside the plot.
+export function chartDefinition({
   series,
   unit,
   from,
   to,
-  clip,
+  view,
   timeZone,
   title,
   references,
@@ -501,7 +538,7 @@ function chartDefinition({
   unit: DisplayUnit;
   from: number;
   to: number;
-  clip: boolean;
+  view?: readonly [number, number];
   timeZone: string;
   title: string;
   references: readonly Reference[];
@@ -509,11 +546,12 @@ function chartDefinition({
   percentBase?: Reference;
   top: number;
 }) {
-  const ticks = timeTicks(from, to, timeZone);
+  const [start, end] = view ?? [from, to];
+  const ticks = timeTicks(start, end, timeZone);
   const axis = valueAxis(top * unit.factor);
-  const withDate = needsDate(from, to, timeZone);
+  const withDate = needsDate(start, end, timeZone);
   return defineChart({
-    clip,
+    clip: !!view,
     marks: [
       ...spanMarks(spans, axis.top),
       ...references.map((ref) =>
@@ -551,6 +589,9 @@ function chartDefinition({
     scales: {
       x: {
         scale: scaleLinear().domain([from, to]),
+        ...(view
+          ? { viewport: { domain: [start, end] as [number, number] } }
+          : {}),
         axis: {
           ticks: {
             values: ticks,

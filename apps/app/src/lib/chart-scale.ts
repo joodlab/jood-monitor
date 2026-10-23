@@ -370,18 +370,34 @@ export function intervalText(from: number, to: number, timeZone: string) {
   return `${formatDateTime(from, timeZone)} to ${formatDateTime(to, timeZone)} ${timeZoneLabel(timeZone, to)}`;
 }
 
-function statsSentence(stats: SampleStats, unit: DisplayUnit) {
-  return `Latest ${formatInUnit(stats.latest?.value, unit)}, minimum ${formatInUnit(stats.min, unit)}, maximum ${formatInUnit(stats.max, unit)}, ${stats.count} samples`;
+// What a chart's rows count: samples, or rates taken between two samples.
+export interface CountNoun {
+  one: string;
+  other: string;
 }
 
-// The chart's accessible name and description. Extra sentences, such as
-// Diagnostic periods, follow the fixed ones.
+export const sampleNoun: CountNoun = { one: "sample", other: "samples" };
+
+// "1 sample", "59 rates".
+export function countText(count: number, noun: CountNoun = sampleNoun) {
+  return `${count} ${count === 1 ? noun.one : noun.other}`;
+}
+
+function statsSentence(stats: SampleStats, unit: DisplayUnit, noun: CountNoun) {
+  return `Latest ${formatInUnit(stats.latest?.value, unit)}, minimum ${formatInUnit(stats.min, unit)}, maximum ${formatInUnit(stats.max, unit)}, ${countText(stats.count, noun)}`;
+}
+
+// The chart's accessible name and description. A zoomed time axis is named
+// after the fixed sentences, because the summary still covers the whole
+// interval; extra sentences, such as Diagnostic periods, follow.
 export function chartAria({
   title,
   subject,
   unit,
   stats,
   interval,
+  count = sampleNoun,
+  zoom,
   extra = [],
 }: {
   title: string;
@@ -389,12 +405,18 @@ export function chartAria({
   unit: DisplayUnit;
   stats: SampleStats;
   interval: string;
+  count?: CountNoun;
+  // The zoomed axis in words, as intervalText gives it.
+  zoom?: string;
   extra?: readonly string[];
 }) {
   return {
     label: `${title} for ${subject}, in ${unit.label}`,
     description: [
-      `${statsSentence(stats, unit)}. Interval ${interval}. Gaps longer than ${GAP_MS / 1000} seconds are left blank.`,
+      `${statsSentence(stats, unit, count)}. Interval ${interval}. Gaps longer than ${GAP_MS / 1000} seconds are left blank.`,
+      ...(zoom
+        ? [`Time axis zoomed to ${zoom}; the summary covers the full interval.`]
+        : []),
       ...extra,
     ].join(" "),
   };

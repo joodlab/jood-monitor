@@ -62,11 +62,12 @@ nodes without taints by default.
 ## Diagnostic periods
 
 Samples taken during a Diagnostic carry the `diagnostic` collection profile.
-Charts shade those periods and label them with the interval the samples show,
-for example `Diagnostic · samples every 5 s` on host charts. The Kubernetes
-Metrics API keeps its own cadence during a Diagnostic, so its charts show
-every 30 seconds. **Zoom to Diagnostic** narrows only the charts' time axis;
-the read stays the selected range.
+Charts shade those periods, and the chart's legend names them with the
+interval the samples show, for example `Diagnostic · samples every 5 s` on
+host charts. The Kubernetes Metrics API keeps its own cadence during a
+Diagnostic, so its charts show every 30 seconds. **Zoom to Diagnostic**
+narrows only the charts' time axis; the read and each chart's summary stay
+the selected range, and the summary says so while zoomed.
 
 Diagnostic raw samples are kept one day, counted from each sample's source
 time, so a period expires gradually: its first sample a day after it was
