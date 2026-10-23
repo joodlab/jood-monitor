@@ -192,6 +192,27 @@ describe("event summaries", () => {
       after: "8 vCPU",
     });
   });
+  it("names a receipt without a server ID by its node, never as a server", () => {
+    const receiptFor = (evidence: object) =>
+      describeEvent({
+        ...event("receipt_awaiting_join", null, null),
+        before: "",
+        after: "awaiting",
+        evidence: JSON.stringify({ ...receipt, ...evidence }),
+        attribution: "reported",
+      });
+    expect(receiptFor({ serverId: "", nodeUid: "3f2a-uid" }).subject).toEqual({
+      kind: "Node",
+      name: "3f2a-uid",
+      uid: "3f2a-uid",
+    });
+    expect(receiptFor({ serverId: "srv-2", nodeUid: "" }).subject).toEqual({
+      kind: "Server",
+      name: "srv-2",
+      uid: undefined,
+    });
+    expect(receiptFor({ serverId: "", nodeUid: "" }).subject).toBeUndefined();
+  });
   it("reads evidence from the stored attribution, not the kind", () => {
     const node = { uid: "n", kind: "Node", name: "node-a" };
     const reported = describeEvent(

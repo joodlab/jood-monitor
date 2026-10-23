@@ -298,12 +298,23 @@ const describers: Record<string, (parsed: Parsed) => Described> = {
 };
 
 // Receipts name the provider server, matched to the Kubernetes node the
-// automation reported, so the row still finds and opens that node.
+// automation reported, so the row still finds and opens that node. Without
+// a server ID the node UID is all there is, and it is named as a node,
+// never as a server.
+function receiptSubject(
+  server?: string,
+  node?: string
+): EventSummary["subject"] {
+  if (server) {
+    return { kind: "Server", name: server, uid: node };
+  }
+  return node ? { kind: "Node", name: node, uid: node } : undefined;
+}
+
 function describeReceipt(event: Lifecycle, action: string): EventSummary {
   const receipt = parseReceipt(event.evidence);
   const server = text(receipt?.serverId);
   const node = text(receipt?.nodeUid);
-  const name = server ?? node;
   const changes =
     event.before || event.after
       ? [{ label: "State", before: event.before || "—", after: event.after }]
@@ -312,7 +323,7 @@ function describeReceipt(event: Lifecycle, action: string): EventSummary {
     category: "automation",
     verb: receiptActions[action] ?? `Receipt: ${action.replaceAll("_", " ")}`,
     title: `${receiptActions[action] ?? action.replaceAll("_", " ")}${server ? ` · ${server}` : ""}`,
-    subject: name ? { kind: "Server", name, uid: node } : undefined,
+    subject: receiptSubject(server, node),
     changes,
     evidence: evidenceOf(event),
     replicaSetStep: false,
