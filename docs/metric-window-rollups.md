@@ -46,7 +46,8 @@ Reading the same objects through `readArchiveObject`, including the local R2
 read, took 12.5 to 13.6 ms per 1,000 points.
 
 Because archives are cluster-wide, the budget is sized for the default
-one-hour window, which overlaps at most 13 five-minute archives:
+one-hour window. An hour holds up to 13 five-minute raw archives plus the
+cluster-wide Diagnostic archives in the window. The raw archives are:
 
 - Fifty single-container pods on five nodes archive roughly 470 points a
   minute at the agent's cadences (pod, container and node usage every 30
@@ -65,6 +66,33 @@ smaller cluster, about 234,000 for the busier one) and a day are refused with
 413 instead of being drawn from part of the window. A cluster archiving more
 than about 4,300 points per archive, about 1.8 times the smaller cluster, can
 be refused even at one hour, until summary resolutions serve longer windows.
+
+The Diagnostic archives are not sized into the budget, because raising it
+would pass the CPU cap. A Diagnostic samples host data every 5 seconds on its
+nodes, and its archives are cluster-wide, so every read in the cluster whose
+window overlaps it counts them, whichever entities it asks for. On a busy
+cluster a Diagnostic can exceed the budget: three nodes for ten minutes add
+about 20,900 points, more than the 14,400 the busier cluster's hour leaves.
+The read then degrades explicitly rather than refusing the hour:
+
+- Raw and Diagnostic points are counted separately from the archive index,
+  before any R2 read. When both fit the budget, both are read.
+- When only the raw archives fit, only they are read. The response lists
+  each left-out Diagnostic window in `omitted`, with the omitted archives'
+  exact source-time bounds and archived points, and holds none of that
+  window's Diagnostic samples, including any still in the outbox.
+- When the raw archives alone exceed the budget, the read is refused with
+  413, with no R2 read.
+- Diagnostic archives whose samples are all past the one-day Diagnostic
+  retention are neither read nor counted.
+
+The dashboard leaves an omitted period blank, with no line or counter rate
+across it, says so, and can load the period on its own: the omitted window
+with a minute either side, normally five raw archives and the Diagnostic
+ones. That read keeps the same budget; if it still does not fit, the
+dashboard says so plainly. Charging a Diagnostic only to reads of its scoped
+nodes and their Pods would need the archival writer to pack Diagnostic
+partitions per node, which is an owner decision.
 
 Local workerd timing is not Worker `cpuTime`. Measuring production CPU needs
 a non-production preview upload, which is an owner decision; revisit the

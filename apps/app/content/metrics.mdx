@@ -96,7 +96,7 @@ says **This window holds too many samples to load. Choose a shorter range.**,
 when the window:
 
 - overlaps more than 2,000 archives of one kind;
-- holds more archived points than the hub parses in one request; or
+- holds more archived raw points than the hub parses in one request; or
 - would return more than 30,000 points.
 
 The first two limits are decided from the archive index before any archive
@@ -110,6 +110,21 @@ loads, but a much larger cluster can be refused even at one hour. One hour is
 the shortest range, so the chart then says the window holds more samples than
 the hub reads in one request instead of suggesting a shorter range. Longer or
 denser views need summaries, which are not available yet.
+
+An hour holds up to 13 raw archives plus the cluster-wide Diagnostic
+archives in the window. Diagnostic archives are kept for the whole cluster,
+so on a busy cluster a Diagnostic can exceed the parse limit together with
+the hour for every chart whose window overlaps it, including resources the
+Diagnostic did not cover. When the raw archives alone fit, the hour still
+loads without that Diagnostic's samples, and the response names the omitted
+period with its exact source-time bounds. The chart leaves the period blank,
+with no line or counter rate across it, and says **Samples taken during a
+Diagnostic between … and … were not loaded with this hour**. **Load the
+Diagnostic period** reads that period on its own, with a minute either side,
+and **Back to the hour** (or the selected range) returns. If even that
+shorter read holds too many samples, the chart says so instead of drawing
+part of it. Diagnostic samples are kept one day after their source time, so
+a period older than that has nothing left to load and is not offered.
 
 ## Limits
 
