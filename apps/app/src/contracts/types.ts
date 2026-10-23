@@ -36,10 +36,27 @@ export interface SeriesHistorySeries {
   unit: string;
 }
 
+// Diagnostic samples a read left out because, with the window's raw
+// archives, they would pass the parse budget. Diagnostic archives are
+// cluster-wide, so a period is left out of every read in the cluster that
+// overlaps it, whichever entities it asks for.
+export interface SeriesOmission {
+  // Exact source-time bounds of the omitted archives' windows.
+  from: string;
+  kind: "diagnostic";
+  // Archived points in those archives, counted from the archive index: every
+  // series the cluster archived there, not only the requested ones.
+  points: number;
+  to: string;
+}
+
 export interface SeriesHistory {
   // Entities with at least one point in the window.
   found: string[];
   from: string;
+  // Periods whose Diagnostic samples are not in `series`, oldest first;
+  // empty when nothing was left out. A shorter read of one can load it.
+  omitted: SeriesOmission[];
   // Rows the hub read from the outbox and archives before filtering.
   parsedPoints: number;
   requested: { entities: string[]; names: string[] };

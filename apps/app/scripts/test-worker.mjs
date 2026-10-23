@@ -1207,7 +1207,11 @@ try {
     names: ["k8s.node.cpu.usage"],
   });
   assert.equal(dayOld.status, 200, JSON.stringify(dayOld));
-  assert.equal(dayOld.gets, 2);
+  assert.deepEqual(
+    [dayOld.gets, dayOld.kinds, dayOld.value.omitted],
+    [1, { raw: 1 }, []],
+    "a Diagnostic archive whose samples all expired is neither read nor counted"
+  );
   assert.deepEqual(
     dayOld.value.series.flatMap((item) =>
       item.points.map(([, value]) => value)
@@ -1258,6 +1262,88 @@ try {
     ),
     Array.from({ length: 13 }, (_, index) => String(index)),
     "a default one-hour Pod or Node read of a busy cluster is admitted"
+  );
+  assert.deepEqual(busyHour.value.omitted, []);
+  // A Diagnostic in the same hour: cluster-wide archives of 6,000 points for
+  // three of its five-minute windows, 18,000 points beside the hour's 41,600,
+  // more than the budget leaves. Each object holds one synthetic Diagnostic
+  // sample, two minutes into its window.
+  const diagnosticNano = (index) =>
+    hourBucket + 120_000_000_000n + BigInt(index) * 300_000_000_000n;
+  for (const index of [4, 5, 6]) {
+    await ok("/__test/series-archive", {
+      method: "POST",
+      body: JSON.stringify({
+        cluster: "series",
+        kind: "diagnostic",
+        points: 6000,
+        rows: [
+          {
+            ...oldRow(true),
+            key: `series-hour-diagnostic-${index}`,
+            value: String(100 + index),
+            timeUnixNano: String(diagnosticNano(index)),
+            sourceTime: exactTime(diagnosticNano(index)),
+          },
+        ],
+      }),
+    });
+  }
+  assert.ok(13 * 3200 + 3 * 6000 > busyHour.budget);
+  const diagnosticFrom = hourBucket + 4n * 300_000_000_000n;
+  const diagnosticTo = hourBucket + 7n * 300_000_000_000n - 1n;
+  const crowdedHour = await seriesRead({
+    from: new Date(hourFrom).toISOString(),
+    to: new Date(hourFrom + 3_600_000 + 60_000).toISOString(),
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.equal(crowdedHour.status, 200, JSON.stringify(crowdedHour));
+  assert.deepEqual(
+    crowdedHour.value.omitted,
+    [
+      {
+        kind: "diagnostic",
+        from: exactTime(diagnosticFrom),
+        to: exactTime(diagnosticTo),
+        points: 18_000,
+      },
+    ],
+    "a Diagnostic that would pass the budget with the hour is reported as omitted"
+  );
+  assert.deepEqual(
+    [crowdedHour.gets, crowdedHour.kinds],
+    [13, { raw: 13 }],
+    "the omitted Diagnostic archives are never fetched"
+  );
+  assert.deepEqual(
+    crowdedHour.value.series.flatMap((item) =>
+      item.points.map(([, value]) => value)
+    ),
+    Array.from({ length: 13 }, (_, index) => String(index)),
+    "the hour's raw samples still load"
+  );
+  // The dashboard's narrower read: the omitted period with a minute either
+  // side, five raw archives and the three Diagnostic ones.
+  const diagnosticPeriod = await seriesRead({
+    from: new Date(Number(diagnosticFrom / 1_000_000n) - 60_000).toISOString(),
+    to: new Date(Number(diagnosticTo / 1_000_000n) + 60_000).toISOString(),
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.equal(diagnosticPeriod.status, 200, JSON.stringify(diagnosticPeriod));
+  assert.deepEqual(diagnosticPeriod.value.omitted, []);
+  assert.deepEqual(diagnosticPeriod.kinds, { raw: 5, diagnostic: 3 });
+  assert.deepEqual(
+    diagnosticPeriod.value.series.map((item) => [
+      item.diagnostic,
+      item.points.map(([, value]) => value),
+    ]),
+    [
+      [false, ["4", "5", "6"]],
+      [true, ["104", "105", "106"]],
+    ],
+    "the Diagnostic period read on its own returns its samples"
   );
   const fakeArchives = async (count, points) => {
     const sourceStart = exactTime(

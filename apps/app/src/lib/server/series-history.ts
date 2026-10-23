@@ -1,6 +1,7 @@
 import type {
   SeriesHistory,
   SeriesHistorySeries,
+  SeriesOmission,
   StoredMetric,
 } from "../../contracts/types";
 import {
@@ -28,10 +29,13 @@ export const SERIES_NAME_LIMIT = 9;
 // archived points (gunzip, SHA-256, JSON.parse and filter; median 13.4 ms),
 // so this budget is about 750 ms there at the median and about 830 ms at the
 // slowest run, under the deployment's 1,000 ms CPU cap. Archives are
-// cluster-wide, so it is sized for a default one-hour window, which overlaps
-// at most 13 archives: about 30,500 points for 50 pods on 5 nodes, and about
+// cluster-wide, so it is sized for a default one-hour window, which holds up
+// to 13 raw archives plus the cluster-wide Diagnostic archives in the window.
+// The raw archives are about 30,500 points for 50 pods on 5 nodes and about
 // 41,600 for a cluster archiving 3,200 points per archive, with about a third
-// to spare. See docs/metric-window-rollups.md.
+// to spare. On a busy cluster a Diagnostic can pass the budget; its samples
+// are then omitted explicitly (planParse) and can be loaded on their own by a
+// shorter read. See docs/metric-window-rollups.md.
 export const SERIES_PARSE_POINTS = 56_000;
 // Archive objects listed per kind before a read is refused.
 const SERIES_ARCHIVE_LIMIT = 2000;
@@ -114,6 +118,113 @@ export function requireParseBudget(
     tooBroad(seriesParseTooBroad);
   }
   return points;
+}
+
+// What the archive index says about one archive.
+interface IndexedArchive {
+  points: number;
+  sourceEnd: string;
+  sourceStart: string;
+}
+
+// Whether a Diagnostic archive still holds a sample withinHistory keeps; one
+// whose window ended more than a day ago returns nothing, so it is neither
+// read nor counted.
+export function retainedDiagnostic(
+  archive: Pick<IndexedArchive, "sourceEnd">,
+  now: number
+) {
+  return (
+    Number(timestampNano(archive.sourceEnd) / 1_000_000n) >=
+    now - DIAGNOSTIC_RETENTION_DAYS * DAY_MS
+  );
+}
+
+// The archives' source windows joined where they overlap or adjoin, each
+// with its points, oldest first. Bounds stay the index's exact strings.
+export function omittedWindows(
+  archives: readonly IndexedArchive[]
+): SeriesOmission[] {
+  const sorted = archives
+    .map((archive) => ({
+      archive,
+      start: timestampNano(archive.sourceStart),
+      end: timestampNano(archive.sourceEnd),
+    }))
+    .sort((a, b) => {
+      if (a.start === b.start) {
+        return 0;
+      }
+      return a.start > b.start ? 1 : -1;
+    });
+  const windows: SeriesOmission[] = [];
+  let lastEnd = 0n;
+  for (const { archive, start, end } of sorted) {
+    const last = windows.at(-1);
+    if (last && start <= lastEnd + 1n) {
+      last.points += archive.points;
+      if (end > lastEnd) {
+        lastEnd = end;
+        last.to = archive.sourceEnd;
+      }
+      continue;
+    }
+    windows.push({
+      kind: "diagnostic",
+      from: archive.sourceStart,
+      to: archive.sourceEnd,
+      points: archive.points,
+    });
+    lastEnd = end;
+  }
+  return windows;
+}
+
+// Which archives one read parses, decided from the index before any object
+// is fetched. Raw and Diagnostic archives share one budget. When both pass
+// it but the raw archives alone fit, the Diagnostic archives are left out
+// and reported as omitted windows, never dropped silently; when the raw
+// archives alone pass it, the read is refused with 413. Expired Diagnostic
+// archives count for nothing.
+export function planParse<T extends IndexedArchive>(
+  raw: readonly T[],
+  diagnostic: readonly T[],
+  now: number,
+  budget = SERIES_PARSE_POINTS
+): { archives: T[]; omitted: SeriesOmission[] } {
+  const retained = diagnostic.filter((archive) =>
+    retainedDiagnostic(archive, now)
+  );
+  const rawPoints = requireParseBudget(raw, budget);
+  let diagnosticPoints = 0;
+  for (const archive of retained) {
+    diagnosticPoints += archive.points;
+  }
+  if (rawPoints + diagnosticPoints <= budget) {
+    return { archives: [...raw, ...retained], omitted: [] };
+  }
+  return { archives: [...raw], omitted: omittedWindows(retained) };
+}
+
+// Omitted windows as exact nanosecond bounds. An index may write its
+// bounds at millisecond precision, so they are compared as numbers.
+function omittedBounds(omitted: readonly SeriesOmission[]) {
+  return omitted.map(
+    (window) => [timestampNano(window.from), timestampNano(window.to)] as const
+  );
+}
+
+// A Diagnostic sample inside an omitted window, which the read leaves out
+// even when the outbox still holds it, so an omission is exact.
+function omittedRow(
+  row: Pick<StoredMetric, "diagnostic" | "sourceTime">,
+  bounds: readonly (readonly [bigint, bigint])[]
+) {
+  if (!(row.diagnostic && bounds.length)) {
+    return false;
+  }
+  const time = timestampNano(row.sourceTime);
+  return bounds.some(([from, to]) => time >= from && time <= to);
 }
 
 // Archives in read order, grouped for concurrent fetches.
@@ -217,6 +328,8 @@ export interface SeriesQuery {
   from: string;
   names: readonly string[];
   now: number;
+  // Windows whose Diagnostic samples the read leaves out (planParse).
+  omitted?: readonly SeriesOmission[];
   to: string;
 }
 
@@ -233,11 +346,13 @@ export class SeriesCollector {
   private readonly series = new Map<string, CollectedSeries>();
   private readonly attributes = new Map<string, Record<string, string>>();
   private readonly profiles = new Map<string, string | undefined>();
+  private readonly omitted: readonly (readonly [bigint, bigint])[];
 
   constructor(query: SeriesQuery) {
     this.query = query;
     this.entities = new Set(query.entities);
     this.names = new Set(query.names);
+    this.omitted = omittedBounds(query.omitted ?? []);
   }
 
   add(rows: readonly StoredMetric[]) {
@@ -256,7 +371,8 @@ export class SeriesCollector {
     return (
       this.entities.has(row.entityUid) &&
       this.names.has(row.name) &&
-      withinHistory(row, this.query.from, this.query.to, this.query.now)
+      withinHistory(row, this.query.from, this.query.to, this.query.now) &&
+      !omittedRow(row, this.omitted)
     );
   }
 
@@ -313,7 +429,10 @@ export class SeriesCollector {
     }
   }
 
-  result(): Pick<SeriesHistory, "found" | "parsedPoints" | "series"> {
+  result(): Pick<
+    SeriesHistory,
+    "found" | "omitted" | "parsedPoints" | "series"
+  > {
     const series: SeriesHistorySeries[] = [...this.series.values()]
       .map(({ meta, points }) => {
         const sorted = [...points.values()].sort(byTime);
@@ -339,6 +458,11 @@ export class SeriesCollector {
     const found = this.query.entities.filter((uid) =>
       series.some((item) => item.entityUid === uid)
     );
-    return { found, parsedPoints: this.parsedPoints, series };
+    return {
+      found,
+      omitted: [...(this.query.omitted ?? [])],
+      parsedPoints: this.parsedPoints,
+      series,
+    };
   }
 }

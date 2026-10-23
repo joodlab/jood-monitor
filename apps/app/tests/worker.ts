@@ -179,9 +179,10 @@ export class TestClusterState extends ClusterState {
   }
 }
 
-// R2 gets made by one series read, and the read's status, through the same
-// action getSeriesHistoryFn calls. `legacy` stands in an earlier Durable
-// Object that ignores the sets and answers with its full array.
+// R2 gets made by one series read, in all and by archive kind (the third
+// part of an object key), and the read's status, through the same action
+// getSeriesHistoryFn calls. `legacy` stands in an earlier Durable Object that
+// ignores the sets and answers with its full array.
 async function seriesHistoryFixture(
   env: Env,
   body: {
@@ -190,10 +191,16 @@ async function seriesHistoryFixture(
   }
 ) {
   let gets = 0;
+  const kinds: Record<string, number> = {};
   const archives = new Proxy(env.ARCHIVES, {
     get(target, property) {
       if (property === "get") {
-        gets++;
+        return (key: string, ...rest: unknown[]) => {
+          gets++;
+          const kind = key.split("/")[2] ?? "";
+          kinds[kind] = (kinds[kind] ?? 0) + 1;
+          return Reflect.apply(target.get, target, [key, ...rest]);
+        };
       }
       const value = Reflect.get(target, property);
       return typeof value === "function" ? value.bind(target) : value;
@@ -219,12 +226,13 @@ async function seriesHistoryFixture(
       { ...env, ARCHIVES: archives, CLUSTERS: clusters },
       seriesHistorySchema.parse(body.input)
     );
-    return { status: 200, value, gets, budget: SERIES_PARSE_POINTS };
+    return { status: 200, value, gets, kinds, budget: SERIES_PARSE_POINTS };
   } catch (error) {
     return {
       status: error instanceof HttpError ? error.status : 500,
       error: error instanceof Error ? error.message : String(error),
       gets,
+      kinds,
       budget: SERIES_PARSE_POINTS,
     };
   }

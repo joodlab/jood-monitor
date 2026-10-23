@@ -6,10 +6,13 @@ import {
   archiveGroups,
   checkSeriesWindow,
   flattenAttributes,
+  omittedWindows,
   pendingRows,
+  planParse,
   requireArchiveCount,
   requireParseBudget,
   resourceProfile,
+  retainedDiagnostic,
   SERIES_ENTITY_LIMIT,
   SERIES_NAME_LIMIT,
   SERIES_PARSE_POINTS,
@@ -22,7 +25,7 @@ import {
   withinHistory,
 } from "./series-history";
 import { metricKey, metricSeries } from "./telemetry";
-import { nanoTimestamp } from "./time";
+import { nanoTimestamp, timestampNano } from "./time";
 
 // Synthetic fixture values only.
 const now = Date.parse("2026-10-22T12:00:00Z");
@@ -295,7 +298,8 @@ describe("413 decisions", () => {
   });
 
   it("admits a default hour and refuses six hours", () => {
-    // One hour overlaps at most 13 five-minute archives; six hours, 73.
+    // One hour overlaps up to 13 five-minute raw archives; six hours, 73.
+    // Diagnostic archives come on top (see the budget split below).
     // 50 single-container pods on 5 nodes archive about 2,350 points per
     // archive; a busier cluster about 3,200 (about 38,500 an hour).
     const window = (archives: number, points: number) =>
@@ -338,5 +342,168 @@ describe("413 decisions", () => {
 
   it("matches the request schema's limits", () => {
     expect([SERIES_ENTITY_LIMIT, SERIES_NAME_LIMIT]).toEqual([20, 9]);
+  });
+});
+
+// The index entry of the five-minute archive `bucket` archives after `base`
+// (a five-minute boundary).
+function archive(bucket: number, points: number, id = `synthetic-${bucket}`) {
+  const start = base + BigInt(bucket) * 300_000_000_000n;
+  return {
+    id,
+    points,
+    sourceStart: nanoTimestamp(start),
+    sourceEnd: nanoTimestamp(start + 300_000_000_000n - 1n),
+  };
+}
+
+describe("parse budget split", () => {
+  // An hour of a busy cluster: 13 raw archives of 3,200 points, 41,600 in
+  // all, which leaves 14,400 points of the budget.
+  const hour = Array.from({ length: 13 }, (_, index) => archive(index, 3200));
+
+  it("reads raw and Diagnostic archives together when both fit", () => {
+    const diagnostic = [archive(4, 7200, "d4"), archive(5, 7200, "d5")];
+    const plan = planParse(hour, diagnostic, now);
+    expect(plan.archives).toEqual([...hour, ...diagnostic]);
+    expect(plan.omitted).toEqual([]);
+  });
+
+  it("omits a Diagnostic that would pass the budget with the hour, and says which", () => {
+    // Three nodes for ten minutes, about 20,900 points in three archives,
+    // listed out of order.
+    const diagnostic = [
+      archive(5, 7000, "d5"),
+      archive(4, 7000, "d4"),
+      archive(6, 6900, "d6"),
+    ];
+    const plan = planParse(hour, diagnostic, now);
+    expect(plan.archives).toEqual(hour);
+    expect(plan.omitted).toEqual([
+      {
+        kind: "diagnostic",
+        from: archive(4, 0).sourceStart,
+        to: archive(6, 0).sourceEnd,
+        points: 20_900,
+      },
+    ]);
+  });
+
+  it("names separate Diagnostic periods apart and joins archives of one window", () => {
+    const windows = omittedWindows([
+      archive(9, 1000),
+      // An entity's own archive beside the cluster-wide one of its window.
+      archive(2, 250, "entity"),
+      archive(2, 500),
+      archive(3, 750),
+    ]);
+    expect(windows).toEqual([
+      {
+        kind: "diagnostic",
+        from: archive(2, 0).sourceStart,
+        to: archive(3, 0).sourceEnd,
+        points: 1500,
+      },
+      {
+        kind: "diagnostic",
+        from: archive(9, 0).sourceStart,
+        to: archive(9, 0).sourceEnd,
+        points: 1000,
+      },
+    ]);
+  });
+
+  it("refuses with 413 when the raw archives alone pass the budget", () => {
+    expect(
+      status(() =>
+        planParse(
+          [archive(0, SERIES_PARSE_POINTS + 1)],
+          [archive(1, 1, "d1")],
+          now
+        )
+      )
+    ).toEqual({ status: 413, message: seriesParseTooBroad });
+    expect(
+      planParse([archive(0, SERIES_PARSE_POINTS)], [archive(1, 1, "d1")], now)
+        .omitted
+    ).toHaveLength(1);
+  });
+
+  it("neither reads nor counts a Diagnostic archive whose samples all expired", () => {
+    const cutoff = BigInt(now - 86_400_000) * 1_000_000n;
+    const expired = {
+      id: "expired",
+      points: SERIES_PARSE_POINTS,
+      sourceStart: nanoTimestamp(cutoff - 300_000_000_000n),
+      sourceEnd: nanoTimestamp(cutoff - 1_000_000n),
+    };
+    // Its last millisecond is still kept.
+    const partly = {
+      ...expired,
+      id: "partly",
+      points: 10,
+      sourceEnd: nanoTimestamp(cutoff),
+    };
+    expect(retainedDiagnostic(expired, now)).toBe(false);
+    expect(retainedDiagnostic(partly, now)).toBe(true);
+    const plan = planParse([archive(0, 100)], [expired, partly], now);
+    expect(plan.archives.map((item) => item.id)).toEqual([
+      "synthetic-0",
+      "partly",
+    ]);
+    expect(plan.omitted).toEqual([]);
+  });
+
+  it("leaves out the outbox's Diagnostic samples inside an omitted window", () => {
+    const window = archive(1, 9000);
+    const omitted = [
+      {
+        kind: "diagnostic" as const,
+        from: window.sourceStart,
+        to: window.sourceEnd,
+        points: window.points,
+      },
+    ];
+    const read = new SeriesCollector({
+      from,
+      to,
+      entities: ["synthetic-node-a"],
+      names: ["system.cpu.time"],
+      now,
+      omitted,
+    });
+    const inside = timestampNano(window.sourceStart) + 5_000_000_000n;
+    const after = timestampNano(window.sourceEnd) + 1n;
+    read.add([
+      row("1", inside, { diagnostic: true }),
+      row("2", inside + 1n),
+      row("3", after, { diagnostic: true }),
+    ]);
+    const result = read.result();
+    // Raw samples there stay; the dashboard leaves the period blank.
+    expect(
+      result.series.flatMap((item) => item.points.map(([, value]) => value))
+    ).toEqual(["2", "3"]);
+    expect(result.omitted).toEqual(omitted);
+    expect(collector().result().omitted).toEqual([]);
+    // An index written at millisecond precision bounds the window the same
+    // way: a sample at its first nanosecond is inside.
+    const start = timestampNano(window.sourceStart);
+    const coarse = new SeriesCollector({
+      from,
+      to,
+      entities: ["synthetic-node-a"],
+      names: ["system.cpu.time"],
+      now,
+      omitted: [
+        {
+          ...omitted[0],
+          from: new Date(Number(start / 1_000_000n)).toISOString(),
+          to: new Date(Number(start / 1_000_000n) + 299_999).toISOString(),
+        },
+      ],
+    });
+    coarse.add([row("4", start, { diagnostic: true })]);
+    expect(coarse.result().series).toEqual([]);
   });
 });

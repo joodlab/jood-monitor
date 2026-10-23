@@ -7,8 +7,8 @@ import {
   archiveGroups,
   checkSeriesWindow,
   pendingRows,
+  planParse,
   requireArchiveCount,
-  requireParseBudget,
   SeriesCollector,
 } from "../../lib/server/series-history";
 import { createTiming } from "../../lib/server/server-timing";
@@ -17,7 +17,8 @@ import { readArchiveObject } from "../archives";
 import { normalizeTime, requireCluster, unwrap, validRangeTime } from "./index";
 
 // Raw history for several entities and metric names in one bounded read:
-// the outbox once, each overlapping archive once, then exact compact points.
+// the outbox once, each overlapping archive once, then exact compact points,
+// with any Diagnostic period the budget left out named in `omitted`.
 export async function getSeriesHistory(
   env: Env,
   input: z.infer<typeof seriesHistorySchema>,
@@ -45,18 +46,13 @@ export async function getSeriesHistory(
       })
     )
   );
-  const collector = new SeriesCollector({
-    from,
-    to,
-    entities: input.entities,
-    names: input.names,
-    now,
-  });
-  // Rows are filtered again here whichever version answered.
-  collector.add(pendingRows(reply));
-  const archives: ArchiveRow[] = [];
-  for (const kind of ["raw", "diagnostic"]) {
-    const listed = await timing.measure("d1", () =>
+  // The outbox is read before the archive index, so a window archived in
+  // between is read from both and kept once. Its rows are checked now and
+  // filtered once the archives the read parses are known.
+  const pending = pendingRows(reply);
+  const listed = { raw: [] as ArchiveRow[], diagnostic: [] as ArchiveRow[] };
+  for (const kind of ["raw", "diagnostic"] as const) {
+    const archives = await timing.measure("d1", () =>
       listArchives(getDb(env.DB), {
         clusterId: cluster.id,
         kind,
@@ -66,10 +62,23 @@ export async function getSeriesHistory(
         limit: 2001,
       })
     );
-    requireArchiveCount(listed);
-    archives.push(...listed);
+    requireArchiveCount(archives);
+    listed[kind] = archives;
   }
-  requireParseBudget(archives);
+  // Raw and Diagnostic points share one budget, counted from the index. A
+  // Diagnostic that would pass it is omitted and reported; raw archives that
+  // pass it alone refuse the read before any R2 read.
+  const { archives, omitted } = planParse(listed.raw, listed.diagnostic, now);
+  const collector = new SeriesCollector({
+    from,
+    to,
+    entities: input.entities,
+    names: input.names,
+    now,
+    omitted,
+  });
+  // Rows are filtered again here whichever version answered.
+  collector.add(pending);
   for (const group of archiveGroups(archives)) {
     const documents = await timing.measure("r2", () =>
       Promise.all(
