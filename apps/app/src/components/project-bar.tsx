@@ -26,7 +26,7 @@ import {
   Settings2,
   Sun,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useRef, useState } from "react";
 import { useDeliveryWatch } from "../hooks/delivery";
 import { useDisplay } from "../hooks/display";
 import type { Severity } from "../lib/attention";
@@ -47,6 +47,7 @@ import {
   timeZoneLabel,
   timeZoneOptions,
 } from "../lib/time";
+import { requestLiveFocus } from "./collection-captured";
 import { ObservationTime } from "./observation-time";
 import { StagedPill } from "./settings-rail";
 import { useLiveSnapshot } from "./staged-changes";
@@ -144,6 +145,22 @@ export function ClusterCrumbRow({
   );
 }
 
+// The banner's "Return to live" goes with the banner, so focus must not
+// fall to the page body. Settings settles it on the selected section once
+// live, as the captured section's own button does (requestLiveFocus); other
+// views have no such step, so focus moves first to a control that stays.
+// Never both: the settle step moves only focus lost to the body.
+export function keepFocusOnReturn(
+  view: string,
+  stays: Pick<HTMLElement, "focus"> | null | undefined
+) {
+  if (view === "settings") {
+    requestLiveFocus();
+    return;
+  }
+  stays?.focus();
+}
+
 // The Settings tab names its staged changes, so they stay in sight from any
 // tab; frozen views only know that some are waiting.
 function settingsLabel(staged: number | "waiting") {
@@ -234,11 +251,14 @@ function LiveControl({
   onFreeze,
   timeTravel,
   onTimeTravel,
+  toggleRef,
 }: {
   connection: string;
   onFreeze: (at?: string) => void;
   timeTravel: boolean;
   onTimeTravel: (open: boolean) => void;
+  // The toggle stays in the bar live and frozen, so focus can rest on it.
+  toggleRef?: Ref<HTMLButtonElement>;
 }) {
   const { frozen, at } = useDisplay();
   const connected = connection === "connected";
@@ -255,6 +275,7 @@ function LiveControl({
           !(frozen || connected) && "border-warning/40 text-warning-text"
         )}
         onClick={() => onFreeze(frozen ? undefined : new Date().toISOString())}
+        ref={toggleRef}
         type="button"
       >
         <span
@@ -351,6 +372,7 @@ export function ProjectBar({
   }, [frozen, now, clusters]);
   const [timeTravel, setTimeTravel] = useState(false);
   const tabs = useRef<HTMLElement>(null);
+  const liveToggle = useRef<HTMLButtonElement>(null);
   // On phones the tab strip scrolls; keep the current tab in sight.
   useEffect(() => {
     const strip = tabs.current;
@@ -476,6 +498,7 @@ export function ProjectBar({
             onFreeze={onFreeze}
             onTimeTravel={setTimeTravel}
             timeTravel={timeTravel}
+            toggleRef={liveToggle}
           />
           <PreferencesMenu onTimeTravel={() => setTimeTravel(true)} />
         </div>
@@ -546,7 +569,10 @@ export function ProjectBar({
           </span>
           <Button
             className="h-9 text-xs sm:h-8"
-            onClick={() => onFreeze(undefined)}
+            onClick={() => {
+              keepFocusOnReturn(view, liveToggle.current);
+              onFreeze(undefined);
+            }}
             size="sm"
             variant="outline"
           >

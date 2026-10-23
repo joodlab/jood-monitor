@@ -3,12 +3,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { clusterCrumb } from "../lib/collection-state";
-import { ClusterCrumbRow } from "./project-bar";
+import { settleLiveFocus } from "./collection-captured";
+import { ClusterCrumbRow, keepFocusOnReturn } from "./project-bar";
 
-// The project bar's words for keyboard, screen-reader and colour-blind
-// users. Synthetic clusters and times only. The bar's staged-changes badge
-// reaches the hub's server functions, which a unit test cannot load; these
-// parts use none of them.
+// The project bar's words and focus for keyboard, screen-reader and
+// colour-blind users. Synthetic clusters and times only. The bar's
+// staged-changes badge reaches the hub's server functions, which a unit
+// test cannot load; these parts use none of them.
 vi.mock("../functions/clusters", () => ({}));
 vi.mock("../hooks/api/clusters", () => ({}));
 
@@ -58,5 +59,54 @@ describe("cluster crumb rows", () => {
     expect(classOf(fresh, "synthetic fixture · saved inventory")).toContain(
       "break-words"
     );
+  });
+});
+
+// Stand-ins for the page and the Settings tabs: the unit tests have no DOM.
+function page() {
+  const body = {};
+  const tab = { focus: vi.fn() };
+  const document = {
+    body,
+    activeElement: body as unknown,
+    querySelector: vi.fn(() => null),
+  };
+  const sections = { querySelector: vi.fn(() => tab) };
+  return {
+    tab,
+    // The live Settings page's settle step, after the banner unmounted.
+    settle: () =>
+      settleLiveFocus(
+        false,
+        sections as unknown as HTMLElement,
+        document as unknown as Document
+      ),
+  };
+}
+
+describe("the frozen banner's Return to live", () => {
+  it("moves focus to the live toggle before the banner goes", () => {
+    const toggle = { focus: vi.fn() };
+    keepFocusOnReturn("architecture", toggle);
+    expect(toggle.focus).toHaveBeenCalledTimes(1);
+    // No Settings hand-off is left waiting for a later Settings page.
+    const { tab, settle } = page();
+    settle();
+    expect(tab.focus).not.toHaveBeenCalled();
+  });
+
+  it("hands Settings to its selected section, never also the toggle", () => {
+    const toggle = { focus: vi.fn() };
+    keepFocusOnReturn("settings", toggle);
+    // Focusing the toggle would cancel the hand-off, which moves only focus
+    // lost to the body.
+    expect(toggle.focus).not.toHaveBeenCalled();
+    const { tab, settle } = page();
+    settle();
+    expect(tab.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("tolerates a toggle not yet mounted", () => {
+    expect(() => keepFocusOnReturn("overview", null)).not.toThrow();
   });
 });
