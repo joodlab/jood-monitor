@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { DAY_MS } from "./retention";
 import {
   age,
@@ -37,6 +37,30 @@ describe("display times", () => {
     expect(formatClock("2026-10-22T12:00:00Z", "Asia/Riyadh")).toBe("15:00:00");
     expect(formatDateTime("2026-10-22T12:00:00Z", "UTC")).toContain("Oct 22");
     expect(formatClock(undefined, "UTC")).toBe("Unknown");
+  });
+  it("adds the year always, or only when it is not this year in the zone", () => {
+    vi.setSystemTime(Date.parse("2026-12-31T22:30:00Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const lastYear = "2025-10-22T12:00:00Z";
+    expect(formatDateTime(lastYear, "UTC")).toBe("Oct 22, 12:00:00");
+    expect(formatDateTime(lastYear, "UTC", { year: "auto" })).toBe(
+      "Oct 22, 2025, 12:00:00"
+    );
+    expect(
+      formatDateTime("2026-10-22T12:00:00Z", "UTC", { year: "auto" })
+    ).toBe("Oct 22, 12:00:00");
+    expect(
+      formatDateTime("2026-10-22T12:00:00Z", "UTC", { year: "always" })
+    ).toBe("Oct 22, 2026, 12:00:00");
+    // 22:30 UTC on 31 December is already the new year in Riyadh.
+    expect(
+      formatDateTime("2026-10-22T12:00:00Z", "Asia/Riyadh", { year: "auto" })
+    ).toBe("Oct 22, 2026, 15:00:00");
+    expect(formatDateTime(undefined, "UTC", { year: "always" })).toBe(
+      "Unknown"
+    );
   });
   it("treats missing and zero-value times as never observed", () => {
     expect(knownTime("2026-10-22T12:00:00Z")).toBe(now);

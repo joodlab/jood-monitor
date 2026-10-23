@@ -1,17 +1,23 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { usageFields, usageValue } from "./canvas-cards";
 import {
+  capturedHeartbeatAt,
+  captureTime,
+  clusterCrumb,
   collectionNotice,
   collectionState,
   diagnosticText,
   gapLabel,
+  heartbeatKnown,
+  metricsApiUnavailable,
   nodeUsageGap,
   podUsageGap,
   podUsageText,
   profileKnown,
   settingGap,
   usageGap,
+  withCapturedHeartbeat,
 } from "./collection-state";
 import { summarize } from "./infrastructure";
 import { usageDisplay } from "./resource-table";
@@ -344,9 +350,144 @@ describe("collection state", () => {
     expect(collectionNotice(state, now)).toBe(
       "Paused · Diagnostic on node-a, 7 min left, then Standard"
     );
-    expect(collectionNotice(state, now, true)).toBe("Paused at this time");
+    expect(collectionNotice(state, now, true)).toBe(
+      "Paused at this time · Diagnostic on node-a at this time"
+    );
     expect(
       collectionNotice(collectionState(fixture(), now), now, true)
     ).toBeUndefined();
+  });
+  it("judges a saved Diagnostic at the selected time, not the capture", () => {
+    // Captured 4 minutes before the selected time, expiring 2 minutes
+    // after the capture: it had already ended when the time was selected.
+    const captured = now - 4 * 60_000;
+    const view = fixture({
+      name: "diagnostic",
+      nodeUids: ["n1"],
+      returnProfile: "standard",
+      expiresAt: new Date(captured + 2 * 60_000).toISOString(),
+    });
+    expect(
+      collectionNotice(collectionState(view, captured), captured, true)
+    ).toBe("Diagnostic on node-a at this time");
+    expect(
+      collectionNotice(collectionState(view, now), now, true)
+    ).toBeUndefined();
+    view.profile.expiresAt = new Date(now + 60_000).toISOString();
+    expect(collectionNotice(collectionState(view, now), now, true)).toBe(
+      "Diagnostic on node-a at this time"
+    );
+  });
+});
+
+describe("saved-observation capture", () => {
+  const iso = (time: number) => new Date(time).toISOString();
+
+  it("dates a capture by the hub's receipt, else the inventory source", () => {
+    const view = fixture();
+    view.cluster.receivedAt = iso(now - 5000);
+    view.inventory.sourceTime = iso(now - 9000);
+    expect(captureTime(view)).toBe(now - 5000);
+    view.cluster.receivedAt = null;
+    expect(captureTime(view)).toBe(now - 9000);
+    view.inventory.sourceTime = "0001-01-01T00:00:00Z";
+    expect(captureTime(view)).toBeUndefined();
+  });
+
+  it("knows a heartbeat live, and frozen only when it was captured", () => {
+    const view = fixture();
+    expect(heartbeatKnown(view)).toBe(true);
+    // Frozen without a capture record says nothing about the heartbeat.
+    expect(heartbeatKnown(view, true)).toBe(false);
+    view.observationMetadataAvailable = { profile: true, heartbeat: true };
+    expect(heartbeatKnown(view)).toBe(true);
+    expect(heartbeatKnown(view, true)).toBe(true);
+    view.observationMetadataAvailable = { profile: true, heartbeat: false };
+    expect(heartbeatKnown(view)).toBe(false);
+    expect(heartbeatKnown(view, true)).toBe(false);
+  });
+
+  it("never takes a heartbeat after the inventory's receipt as captured", () => {
+    const view = fixture();
+    view.cluster.receivedAt = iso(now - 60_000);
+    view.cluster.heartbeatAt = iso(now - 70_000);
+    expect(capturedHeartbeatAt(view)).toBe(iso(now - 70_000));
+    // A live heartbeat leaking into a capture made before any arrived.
+    view.cluster.heartbeatAt = iso(now - 10_000);
+    expect(capturedHeartbeatAt(view)).toBeNull();
+    expect(withCapturedHeartbeat(view).cluster.heartbeatAt).toBeNull();
+    view.cluster.heartbeatAt = null;
+    expect(capturedHeartbeatAt(view)).toBeNull();
+  });
+
+  it("reads a saved Metrics API report as of the inventory's receipt", () => {
+    const view = metricsApiDown(fixture());
+    view.observationMetadataAvailable = { profile: true, heartbeat: true };
+    // The heartbeat is 10 s before the receipt but 4 min before the
+    // selected time: fresh when the inventory arrived.
+    view.cluster.heartbeatAt = iso(now - 240_000);
+    view.cluster.receivedAt = iso(now - 230_000);
+    view.inventory.sourceTime = iso(now - 231_000);
+    expect(metricsApiUnavailable(view, now, true)).toBe(true);
+    expect(podUsageGap(view, shopPod, now, true)).toBe(
+      "metrics-api-unavailable"
+    );
+    // The same capture, selected long after: the saved inventory is stale.
+    expect(metricsApiUnavailable(view, now + 10 * 60_000, true)).toBe(false);
+    // A heartbeat already stale when the inventory arrived explains nothing.
+    view.cluster.heartbeatAt = iso(now - 400_000);
+    expect(metricsApiUnavailable(view, now, true)).toBe(false);
+  });
+});
+
+describe("cluster crumb", () => {
+  const iso = (time: number) => new Date(time).toISOString();
+
+  it("names a saved inventory, judged against the selected time", () => {
+    vi.setSystemTime(now);
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const view = fixture();
+    view.inventory.sourceTime = "2026-10-22T11:58:30Z";
+    // A heartbeat that would be stale against the wall clock is not judged.
+    view.cluster.heartbeatAt = iso(now - 3_600_000);
+    expect(clusterCrumb(view, now, true, "UTC")).toEqual({
+      text: "staging · saved inventory Oct 22, 11:58:30 UTC",
+      tone: "info",
+    });
+    expect(clusterCrumb(view, now + 10 * 60_000, true, "UTC").tone).toBe(
+      "warning"
+    );
+    view.inventory.sourceTime = "2025-10-22T11:58:30Z";
+    expect(clusterCrumb(view, now, true, "UTC").text).toBe(
+      "staging · saved inventory Oct 22, 2025, 11:58:30 UTC"
+    );
+  });
+
+  it("says when nothing was saved at the selected time", () => {
+    const view = fixture();
+    view.inventory.sourceTime = "0001-01-01T00:00:00Z";
+    expect(clusterCrumb(view, now, true)).toEqual({
+      text: "no saved observation at this time",
+      tone: "muted",
+    });
+  });
+
+  it("states the live heartbeat", () => {
+    const view = fixture();
+    expect(clusterCrumb(view, now, false)).toEqual({
+      text: "staging · heartbeat fresh",
+      tone: "success",
+    });
+    expect(clusterCrumb(view, now + 10 * 60_000, false)).toEqual({
+      text: "staging · heartbeat stale",
+      tone: "warning",
+    });
+    view.cluster.heartbeatAt = null;
+    expect(clusterCrumb(view, now, false)).toEqual({
+      text: "staging · no heartbeat yet",
+      tone: "muted",
+    });
   });
 });

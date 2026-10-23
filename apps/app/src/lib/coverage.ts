@@ -52,8 +52,9 @@ export function fullyCovered(coverage: ClusterCoverage) {
 }
 
 // Registered clusters that have sent nothing: no observer heartbeat and no
-// inventory. Saved observations keep no heartbeats, so only the live view
-// can name them. Neither check depends on the clock.
+// inventory. A saved observation captures the last heartbeat before its
+// inventory but is not judged against the selected time by it, so only the
+// live view can name them. Neither check depends on the clock.
 export function silentClusters(views: ClusterView[], frozen: boolean) {
   return frozen
     ? []
