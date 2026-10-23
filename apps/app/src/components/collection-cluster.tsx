@@ -28,8 +28,10 @@ import {
   Timer,
   TriangleAlert,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
+import { useDeliveryWatch } from "../hooks/delivery";
 import { useDisplay } from "../hooks/display";
+import { heartbeatKnown, withCapturedHeartbeat } from "../lib/collection-state";
 import { minutesLeft } from "../lib/install-enrollment";
 import {
   awaitingSnapshot,
@@ -79,17 +81,23 @@ type Cluster = ClusterView["cluster"];
 // Full-strength focus ring; it replaces the Button primitive's softer halo.
 const focusRing = "focus-visible:ring-2 focus-visible:ring-ring";
 
-function Freshness({
+// `at` judges the time at another moment than the display clock (a saved
+// observation's inventory receipt); `absolute` shows the exact time.
+export function Freshness({
   value,
   label,
   kind,
+  at,
+  absolute = false,
 }: {
   value?: string | null;
   label: string;
   kind: ObservationKind;
+  at?: number;
+  absolute?: boolean;
 }) {
   const { now } = useDisplay();
-  const state = observationFreshness(kind, value, now);
+  const state = observationFreshness(kind, value, at ?? now);
   if (state === "unknown") {
     return (
       <span className="inline-flex items-center gap-1 text-muted-foreground">
@@ -111,40 +119,68 @@ function Freshness({
         aria-hidden
         className={cn("size-3.5", fresh ? "text-success-text" : "")}
       />
-      <TimeText label={label} value={value} />
+      <TimeText absolute={absolute} label={label} value={value} />
       {!fresh && <span>· {state}</span>}
     </span>
   );
 }
 
+// Warnings carry a triangle, totals worth noticing an info mark; the icon
+// and the words carry the state, the colour only reinforces it.
 function Stat({ stat }: { stat: DeliveryStat }) {
   return (
-    <div className="flex items-center gap-1.5">
-      <dt className="text-muted-foreground">{stat.term}:</dt>
+    <div className="flex items-start gap-1.5">
+      <dt className="shrink-0 text-muted-foreground">{stat.term}:</dt>
       <dd
         className={cn(
-          "inline-flex items-center gap-1 tabular-nums",
-          stat.warn && "text-warning-text"
+          "inline-flex min-w-0 items-start gap-1 tabular-nums",
+          stat.tone === "warn" && "text-warning-text",
+          stat.tone === "notice" && "text-foreground"
         )}
       >
-        {stat.warn && <TriangleAlert aria-hidden className="size-3.5" />}
-        {stat.value}
+        {stat.tone === "warn" && (
+          <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
+        )}
+        {stat.tone === "notice" && (
+          <Info aria-hidden className="mt-px size-3.5 shrink-0" />
+        )}
+        <span className="min-w-0">{stat.value}</span>
       </dd>
     </div>
   );
 }
 
 // Definitions sit in a disclosure rather than a hover tooltip, so touch and
-// keyboard users can reach them.
-function DeliveryHealth({ view }: { view: ClusterView }) {
-  const { now } = useDisplay();
+// keyboard users can reach them. Live, the counters say what this page has
+// seen them do; `absolute` reads a saved observation's counters as captured,
+// judged at `at` (its inventory's receipt).
+export function DeliveryHealth({
+  view,
+  at,
+  absolute = false,
+}: {
+  view: ClusterView;
+  at?: number;
+  absolute?: boolean;
+}) {
+  const { now, timeZone } = useDisplay();
   const uid = useId();
-  const { stats, note } = deliveryHealth(view, now);
+  const views = useMemo(() => [view], [view]);
+  const watches = useDeliveryWatch(views);
+  const { stats, note } = absolute
+    ? deliveryHealth(withCapturedHeartbeat(view), at ?? now, {
+        captured: heartbeatKnown(view, true),
+        timeZone,
+      })
+    : deliveryHealth(view, at ?? now, {
+        timeZone,
+        watch: watches.get(view.cluster.id),
+      });
   return (
     <div className="space-y-1.5 text-xs">
       <dl
         aria-describedby={note ? `${uid}-note` : undefined}
-        className="flex flex-wrap gap-x-5 gap-y-1.5"
+        className="grid gap-y-1.5"
       >
         {stats.map((stat) => (
           <Stat key={stat.term} stat={stat} />
@@ -155,6 +191,10 @@ function DeliveryHealth({ view }: { view: ClusterView }) {
           {note}
         </p>
       )}
+      <p className="text-muted-foreground">
+        Dropped batches and rejected points are running totals since the
+        observer started; the observer does not report when they happened.
+      </p>
       <details className="group">
         <summary className="inline-flex min-h-8 cursor-pointer list-none items-center gap-1 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <ChevronRight
@@ -178,7 +218,7 @@ function DeliveryHealth({ view }: { view: ClusterView }) {
   );
 }
 
-function Capabilities({ view }: { view: ClusterView }) {
+export function Capabilities({ view }: { view: ClusterView }) {
   const capabilities = view.heartbeat.capabilities ?? [];
   if (!capabilities.length) {
     return (

@@ -20,6 +20,7 @@ import { useState } from "react";
 import {
   type AckStatus,
   ackCounts,
+  formatCount,
   type NodeAckRow,
   profileLabel,
 } from "./collection-model";
@@ -59,7 +60,38 @@ function StatusBadge({ status }: { status: AckStatus }) {
   );
 }
 
-function AckRow({ row, desired }: { row: NodeAckRow; desired: number }) {
+// A node collector's running total of discarded batches, in the text colour:
+// a total since the collector started is not by itself a problem. Without a
+// fresh acknowledgment it is the last total the observer forwarded.
+function DroppedCell({ row }: { row: NodeAckRow }) {
+  if (!row.ack) {
+    return (
+      <span className="text-muted-foreground">
+        —<span className="sr-only">not reported</span>
+      </span>
+    );
+  }
+  if (row.status === "unavailable") {
+    return (
+      <span className="text-muted-foreground">
+        {formatCount(row.ack.dropped)} (last reported)
+      </span>
+    );
+  }
+  return (
+    <span className="text-foreground">{formatCount(row.ack.dropped)}</span>
+  );
+}
+
+function AckRow({
+  row,
+  desired,
+  absolute,
+}: {
+  row: NodeAckRow;
+  desired: number;
+  absolute: boolean;
+}) {
   const { ack } = row;
   return (
     <TableRow>
@@ -97,18 +129,11 @@ function AckRow({ row, desired }: { row: NodeAckRow; desired: number }) {
         )}
       </TableCell>
       <TableCell className="text-right text-xs tabular-nums">
-        {ack ? (
-          <span className={ack.dropped > 0 ? "text-warning-text" : undefined}>
-            {ack.dropped}
-          </span>
-        ) : (
-          <span className="text-muted-foreground">
-            —<span className="sr-only">not reported</span>
-          </span>
-        )}
+        <DroppedCell row={row} />
       </TableCell>
       <TableCell className="text-xs">
         <TimeText
+          absolute={absolute}
           label="Acknowledgment last seen by the observer"
           value={ack?.seenAt}
         />
@@ -117,12 +142,15 @@ function AckRow({ row, desired }: { row: NodeAckRow; desired: number }) {
   );
 }
 
+// `absolute` shows exact times, for a saved observation's acknowledgments.
 export function NodeAcknowledgments({
   view,
   rows,
+  absolute = false,
 }: {
   view: ClusterView;
   rows: NodeAckRow[];
+  absolute?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const counts = ackCounts(rows);
@@ -155,17 +183,27 @@ export function NodeAcknowledgments({
               <TableHead>Status</TableHead>
               <TableHead>Applied profile</TableHead>
               <TableHead className="text-right">Revision</TableHead>
-              <TableHead className="text-right">Dropped</TableHead>
+              <TableHead className="text-right">Dropped batches</TableHead>
               <TableHead>Last seen</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {shown.map((row) => (
-              <AckRow desired={view.profile.revision} key={row.uid} row={row} />
+              <AckRow
+                absolute={absolute}
+                desired={view.profile.revision}
+                key={row.uid}
+                row={row}
+              />
             ))}
           </TableBody>
         </Table>
       </div>
+      <p className="text-muted-foreground text-xs">
+        Node collector batches discarded since that collector started, after 5
+        minutes unsent or when the observer refused them. Totals reset on
+        restart.
+      </p>
       {rows.length > collapsedRows && (
         <Button
           aria-expanded={expanded}
