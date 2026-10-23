@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   getClusterStatus,
   getEvents,
-  getHistory,
   getSnapshot,
   recoverEnrollment,
   registerCluster,
@@ -18,7 +17,6 @@ import {
   clusterSchema,
   clusterStatusSchema,
   eventsSchema,
-  historySchema,
   idSchema,
   profileSchema,
   seriesHistorySchema,
@@ -32,10 +30,6 @@ export const getSnapshotFn = createServerFn({ method: "GET" })
   .handler(({ context, data }) =>
     getSnapshot(context.env, data, context.timing)
   );
-export const getHistoryFn = createServerFn({ method: "GET" })
-  .middleware([operatorMiddleware])
-  .validator(historySchema)
-  .handler(({ context, data }) => getHistory(context.env, data));
 // Several series for a few Nodes or Pods in one bounded raw read.
 export const getSeriesHistoryFn = createServerFn({ method: "GET" })
   .middleware([operatorMiddleware, serverTimingMiddleware])
