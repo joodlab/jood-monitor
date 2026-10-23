@@ -229,7 +229,9 @@ function EntryActions({
   );
 }
 
-function TimelineItem({
+// Exported for its markup tests: a ReplicaSet row's badge shows only once
+// the page's switch includes it.
+export function TimelineItem({
   entry,
   view,
   showCluster,
