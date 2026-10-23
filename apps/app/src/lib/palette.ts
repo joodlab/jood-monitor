@@ -686,11 +686,21 @@ export function targetPatch(
 }
 
 // The search a result's link carries, validated as the route would read it,
-// so an opened tab shows what Enter would have.
+// so an opened tab shows what Enter would have. As there, another resource
+// keeps the panel's tab but not a live link's copy time, which belonged to
+// the resource open before; the resource already open keeps it.
 export function paletteHref(
   search: SearchState,
   patch: Partial<SearchState>
 ): SearchState {
-  const merged = { ...search, ...patch };
+  const moved =
+    patch.resource !== undefined &&
+    (patch.resource !== search.resource ||
+      patch.resourceCluster !== search.resourceCluster);
+  const merged = {
+    ...search,
+    ...patch,
+    ...(moved ? { linkedAt: undefined } : {}),
+  };
   return { ...merged, ...validateMonitorSearch(merged) };
 }

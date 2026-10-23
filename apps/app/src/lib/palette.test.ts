@@ -566,4 +566,59 @@ describe("palette links", () => {
     expect(next.resource).toBeUndefined();
     expect(targetPatch({ action: "freeze" })).toBeUndefined();
   });
+
+  // A live link's copy time, opened on its resource's Changes tab.
+  const linked = validateMonitorSearch({
+    view: "resources",
+    resource: "storefront-pod",
+    resourceCluster: "synthetic-cluster",
+    linkedAt: "2026-10-22T12:00:00.000Z",
+    panel: "changes",
+  });
+
+  it("drops a live link's copy time for another resource, as Enter does", () => {
+    expect(linked.linkedAt).toBe("2026-10-22T12:00:00.000Z");
+    const other = paletteHref(
+      linked,
+      targetPatch({
+        inspect: { uid: "edge-proxy", clusterId: "synthetic-edge" },
+      }) ?? {}
+    );
+    expect(other).toMatchObject({
+      resource: "edge-proxy",
+      resourceCluster: "synthetic-edge",
+      panel: "changes",
+    });
+    expect(other.linkedAt).toBeUndefined();
+    // The same name in another cluster is another resource.
+    const elsewhere = paletteHref(
+      linked,
+      targetPatch({
+        inspect: { uid: "storefront-pod", clusterId: "synthetic-edge" },
+      }) ?? {}
+    );
+    expect(elsewhere.linkedAt).toBeUndefined();
+  });
+
+  it("keeps the copy time when the result is the resource already open", () => {
+    const same = paletteHref(
+      linked,
+      targetPatch({
+        inspect: { uid: "storefront-pod", clusterId: "synthetic-cluster" },
+      }) ?? {}
+    );
+    expect(same).toMatchObject({
+      resource: "storefront-pod",
+      linkedAt: "2026-10-22T12:00:00.000Z",
+      panel: "changes",
+    });
+  });
+
+  it("drops the copy time with the panel for a page", () => {
+    const page = find(paletteResults("", sources(linked)), "page:activity");
+    const next = paletteHref(linked, patchOf(page) ?? {});
+    expect(next.resource).toBeUndefined();
+    expect(next.panel).toBeUndefined();
+    expect(next.linkedAt).toBeUndefined();
+  });
 });
