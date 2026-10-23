@@ -1,14 +1,20 @@
 import type { ClusterView, Entity } from "@jood-monitor/api-client";
 import { Button } from "@jood-monitor/ui/button";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@jood-monitor/ui/tooltip";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@jood-monitor/ui/popover";
 import { cn } from "@jood-monitor/ui/utils";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CircleCheck, CircleHelp, Clock, TriangleAlert } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+  CircleCheck,
+  CircleHelp,
+  Clock,
+  Info,
+  TriangleAlert,
+} from "lucide-react";
+import type { ReactNode } from "react";
 import {
   compactCpu,
   compactMemory,
@@ -190,46 +196,6 @@ function usageColumn(field: "cpu" | "memory"): Column {
   };
 }
 
-// Configured requests and limits sit beside measured usage, so the header
-// says which they are; the button's accessible name says it too. Keyboard
-// focus lands on the sort button around the label, not on the label, so the
-// button's visible focus opens the tooltip as hover does.
-function ConfiguredHeader({ label, note }: { label: string; note?: string }) {
-  const [open, setOpen] = useState(false);
-  const [trigger, setTrigger] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    const button = trigger?.closest("button");
-    if (!button) {
-      return;
-    }
-    const show = () => {
-      if (button.matches(":focus-visible")) {
-        setOpen(true);
-      }
-    };
-    const hide = () => setOpen(false);
-    button.addEventListener("focus", show);
-    button.addEventListener("blur", hide);
-    return () => {
-      button.removeEventListener("focus", show);
-      button.removeEventListener("blur", hide);
-    };
-  }, [trigger]);
-  return (
-    <Tooltip onOpenChange={setOpen} open={open}>
-      <TooltipTrigger ref={setTrigger} render={<span />}>
-        {label}
-        <span className="sr-only">
-          , configured, not usage{note ? `. ${note}` : ""}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>
-        Configured, not usage{note ? `. ${note}` : ""}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 // An absolute configured amount. Unknown is a dash with its reason, never 0.
 function Configured({ value }: { value: ConfiguredText }) {
   if (value.reason) {
@@ -258,13 +224,62 @@ const configuredNotes: Partial<Record<ConfiguredField, string>> = {
     "Only containers that set a limit are counted; one without a limit is not capped",
 };
 
+function isConfiguredField(id: string): id is ConfiguredField {
+  return Object.hasOwn(configuredLabels, id);
+}
+
+// What follows "Configured, " in a configured column's note.
+function notUsage(field: ConfiguredField) {
+  const note = configuredNotes[field];
+  return note ? `not usage. ${note}` : "not usage";
+}
+
+// Configured requests and limits sit beside measured usage, so the header
+// says which they are. The sort button's accessible name carries the note;
+// sighted users read it from the note button beside it (ColumnNote).
+function ConfiguredHeader({ field }: { field: ConfiguredField }) {
+  return (
+    <>
+      {configuredLabels[field]}
+      <span className="sr-only">{`, configured, ${notUsage(field)}`}</span>
+    </>
+  );
+}
+
+// The note for a column header that needs one, as a button of its own beside
+// the sort button: tapping it on a touch screen, hovering it or pressing
+// Enter on it shows the note, and none of those re-sorts the column. Other
+// columns have no note.
+export function ColumnNote({ column }: { column: string }) {
+  if (!isConfiguredField(column)) {
+    return null;
+  }
+  return (
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        render={
+          <Button
+            aria-label={`About ${configuredLabels[column]}`}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            size="icon-sm"
+            variant="ghost"
+          />
+        }
+      >
+        <Info aria-hidden className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-3 text-xs" side="top">
+        {`Configured, ${notUsage(column)}`}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function configuredColumn(field: ConfiguredField): Column {
-  const label = configuredLabels[field];
   return {
     id: field,
-    header: () => (
-      <ConfiguredHeader label={label} note={configuredNotes[field]} />
-    ),
+    header: () => <ConfiguredHeader field={field} />,
     accessorFn: (row) => podRequestText(row.entity)[field].sort,
     sortUndefined: "last",
     cell: ({ row }) => (

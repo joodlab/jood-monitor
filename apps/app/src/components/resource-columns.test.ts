@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { routedEmptyText } from "../lib/canvas-cards";
 import { type ResourceRow, resourceRows } from "../lib/resource-table";
 import {
+  ColumnNote,
   cardFacts,
   resourceColumns,
   rowStatusDetail,
@@ -200,6 +201,26 @@ describe("Pods table requests", () => {
     return renderToStaticMarkup(render({ row: { original: row(name) } }));
   }
 
+  it("gives configured columns a note button outside the sort button", () => {
+    // The header label sits inside the sort button; the note is a button of
+    // its own, so tapping it on a touch screen never re-sorts.
+    const note = renderToStaticMarkup(
+      createElement(ColumnNote, { column: "memoryLimit" })
+    );
+    expect(note).toContain('aria-label="About Memory limit"');
+    expect(note).toContain("<button");
+    expect(
+      renderToStaticMarkup(createElement(ColumnNote, { column: "cpuRequest" }))
+    ).toContain('aria-label="About CPU request"');
+    for (const id of ["cpu", "memory", "name", "status"]) {
+      expect(
+        renderToStaticMarkup(createElement(ColumnNote, { column: id }))
+      ).toBe("");
+    }
+    // The header itself holds no button, so none nests in the sort button.
+    const header = column("memoryRequest").header as () => ReactNode;
+    expect(renderToStaticMarkup(header())).not.toContain("<button");
+  });
   it("adds configured request and limit columns, labelled not usage", () => {
     for (const [id, label] of [
       ["cpuRequest", "CPU request"],

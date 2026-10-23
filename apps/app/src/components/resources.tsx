@@ -56,6 +56,7 @@ import {
 import { defaultPageSize, pageSizes } from "../schemas/monitor";
 import { EmptyState } from "./page";
 import {
+  ColumnNote,
   cardFacts,
   resourceColumns,
   rowStatusDetail,
@@ -324,6 +325,8 @@ function ResourceTableRow({
   );
 }
 
+// A column's note, when it has one, is a button of its own after the sort
+// button, so reading it on a touch screen never re-sorts.
 function SortHeader({ header }: { header: Header<ResourceRow, unknown> }) {
   const label = flexRender(header.column.columnDef.header, header.getContext());
   if (!header.column.getCanSort()) {
@@ -335,19 +338,22 @@ function SortHeader({ header }: { header: Header<ResourceRow, unknown> }) {
     Icon = sorted === "asc" ? ArrowUp : ArrowDown;
   }
   return (
-    <Button
-      className="-ml-2 h-8 px-2 font-medium text-muted-foreground text-xs data-[sorted=true]:text-foreground"
-      data-sorted={!!sorted}
-      onClick={header.column.getToggleSortingHandler()}
-      size="sm"
-      variant="ghost"
-    >
-      {label}
-      <Icon
-        aria-hidden
-        className={sorted ? "size-3.5" : "size-3.5 opacity-50"}
-      />
-    </Button>
+    <span className="inline-flex items-center">
+      <Button
+        className="-ml-2 h-8 px-2 font-medium text-muted-foreground text-xs data-[sorted=true]:text-foreground"
+        data-sorted={!!sorted}
+        onClick={header.column.getToggleSortingHandler()}
+        size="sm"
+        variant="ghost"
+      >
+        {label}
+        <Icon
+          aria-hidden
+          className={sorted ? "size-3.5" : "size-3.5 opacity-50"}
+        />
+      </Button>
+      <ColumnNote column={header.column.id} />
+    </span>
   );
 }
 
