@@ -230,9 +230,11 @@ async function seriesHistoryFixture(
   }
 }
 
+// `points` stands in for the size of a busier cluster's window: the index
+// declares it, as the parse budget reads it, while the object stays small.
 async function seriesArchiveFixture(
   env: Env,
-  body: { cluster: string; kind: string; rows: StoredMetric[] }
+  body: { cluster: string; kind: string; rows: StoredMetric[]; points?: number }
 ) {
   const start = bucketStart(body.rows[0].timeUnixNano);
   // Expiry two days out, so maintenance leaves the fixture in place while
@@ -240,7 +242,7 @@ async function seriesArchiveFixture(
   await writeArchive(
     env,
     archiveDocument(body.cluster, body.kind, "", start, 300, 2, body.rows),
-    body.rows.length
+    body.points ?? body.rows.length
   );
   return { start };
 }

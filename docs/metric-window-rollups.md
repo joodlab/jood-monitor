@@ -43,14 +43,20 @@ median 13.4 ms. Three of those runs timed each stage:
 | entity, name and window filter | 90–96 ms |
 
 Reading the same objects through `readArchiveObject`, including the local R2
-read, took 12.5 to 13.6 ms per 1,000 points. With a 2× safety factor on the
-median, 22,000 points keep one request within about 600 ms locally, inside
-the deployment's 1,000 ms CPU cap. Fifty single-container pods on five nodes
-archive roughly 470 points a minute at the agent's cadences (pod, container
-and node usage every 30 seconds, host CPU and memory every 60 seconds), so
-such a cluster reaches the budget in under an hour of history: its charts
-are refused with 413 for longer ranges, and can be for one hour, instead of
-being drawn from part of the window.
+read, took 12.5 to 13.6 ms per 1,000 points. The budget is 37,000 points:
+about 500 ms locally at the median, half the deployment's 1,000 ms CPU cap
+(a 2× safety factor), and under 600 ms at the slowest run.
+
+Because archives are cluster-wide, the budget is sized for the reference
+cluster's default window. Fifty single-container pods on five nodes archive
+roughly 470 points a minute at the agent's cadences (pod, container and node
+usage every 30 seconds, host CPU and memory every 60 seconds), about 2,350
+points per five-minute archive. A one-hour window overlaps at most 13
+archives, about 30,500 points, so the default one-hour Pod, Node and Host
+charts load. Six hours (about 172,000 points) and a day are refused with 413
+for such a cluster instead of being drawn from part of the window. A cluster
+more than about a fifth larger can be refused even at one hour, until
+summary resolutions serve longer windows.
 
 Local workerd timing is not Worker `cpuTime`. Measuring production CPU needs
 a non-production preview upload, which is an owner decision; revisit the

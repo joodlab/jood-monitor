@@ -1215,6 +1215,50 @@ try {
     ["1"],
     "a Diagnostic sample older than a day is excluded; a standard one is kept"
   );
+  // The default hour of the reference cluster, 50 single-container pods on
+  // 5 nodes: each five-minute archive holds about 2,350 points and an hour
+  // overlaps 13 of them. The index declares those counts; each object holds
+  // one synthetic sample, five hours back so no other fixture overlaps.
+  const hourBucket =
+    (BigInt(Date.now() - 5 * 3_600_000) / 300_000n) * 300_000n * 1_000_000n;
+  for (let index = 0; index < 13; index++) {
+    const nanoValue =
+      hourBucket + 60_000_000_000n + BigInt(index) * 300_000_000_000n;
+    await ok("/__test/series-archive", {
+      method: "POST",
+      body: JSON.stringify({
+        cluster: "series",
+        kind: "raw",
+        points: 2350,
+        rows: [
+          {
+            ...oldRow(false),
+            key: `series-hour-${index}`,
+            value: String(index),
+            timeUnixNano: String(nanoValue),
+            sourceTime: exactTime(nanoValue),
+          },
+        ],
+      }),
+    });
+  }
+  const hourFrom = Number(hourBucket / 1_000_000n) + 30_000;
+  const referenceHour = await seriesRead({
+    from: new Date(hourFrom).toISOString(),
+    to: new Date(hourFrom + 3_600_000 + 60_000).toISOString(),
+    entities: ["series-node-a"],
+    names: ["k8s.node.cpu.usage"],
+  });
+  assert.equal(referenceHour.status, 200, JSON.stringify(referenceHour));
+  assert.ok(13 * 2350 <= referenceHour.budget);
+  assert.equal(referenceHour.gets, 13, "each archive is read once");
+  assert.deepEqual(
+    referenceHour.value.series.flatMap((item) =>
+      item.points.map(([, value]) => value)
+    ),
+    Array.from({ length: 13 }, (_, index) => String(index)),
+    "a default one-hour Pod or Node read of the reference cluster is admitted"
+  );
   const fakeArchives = async (count, points) => {
     const sourceStart = exactTime(
       (BigInt(Date.now() - 1_800_000) / 300_000n) * 300_000n * 1_000_000n

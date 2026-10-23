@@ -278,6 +278,19 @@ describe("413 decisions", () => {
     ).toEqual({ status: 413, message: seriesTooBroad });
   });
 
+  it("admits the reference cluster's default hour and refuses six hours", () => {
+    // 50 single-container pods on 5 nodes archive about 470 points a
+    // minute, about 2,350 per five-minute archive. One hour overlaps at most
+    // 13 archives; six hours, 73.
+    const window = (archives: number) =>
+      Array.from({ length: archives }, () => ({ points: 2350 }));
+    expect(status(() => requireParseBudget(window(13)))).toBe("accepted");
+    expect(status(() => requireParseBudget(window(73)))).toEqual({
+      status: 413,
+      message: seriesTooBroad,
+    });
+  });
+
   it("groups reads by count and closes a group early on points", () => {
     const sizes = archiveGroups(
       Array.from({ length: 10 }, () => ({ points: 10 }))

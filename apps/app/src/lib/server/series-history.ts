@@ -26,9 +26,12 @@ export const SERIES_NAME_LIMIT = 9;
 // Archived points one request may parse, counted from the archive index
 // before any object is fetched. Local native workerd took 12-15 ms per 1,000
 // archived points (gunzip, SHA-256, JSON.parse and filter; median 13.4 ms),
-// so this budget is about 300 ms there: 600 ms with a 2x margin, inside the
-// deployment's 1,000 ms CPU cap. See docs/metric-window-rollups.md.
-export const SERIES_PARSE_POINTS = 22_000;
+// so this budget is about 500 ms there at the median, half the deployment's
+// 1,000 ms CPU cap, and under 600 ms at the slowest run. Archives are
+// cluster-wide, so it is sized for the reference cluster's default window:
+// one hour of 50 pods on 5 nodes overlaps at most 13 archives of about 2,350
+// points. See docs/metric-window-rollups.md.
+export const SERIES_PARSE_POINTS = 37_000;
 // Archive objects listed per kind before a read is refused.
 const SERIES_ARCHIVE_LIMIT = 2000;
 // A day of raw samples, plus the slack a client clock may add.
