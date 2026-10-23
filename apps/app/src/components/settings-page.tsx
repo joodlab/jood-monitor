@@ -33,7 +33,10 @@ import {
   timeZoneOptions,
 } from "../lib/time";
 import type { SearchState } from "../schemas/monitor";
-import { CapturedClusterSettings } from "./collection-captured";
+import {
+  CapturedClusterSettings,
+  settleLiveFocus,
+} from "./collection-captured";
 import { ClusterSettings } from "./collection-cluster";
 import { capabilityLabel, clusterNodes } from "./collection-model";
 import { EmptyState } from "./page";
@@ -471,6 +474,14 @@ export function CollectionSettings({
     queryKey: ["workspaces"],
     queryFn: fetchWorkspaces,
   });
+  const { frozen } = useDisplay();
+  const tabs = useRef<HTMLDivElement>(null);
+  // After "Return to live" the captured section and its button are gone:
+  // focus lands on the selected section's tab, whether this instance went
+  // live or mounted after the live snapshot loaded.
+  useEffect(() => {
+    settleLiveFocus(frozen, tabs.current);
+  }, [frozen]);
   // The linked cluster gets a section; the workspace summary still counts
   // only the clusters the filter shows.
   const listed = linked ? [...views, linked] : views;
@@ -520,6 +531,7 @@ export function CollectionSettings({
         setSelected(String(value));
       }}
       orientation="vertical"
+      ref={tabs}
       value={active}
     >
       <SectionList

@@ -3,7 +3,11 @@ import { createElement, type FunctionComponent, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DisplayProvider } from "../hooks/display";
-import { CapturedClusterSettings } from "./collection-captured";
+import {
+  CapturedClusterSettings,
+  requestLiveFocus,
+  settleLiveFocus,
+} from "./collection-captured";
 
 // Server-rendered markup of a cluster's settings as captured with a saved
 // observation. Synthetic cluster, nodes and times only. The live settings'
@@ -300,5 +304,95 @@ describe("captured cluster settings", () => {
     const html = render(view);
     expect(html).toContain("The captured heartbeat reported no sources.");
     expect(html).not.toContain("Sources appear once");
+  });
+});
+
+// Stand-ins for the page, the Settings tabs and the main region: the unit
+// tests have no DOM, and the hand-off reads only these.
+function focusPage() {
+  const body = {};
+  const tab = { focus: vi.fn() };
+  const main = {
+    attributes: new Map<string, string>(),
+    hasAttribute(name: string) {
+      return this.attributes.has(name);
+    },
+    setAttribute(name: string, value: string) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name: string) {
+      this.attributes.delete(name);
+    },
+    addEventListener: vi.fn(),
+    focus: vi.fn(),
+  };
+  const page = {
+    body,
+    activeElement: body as unknown,
+    querySelector: vi.fn(() => main),
+  };
+  const sections = { querySelector: vi.fn(() => tab) };
+  return {
+    tab,
+    main,
+    page,
+    sections,
+    settle: (frozen: boolean, list: typeof sections | null = sections) =>
+      settleLiveFocus(
+        frozen,
+        list as unknown as HTMLElement | null,
+        page as unknown as Document
+      ),
+  };
+}
+
+describe("returning to live from captured settings", () => {
+  it("moves no focus unless Return to live asked", () => {
+    const { tab, main, settle } = focusPage();
+    settle(false);
+    expect(tab.focus).not.toHaveBeenCalled();
+    expect(main.focus).not.toHaveBeenCalled();
+  });
+
+  it("lands on the selected section, after a remount, once", () => {
+    const { tab, sections, settle } = focusPage();
+    requestLiveFocus();
+    // The captured section still shows until the view goes live.
+    settle(true);
+    expect(tab.focus).not.toHaveBeenCalled();
+    // A page opened at a saved time unmounts Settings while the live
+    // snapshot loads; the live instance that mounts after it takes focus.
+    settle(false);
+    expect(sections.querySelector).toHaveBeenCalledWith(
+      '[role="tab"][aria-selected="true"]'
+    );
+    expect(tab.focus).toHaveBeenCalledTimes(1);
+    // The request is spent: later live renders leave focus alone.
+    settle(false);
+    expect(tab.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("never takes focus from a control the operator moved to", () => {
+    const { tab, page, settle } = focusPage();
+    requestLiveFocus();
+    page.activeElement = { name: "synthetic control" };
+    settle(false);
+    expect(tab.focus).not.toHaveBeenCalled();
+    page.activeElement = page.body;
+    settle(false);
+    expect(tab.focus).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the main region without a section tab", () => {
+    const { main, settle } = focusPage();
+    requestLiveFocus();
+    settle(false, null);
+    expect(main.focus).toHaveBeenCalledTimes(1);
+    expect(main.attributes.get("tabindex")).toBe("-1");
+    expect(main.addEventListener).toHaveBeenCalledWith(
+      "blur",
+      expect.any(Function),
+      { once: true }
+    );
   });
 });

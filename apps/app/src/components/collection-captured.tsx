@@ -201,6 +201,60 @@ function captureDistance(capture: Capture, referenceTime: number) {
   return `This inventory was ${event} ${age(capture.capture, referenceTime)} before the selected time.`;
 }
 
+// "Return to live" replaces this captured section, and the focused button
+// with it. Its request to move focus outlives that remount: a page opened at
+// a saved time has no live snapshot yet, so the whole Settings page reloads
+// before the live section appears.
+let liveFocusRequested = false;
+
+export function requestLiveFocus() {
+  liveFocusRequested = true;
+}
+
+const selectedSection = '[role="tab"][aria-selected="true"]';
+
+type FocusPage = Pick<Document, "activeElement" | "body" | "querySelector">;
+
+// The page's main region, focusable only until it loses focus, as the
+// dashboard focuses it.
+function focusMain(page: FocusPage) {
+  const main = page.querySelector<HTMLElement>("main");
+  if (!main) {
+    return;
+  }
+  if (!main.hasAttribute("tabindex")) {
+    main.setAttribute("tabindex", "-1");
+    main.addEventListener("blur", () => main.removeAttribute("tabindex"), {
+      once: true,
+    });
+  }
+  main.focus();
+}
+
+// On the first live Settings render after "Return to live", focus lands on
+// the selected section's tab, else the page's main region. It moves only
+// while focus is lost (on the body), so it never takes focus from a control
+// the operator has moved to since, and the request is spent either way.
+export function settleLiveFocus(
+  frozen: boolean,
+  sections: Pick<HTMLElement, "querySelector"> | null | undefined,
+  page: FocusPage = document
+) {
+  if (frozen || !liveFocusRequested) {
+    return;
+  }
+  liveFocusRequested = false;
+  if (page.activeElement && page.activeElement !== page.body) {
+    return;
+  }
+  const tab = sections?.querySelector<HTMLElement>(selectedSection);
+  if (tab) {
+    tab.focus();
+  } else {
+    focusMain(page);
+  }
+}
+
 function CaptureNotice({
   capture,
   onResumeLive,
@@ -228,7 +282,10 @@ function CaptureNotice({
       )}
       <Button
         className="h-8 focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={onResumeLive}
+        onClick={() => {
+          requestLiveFocus();
+          onResumeLive();
+        }}
         size="sm"
         variant="outline"
       >
