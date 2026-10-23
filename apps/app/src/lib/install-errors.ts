@@ -277,20 +277,32 @@ const rawRetention: ReadError = {
   retryable: false,
 };
 
+// The shortest history range the range control offers, in hours.
+const SHORTEST_RANGE = "1";
+
 // Why a history chart could not load. Frozen, the hub's 7-day refusal (or
 // the dashboard's own, raised before asking) means the saved time is past
 // the raw window. Live it can only mean the clocks disagreed, which a retry
-// may outlast.
-export function historyError(error: unknown, frozen: boolean): ReadError {
+// may outlast. `range` is the chart's range in hours, when the caller knows
+// it.
+export function historyError(
+  error: unknown,
+  frozen: boolean,
+  range?: string
+): ReadError {
   const message = errorText(error);
   if (frozen && message.includes(rawRetentionMessage)) {
     return rawRetention;
   }
-  // History is already one entity and metric; only a shorter window helps.
+  // History is already one entity and metric, and the read is refused whole;
+  // only a shorter window can help, unless this is already the shortest.
   if (message.includes("query too broad")) {
     return {
       title: "This window holds too many samples to load",
-      detail: "Choose a shorter range.",
+      detail:
+        range === SHORTEST_RANGE
+          ? "One hour is already the shortest range, and this window still holds more samples than the hub reads in one request. Longer or denser views need summaries, which are not available yet."
+          : "Choose a shorter range.",
       retryable: false,
     };
   }

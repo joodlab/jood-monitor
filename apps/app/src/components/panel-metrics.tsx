@@ -329,6 +329,7 @@ function NodeSections({
         height={height}
         host={host}
         hubClock={hubClock}
+        range={history.window.range}
         view={view}
       />
     </>
@@ -509,7 +510,7 @@ function HistoryPlot({
     return <ChartSkeleton heading={heading} height={height} title={title} />;
   }
   if (query.isError) {
-    const problem = historyError(query.error, frozen);
+    const problem = historyError(query.error, frozen, history.window.range);
     const Title = heading ?? "h3";
     return (
       <div className="space-y-2">

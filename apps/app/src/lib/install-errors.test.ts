@@ -155,6 +155,31 @@ describe("history errors", () => {
     }
   });
 
+  it("asks for a shorter range only when one exists", () => {
+    for (const message of [
+      "query too broad; choose a shorter range",
+      "query too broad; more archived samples in this window than one read parses",
+    ]) {
+      for (const frozen of [true, false]) {
+        for (const range of ["6", "24"]) {
+          const error = historyError(new Error(message), frozen, range);
+          expect(error.detail).toBe("Choose a shorter range.");
+          expect(error.retryable).toBe(false);
+        }
+        // One hour is the shortest range: no shorter one to choose.
+        const shortest = historyError(new Error(message), frozen, "1");
+        expect(shortest.title).toBe(
+          "This window holds too many samples to load"
+        );
+        expect(shortest.detail).not.toContain("shorter range");
+        expect(shortest.detail).toContain(
+          "more samples than the hub reads in one request"
+        );
+        expect(shortest.retryable).toBe(false);
+      }
+    }
+  });
+
   it("falls back to the snapshot reading for other errors", () => {
     expect(
       historyError(new TypeError("Failed to fetch"), false).retryable

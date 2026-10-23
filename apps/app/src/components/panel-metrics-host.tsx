@@ -516,6 +516,7 @@ function HostBody({
   domain,
   height,
   now,
+  range,
 }: {
   view: ClusterView;
   entity: Entity;
@@ -523,6 +524,7 @@ function HostBody({
   domain?: readonly [number, number];
   height: number;
   now: number;
+  range?: string;
 }) {
   const { frozen } = useDisplay();
   const series = host.data?.response.series;
@@ -540,7 +542,7 @@ function HostBody({
     );
   }
   if (host.isError) {
-    const problem = historyError(host.error, frozen);
+    const problem = historyError(host.error, frozen, range);
     return (
       <p className="rounded-md border p-3 text-sm" role="alert">
         {problem.title}.{problem.detail && ` ${problem.detail}`}{" "}
@@ -592,6 +594,7 @@ export function NodeHostSection({
   domain,
   height,
   hubClock,
+  range,
 }: {
   view: ClusterView;
   entity: Entity;
@@ -599,6 +602,8 @@ export function NodeHostSection({
   domain?: readonly [number, number];
   height: number;
   hubClock?: SeriesWindow["hubClock"];
+  // The range the host read covers, for the refusal's advice.
+  range?: string;
 }) {
   const { now: clock, frozen, referenceTime } = useDisplay();
   const id = useId();
@@ -628,6 +633,7 @@ export function NodeHostSection({
         height={height}
         host={host}
         now={now}
+        range={range}
         view={view}
       />
       <RetentionFootnote from={host.data?.from} hubClock={hubClock} />

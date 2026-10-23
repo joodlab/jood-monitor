@@ -104,6 +104,12 @@ enforced while archives are read, so that refusal comes after some reads. A
 chart is never drawn from a truncated read. A busy cluster may need a
 shorter range than a quiet one.
 
+The parse limit is sized so that a busy cluster's default one-hour window
+loads, but a much larger cluster can be refused even at one hour. One hour is
+the shortest range, so the chart then says the window holds more samples than
+the hub reads in one request instead of suggesting a shorter range. Longer or
+denser views need summaries, which are not available yet.
+
 ## Limits
 
 Requests have a four MiB compressed and decompressed body limit. A telemetry
