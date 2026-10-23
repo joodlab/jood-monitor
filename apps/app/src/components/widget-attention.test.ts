@@ -131,7 +131,7 @@ describe("Needs attention widget", () => {
     const view = risen("synthetic-delivery");
     const html = render([], [view]);
     expect(html).toContain(
-      "Observer on synthetic-delivery-name discarded 6 more batches since this page opened (first higher total in the heartbeat received 14:00:15 UTC). Some samples or saved observations may be missing."
+      "Observer on synthetic-delivery-name discarded 6 more batches since this page opened (first new drops seen in the heartbeat received 14:00:15 UTC). Some samples or saved observations may be missing."
     );
     expect(html).toContain("Open Settings");
     expect(html).toContain("Notes");
@@ -167,5 +167,14 @@ describe("Needs attention widget", () => {
     expect(html).toContain("discarded 6 more batches");
     // The All filter counts the one attention row only.
     expect(allCount.exec(html)?.[1]).toBe("1");
+  });
+
+  it("counts a restarted observer's new total as discarded batches", () => {
+    recordDeliveryWatch([reporting("synthetic-restart", 40, 0)], start + 5000);
+    const view = reporting("synthetic-restart", 2, 15);
+    recordDeliveryWatch([view], start + 20_000);
+    expect(render([], [view])).toContain(
+      "Observer on synthetic-restart-name discarded 2 more batches since this page opened (first new drops seen in the heartbeat received 14:00:15 UTC)."
+    );
   });
 });

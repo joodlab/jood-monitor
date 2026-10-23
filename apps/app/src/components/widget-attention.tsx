@@ -183,10 +183,11 @@ interface DeliveryNote {
   view: ClusterView;
 }
 
-// Live observers this page saw discard more batches since it opened. The
-// observer reports only a running total, so the note places the rise by the
-// heartbeat it was first seen in. Info only: notes never change a count, the
-// project bar's badge or a cluster's health.
+// Live observers this page saw discard more batches since it opened,
+// counting a restarted observer's new total from zero. The observer reports
+// only a running total, so the note places the drops by the heartbeat they
+// were first seen in. Info only: notes never change a count, the project
+// bar's badge or a cluster's health.
 function deliveryNotes(
   views: ClusterView[],
   watches: ReadonlyMap<string, DeliveryWatch>,
@@ -203,7 +204,7 @@ function deliveryNotes(
     return [
       {
         view,
-        text: `Observer on ${view.cluster.name} discarded ${batches} since this page opened (first higher total in the heartbeat received ${seen}). Some samples or saved observations may be missing.`,
+        text: `Observer on ${view.cluster.name} discarded ${batches} since this page opened (first new drops seen in the heartbeat received ${seen}). Some samples or saved observations may be missing.`,
       },
     ];
   });

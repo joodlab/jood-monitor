@@ -53,31 +53,59 @@ describe("delivery watch", () => {
     // The same total in a later heartbeat changes nothing.
     expect(held?.dropped).toBe(risen?.dropped);
     expect(held?.heartbeatAt).toBe(heartbeat(2));
+    // The observer restarted from zero, so its 2 drops are new: 4 + 2.
     expect(reset?.dropped).toMatchObject({
       lastValue: 2,
-      risenBy: 4,
+      risenBy: 6,
       resetAt: heartbeat(3),
       resetFrom: 9,
       firstHigherHeartbeatAt: heartbeat(1),
+      lastHigherHeartbeatAt: heartbeat(1),
+      risenAt: opened + 3 * 15_000,
     });
     expect(reset && latestChange(reset.dropped)).toBe("reset");
+    // A reset to zero adds nothing and keeps the latest new drops' time.
     expect(zero?.dropped).toMatchObject({
       lastValue: 0,
+      risenBy: 6,
       resetAt: heartbeat(4),
       resetFrom: 2,
+      risenAt: opened + 3 * 15_000,
       firstSeen: { value: 5, at: opened },
     });
+    expect(zero && latestChange(zero.dropped)).toBe("reset");
   });
 
   it("counts every rise and places it by the first heartbeat seen higher", () => {
     const states = run([5, 9, 2, 6]);
     const last = states.at(-1);
+    // 4 before the restart, 2 counted from zero after it, then 4 more.
     expect(last?.dropped).toMatchObject({
-      risenBy: 8,
+      risenBy: 10,
       firstHigherHeartbeatAt: heartbeat(1),
       lastHigherHeartbeatAt: heartbeat(3),
     });
     expect(last && latestChange(last.dropped)).toBe("rise");
+  });
+
+  it("counts a restarted observer's new total as new drops, still a reset", () => {
+    const [, reset] = run([5, 2]);
+    expect(reset?.dropped).toEqual({
+      firstSeen: { value: 5, at: opened },
+      lastValue: 2,
+      risenBy: 2,
+      resetAt: heartbeat(1),
+      resetFrom: 5,
+      firstHigherHeartbeatAt: heartbeat(1),
+      risenAt: opened + 15_000,
+    });
+    expect(reset && latestChange(reset.dropped)).toBe("reset");
+    expect(recentRise(reset?.dropped, opened + 15_000)).toBe(true);
+    // A first heartbeat after a restart to zero has nothing new.
+    const [, cleared] = run([5, 0]);
+    expect(cleared?.dropped.risenBy).toBe(0);
+    expect(cleared?.dropped.risenAt).toBeUndefined();
+    expect(recentRise(cleared?.dropped, opened + 15_000)).toBe(false);
   });
 
   it("ignores stale, repeated and older heartbeats", () => {

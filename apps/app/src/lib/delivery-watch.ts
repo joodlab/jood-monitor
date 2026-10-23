@@ -2,23 +2,28 @@
 // reports dropped batches and rejected points only as running totals since
 // its process started, never when each happened, so a rise is known only
 // between two fresh heartbeats this page saw, and a lower total means the
-// counter reset. Times named "HeartbeatAt" are the hub's receipt of that
+// counter reset: the observer restarted from zero (one observer runs at a
+// time), so every event in the new total happened after the last heartbeat
+// seen before it. Times named "HeartbeatAt" are the hub's receipt of that
 // heartbeat; `at` times are this page's clock, used only for its own window.
 
 export interface CounterWatch {
-  // The first heartbeat seen with a higher total than the one before it.
+  // The first heartbeat seen with new events: a higher total than the one
+  // before it, or a counter reset with a total above zero.
   firstHigherHeartbeatAt?: string;
   // The total in the first fresh heartbeat this page saw, and when.
   firstSeen: { value: number; at: number };
-  // The latest heartbeat seen with a higher total.
+  // The latest heartbeat seen with a higher total. A reset's new events
+  // leave it unchanged, so the reset stays the latest change.
   lastHigherHeartbeatAt?: string;
   lastValue: number;
   // The latest heartbeat seen with a lower total, and the total before it.
   resetAt?: string;
   resetFrom?: number;
-  // When this page saw the latest increase.
+  // When this page saw the latest new events.
   risenAt?: number;
-  // Every increase seen since the page opened, across counter resets.
+  // Every event seen since the page opened: each increase, and after a
+  // counter reset the whole new total, which counts from zero.
   risenBy: number;
 }
 
@@ -62,11 +67,21 @@ function nextCounter(
     };
   }
   if (value < previous.lastValue) {
-    return {
+    const reset = {
       ...previous,
       lastValue: value,
       resetAt: heartbeatAt,
       resetFrom: previous.lastValue,
+    };
+    // The new total counted from zero after the restart, so all of it is new.
+    if (value === 0) {
+      return reset;
+    }
+    return {
+      ...reset,
+      risenBy: previous.risenBy + value,
+      firstHigherHeartbeatAt: previous.firstHigherHeartbeatAt ?? heartbeatAt,
+      risenAt: nowMs,
     };
   }
   return previous;

@@ -495,7 +495,7 @@ describe("delivery health", () => {
     });
     expect(droppedStat(rose)).toMatchObject({
       value:
-        "3,815 · rose by 6 since this page opened (first higher total in the heartbeat the hub received at 09:59:50 UTC)",
+        "3,815 · rose by 6 since this page opened (first new drops seen in the heartbeat the hub received at 09:59:50 UTC)",
       tone: "warn",
     });
     const later = now + 16 * 60_000;
@@ -519,6 +519,7 @@ describe("delivery health", () => {
       opened
     );
     watch = nextWatch(watch, reading(12, at), now);
+    // The restarted observer's 12 drops are new, so the reset warns.
     expect(
       droppedStat(
         deliveryHealth(reporting(12), now, { timeZone: "UTC", watch })
@@ -526,7 +527,37 @@ describe("delivery health", () => {
     ).toMatchObject({
       value:
         "12 · the total went down (3,815 → 12) in the heartbeat received 09:59:50 UTC; the observer's counter reset, usually after a restart",
-      tone: "notice",
+      tone: "warn",
+    });
+    // A reset to zero has nothing new: a notice, never a warning.
+    const cleared = nextWatch(
+      nextWatch(undefined, reading(3815, iso(opened - 10_000)), opened),
+      reading(0, at),
+      now
+    );
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(0), now, { timeZone: "UTC", watch: cleared })
+      )
+    ).toMatchObject({
+      value:
+        "0 · the total went down (3,815 → 0) in the heartbeat received 09:59:50 UTC; the observer's counter reset, usually after a restart",
+      tone: "ok",
+    });
+    // New drops after the reset count it in the rise.
+    const later = now + 15_000;
+    watch = nextWatch(watch, reading(20, iso(later - 10_000)), later);
+    expect(
+      droppedStat(
+        deliveryHealth(reporting(20, iso(later - 10_000)), later, {
+          timeZone: "UTC",
+          watch,
+        })
+      )
+    ).toMatchObject({
+      value:
+        "20 · rose by 20 since this page opened, counting from zero after the counter reset (first new drops seen in the heartbeat the hub received at 09:59:50 UTC)",
+      tone: "warn",
     });
   });
 

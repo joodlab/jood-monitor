@@ -740,7 +740,8 @@ function zonedClock(time: string | number, timeZone: string) {
 
 // What this page saw a counter do: rise, reset, or hold still. The observer
 // reports totals only, so a change is placed by the heartbeat it was first
-// seen in, never by when the drops happened.
+// seen in, never by when the drops happened. A reset's new total counts from
+// zero, so the rise includes it.
 function watchedChange(
   counter: CounterWatch,
   term: DeliveryTerm,
@@ -751,7 +752,10 @@ function watchedChange(
     return `the total went down (${term.format(counter.resetFrom ?? 0)} → ${term.format(counter.lastValue)}) in the heartbeat received ${zonedClock(counter.resetAt ?? "", timeZone)}; the observer's counter reset, usually after a restart`;
   }
   if (change === "rise") {
-    return `rose by ${term.format(counter.risenBy)} since this page opened (first higher total in the heartbeat the hub received at ${zonedClock(counter.firstHigherHeartbeatAt ?? "", timeZone)})`;
+    const counted = counter.resetAt
+      ? ", counting from zero after the counter reset"
+      : "";
+    return `rose by ${term.format(counter.risenBy)} since this page opened${counted} (first new ${term.events} seen in the heartbeat the hub received at ${zonedClock(counter.firstHigherHeartbeatAt ?? "", timeZone)})`;
   }
   if (counter.lastValue > 0) {
     const opened = formatClock(counter.firstSeen.at, timeZone).slice(0, 5);
