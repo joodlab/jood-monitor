@@ -16,8 +16,11 @@ import { timestampNano } from "./time";
 
 // A bounded raw read of several series for a few Nodes or Pods: each archive
 // is read once, filtered to the requested entities and names, and returned as
-// compact per-series points. A read that would not fit is refused whole with
-// 413; it is never truncated.
+// compact per-series points. A read whose raw archives would not fit is
+// refused whole with 413. A Diagnostic that would not fit beside them is left
+// out whole and named in `omitted`, so a consumer must not present the
+// response as the complete window when `omitted` is not empty. Nothing else
+// is ever dropped.
 
 // Points one response may hold after duplicates collapse.
 export const SERIES_POINT_LIMIT = 30_000;

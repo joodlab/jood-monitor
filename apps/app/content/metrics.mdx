@@ -102,8 +102,9 @@ when the window:
 The first two limits are decided from the archive index before any archive
 is read, so those refusals cost no archive reads. The 30,000-point limit is
 enforced while archives are read, so that refusal comes after some reads. A
-chart is never drawn from a truncated read. A busy cluster may need a
-shorter range than a quiet one.
+chart is never drawn from a truncated read; a Diagnostic left out to fit is
+named and left blank, as below. A busy cluster may need a shorter range than
+a quiet one.
 
 The parse limit is sized so that a busy cluster's default one-hour window
 loads, but a much larger cluster can be refused even at one hour. One hour is

@@ -26,7 +26,9 @@ truncated chart.
 Dashboard series reads parse whole five-minute cluster archives, so their
 cost follows everything a cluster archived in the window, not only the
 requested series. The parse budget (`SERIES_PARSE_POINTS`) is checked against
-the archive index before any R2 read, and a larger read is refused with 413.
+the archive index before any R2 read. A read whose raw archives pass it is
+refused with 413; a Diagnostic that would pass it beside them is left out and
+named in the response, as described below.
 
 `pnpm --filter @jood-monitor/app test:worker` measures the cost on local
 native workerd (Miniflare): six synthetic packed raw archives of 20,000
