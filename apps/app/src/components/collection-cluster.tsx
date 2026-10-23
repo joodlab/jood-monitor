@@ -578,7 +578,7 @@ function DiagnosticStarter({
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed p-3">
       <p className="min-w-0 flex-1 text-muted-foreground text-xs">
         {nodes.length
-          ? `Samples selected host sources every 5 s on one node for ${diagnosticMinutes} minutes, then returns to the current profile. Host samples are stored and available through the history API but not yet charted in the dashboard.`
+          ? `Samples selected host sources every 5 s on one node for ${diagnosticMinutes} minutes, then returns to the current profile. Host CPU and memory are charted in that node's Metrics tab; network, disk and filesystem samples are stored and available through the history API but not yet charted.`
           : "Diagnostics need a node in the cluster inventory. Wait for the observer to report nodes."}
       </p>
       <Button

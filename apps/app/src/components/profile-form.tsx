@@ -222,7 +222,8 @@ function ExpiryNote({
         {expiryText(node, extend, nodes, profile, now, timeZone)} Each node
         enforces the expiry itself, even if the hub is unreachable. Diagnostic
         host samples are stored and available through the history API for 24
-        hours but are not yet charted in the dashboard.
+        hours. Host CPU and memory are charted in the node's Metrics tab;
+        network, disk and filesystem samples are not yet charted.
       </span>
     </p>
   );

@@ -186,9 +186,17 @@ describe("profile drafts", () => {
     expect(profileChoices.basic.detail).toContain(
       "No pod or container CPU/memory"
     );
+    // Host CPU and memory are charted on a node's Metrics tab; the other
+    // host sources are stored but not charted.
+    expect(profileChoices.standard.detail).toContain(
+      "host CPU and memory are charted in each node's Metrics tab; network, disk and filesystem counters are stored and available through the history API but not yet charted."
+    );
+    expect(profileChoices.diagnostic.detail).toContain(
+      "Host CPU and memory are charted in that node's Metrics tab; network, disk and filesystem samples are stored and available through the history API but not yet charted."
+    );
     for (const name of ["standard", "diagnostic"] as const) {
-      expect(profileChoices[name].detail).toContain(
-        "available through the history API but not yet charted in the dashboard"
+      expect(profileChoices[name].detail).not.toContain(
+        "not yet charted in the dashboard"
       );
     }
   });

@@ -35,12 +35,12 @@ export const profileChoices: Record<
   standard: {
     label: "Standard",
     detail:
-      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s, stored and available through the history API but not yet charted in the dashboard.",
+      "Node, pod and container CPU/memory every 30s when Metrics API is available. Host counters every 60s: host CPU and memory are charted in each node's Metrics tab; network, disk and filesystem counters are stored and available through the history API but not yet charted.",
   },
   diagnostic: {
     label: "Diagnostic",
     detail:
-      "Selected host sources every 5s on one node, bounded in time. Host samples are stored and available through the history API but not yet charted in the dashboard. Upstream pod Metrics API resolution stays unchanged.",
+      "Selected host sources every 5s on one node, bounded in time. Host CPU and memory are charted in that node's Metrics tab; network, disk and filesystem samples are stored and available through the history API but not yet charted. Upstream pod Metrics API resolution stays unchanged.",
   },
 };
 
