@@ -19,8 +19,9 @@ export function PageState({
   snapshot: { isError: boolean; error: unknown; data?: unknown };
   loading: boolean;
   onRetry: () => void;
-  // Opens the saved-observation picker for errors another time can fix.
-  onChooseTime?: () => void;
+  // Opens the saved-observation picker for errors another time can fix,
+  // given the button so focus can return to it.
+  onChooseTime?: (button: HTMLElement) => void;
 }) {
   // Retry only where repeating the request can succeed. A time outside
   // retention or an unreadable link offers another time instead, beside the
@@ -47,7 +48,7 @@ export function PageState({
           {problem.chooseTime && onChooseTime && (
             <Button
               className="h-9 sm:h-8"
-              onClick={onChooseTime}
+              onClick={(event) => onChooseTime(event.currentTarget)}
               size="sm"
               variant="outline"
             >

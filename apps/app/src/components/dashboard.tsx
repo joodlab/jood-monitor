@@ -343,14 +343,19 @@ function focusMain() {
 // The saved-observation picker the page opens for a link time it could not
 // read or the hub refused. Escape returns focus to the button that opened
 // it; choosing a time replaces that button, so focus moves to the page.
+// The button is passed in, because Safari and Firefox on macOS do not focus
+// a button that is clicked.
 function useTimeChooser() {
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const chosen = useRef(false);
-  const show = useCallback(() => {
+  const show = useCallback((button?: HTMLElement) => {
     const active = document.activeElement;
     opener.current =
-      active instanceof HTMLElement && active !== document.body ? active : null;
+      button ??
+      (active instanceof HTMLElement && active !== document.body
+        ? active
+        : null);
     chosen.current = false;
     setOpen(true);
   }, []);
@@ -491,17 +496,22 @@ function UnreadableTime({
   onChoose,
 }: {
   at: string;
-  onChoose: () => void;
+  onChoose: (button: HTMLElement) => void;
 }) {
   const written = at.length > 40 ? `${at.slice(0, 40)}…` : at;
   return (
+    // The actions row is centred to fit its content; below sm it stretches
+    // so the button can take the phone's width.
     <EmptyState
-      className="m-4"
+      className="m-4 [&>div:last-child]:self-stretch sm:[&>div:last-child]:self-center"
       description={`Saved observation links carry a time with a zone, such as 2026-10-22T12:00:00Z. This link has “${written}”.`}
       icon={CalendarClock}
       title="Choose a saved observation time"
     >
-      <Button className="w-full sm:w-auto" onClick={onChoose}>
+      <Button
+        className="w-full sm:w-auto"
+        onClick={(event) => onChoose(event.currentTarget)}
+      >
         Choose a time…
       </Button>
     </EmptyState>
@@ -527,7 +537,7 @@ function PageContent({
   referenceTime: number;
   onConnect: () => void;
   onNewWorkspace: () => void;
-  onChooseTime: () => void;
+  onChooseTime: (button?: HTMLElement) => void;
 }) {
   const { snapshot } = data;
   if (unreadableLinkTime(search.at)) {
